@@ -61,6 +61,33 @@ generate strong random tokens. The default `HOST=0.0.0.0` bind is required for
 Docker; docs instruct operators to keep WhereCtx behind a reverse proxy and never
 expose it raw with placeholder tokens.
 
+## Privacy enforcement model (hardened during Phase 2 review)
+
+Enforcement lives in `src/privacy/policy.ts` and is exercised end-to-end by tests:
+
+- **`hidden` mode is fully enforced.** `agentCoarseView()` returns `null` and
+  `authorizePrecise()` denies when `defaultAgentAccess === "hidden"`. Agents see
+  nothing in hidden mode.
+- **Home protection is a deny, not a blur.** When `hideHomeExactCoordinates` is
+  set and the user is at/near a `home` place, precise location is *refused*
+  outright rather than coarsened. (Rounding to N decimals is not home-address
+  anonymization.) Operators who want home coordinates exposed must disable the
+  flag.
+- **Agent coarse view never carries raw GPS or geohash.** `CoarsePresenceView`
+  is status/label/motion/age/stale/privacy only. The stored geohash is internal
+  (admin) and is never surfaced to agents.
+- **Live settings are authoritative at view time.** Views/authorization read the
+  persisted `PrivacySettings`, not the per-reading `presence.privacy` snapshot,
+  so a tightened policy applies immediately.
+- **`preciseRequiresApproval`** has no interactive channel in v0.1, so when set
+  `true` it denies precise access (fail-closed) rather than silently granting.
+- **Device-controlled timestamps are distrusted when implausibly future.**
+  `coerceIso` clamps an `updatedAt` more than 5 minutes ahead of receive time to
+  the receive time, so a skewed/malicious device cannot pin presence permanently
+  "fresh" (staleness is a safety signal).
+- **Per-user serialization.** Ingest, stale checks, and privacy changes are
+  serialized per user (`KeyedMutex`) so the read-diff-write sequence cannot race.
+
 ## Timestamps
 
 All timestamp columns store app-generated **ISO-8601** strings
