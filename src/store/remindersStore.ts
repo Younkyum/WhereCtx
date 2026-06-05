@@ -5,7 +5,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { reminders } from "../db/schema.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
@@ -56,6 +56,14 @@ export class RemindersStore {
     };
     await this.db.insert(reminders).values(record);
     return rowToReminder(record);
+  }
+
+  async countActive(): Promise<number> {
+    const rows = (await this.db
+      .select({ c: sql<number>`count(*)` })
+      .from(reminders)
+      .where(eq(reminders.active, true))) as Array<{ c: number }>;
+    return rows[0]?.c ?? 0;
   }
 
   async listActive(): Promise<Reminder[]> {

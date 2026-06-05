@@ -168,8 +168,30 @@ export const webhooks = sqliteTable("webhooks", {
   events: text("events", { mode: "json" }).$type<string[]>().notNull(),
   secret: text("secret"),
   active: integer("active", { mode: "boolean" }).notNull().default(true),
+  /** Delivery cursor: ISO createdAt of the last event delivered to this hook. */
+  cursor: text("cursor"),
   createdAt: text("created_at").notNull(),
 });
+
+/**
+ * Dead-letter log for webhook events that could not be delivered after the
+ * dispatcher's max attempts. Makes the drop durable and admin-visible instead
+ * of a silent stdout warning (review finding H3).
+ */
+export const webhookDeliveries = sqliteTable(
+  "webhook_deliveries",
+  {
+    id: text("id").primaryKey(),
+    webhookId: text("webhook_id").notNull(),
+    eventId: text("event_id").notNull(),
+    eventType: text("event_type").notNull(),
+    error: text("error"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    webhookIdx: index("webhook_deliveries_webhook_idx").on(t.webhookId),
+  }),
+);
 
 export const reminders = sqliteTable(
   "reminders",
@@ -194,6 +216,7 @@ export const schema = {
   locationHistory,
   privacySettings,
   webhooks,
+  webhookDeliveries,
   reminders,
 };
 

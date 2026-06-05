@@ -10,6 +10,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../app/context.js";
+import { assertSafeWebhookUrl, SsrfError } from "../webhooks/ssrf.js";
 import { bearerAuth, requireScope } from "./middleware.js";
 import { zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
@@ -56,6 +57,16 @@ export function webhooksRouter(ctx: AppContext): Hono<AppEnv> {
     if (!parsed.success) {
       return c.json({ error: "invalid webhook", detail: zodMessages(parsed.error) }, 400);
     }
+    // SSRF guard: reject URLs that resolve to private/reserved addresses.
+    try {
+      await assertSafeWebhookUrl(
+        parsed.data.url,
+        ctx.config.webhooks.allowPrivateTargets,
+      );
+    } catch (e) {
+      if (e instanceof SsrfError) return c.json({ error: e.message }, 400);
+      throw e;
+    }
     const created = await ctx.webhooksStore.create({
       url: parsed.data.url,
       events: parsed.data.events ?? ["*"],
@@ -63,6 +74,15 @@ export function webhooksRouter(ctx: AppContext): Hono<AppEnv> {
     });
     const { secret: _s, ...rest } = created;
     return c.json({ webhook: rest }, 201);
+  });
+
+  // Dead-letter log: events permanently undeliverable after max attempts.
+  app.get("/dead-letters", async (c) => {
+    const limit = Number.parseInt(c.req.query("limit") ?? "100", 10);
+    const deadLetters = await ctx.webhooksStore.listDeadLetters(
+      Number.isNaN(limit) ? 100 : limit,
+    );
+    return c.json({ deadLetters });
   });
 
   app.delete("/:id", async (c) => {

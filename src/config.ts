@@ -81,6 +81,10 @@ export interface Config {
   geofence: {
     nearRadiusMultiplier: number;
   };
+  webhooks: {
+    /** Allow webhook delivery to private/reserved IPs (LAN Home Assistant etc.). */
+    allowPrivateTargets: boolean;
+  };
 }
 
 export function loadConfig(): Config {
@@ -114,6 +118,9 @@ export function loadConfig(): Config {
     },
     geofence: {
       nearRadiusMultiplier,
+    },
+    webhooks: {
+      allowPrivateTargets: envBool("WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
     },
   });
 }
