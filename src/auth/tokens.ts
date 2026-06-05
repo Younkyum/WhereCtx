@@ -30,6 +30,9 @@ export interface SeedResult {
 
 const TOKEN_PREFIX = "wctx";
 
+/** Minimum interval between lastUsedAt writes for the same token (ms). */
+const LAST_USED_THROTTLE_MS = 60_000;
+
 export function hashToken(secret: string): string {
   return createHash("sha256").update(secret, "utf8").digest("hex");
 }
@@ -97,10 +100,16 @@ export class TokenStore {
     if (!row) return null;
     if (!constantTimeEqualHex(row.tokenHash, hash)) return null;
 
-    await this.db
-      .update(tokens)
-      .set({ lastUsedAt: nowIso(this.clock) })
-      .where(eq(tokens.id, row.id));
+    // Throttle the lastUsedAt write so auth stays read-mostly on the hot path
+    // (avoid a DB write on every authenticated request; review finding P3).
+    const now = this.clock();
+    const last = row.lastUsedAt ? Date.parse(row.lastUsedAt) : 0;
+    if (Number.isNaN(last) || now.getTime() - last > LAST_USED_THROTTLE_MS) {
+      await this.db
+        .update(tokens)
+        .set({ lastUsedAt: now.toISOString() })
+        .where(eq(tokens.id, row.id));
+    }
 
     return rowToToken(row);
   }

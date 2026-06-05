@@ -1,0 +1,51 @@
+/**
+ * HTTP application assembly. Mounts every REST router plus health/info routes
+ * onto a single Hono app. The MCP endpoint is mounted separately in Phase 4.
+ */
+
+import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
+import type { AppContext } from "./context.js";
+import { eventsRouter } from "../api/events.js";
+import { ingestRouter } from "../api/ingest.js";
+import { placesRouter } from "../api/places.js";
+import { presenceRouter } from "../api/presence.js";
+import { privacyRouter } from "../api/privacy.js";
+import { tokensRouter } from "../api/tokens.js";
+import { webhooksRouter } from "../api/webhooks.js";
+
+export function buildApp(ctx: AppContext): Hono {
+  const app = new Hono();
+
+  // Cap request bodies well above any legitimate payload (ingest/admin bodies
+  // are tiny) to close the OOM/DoS vector on an internet-exposed bind (P8).
+  app.use(
+    "*",
+    bodyLimit({
+      maxSize: 64 * 1024,
+      onError: (c) => c.json({ error: "payload too large" }, 413),
+    }),
+  );
+
+  app.get("/", (c) =>
+    c.json({ name: "wherectx", version: "0.1.0", status: "ok" }),
+  );
+  app.get("/healthz", (c) => c.json({ status: "ok" }));
+
+  app.route("/v1/ingest", ingestRouter(ctx));
+  app.route("/v1/presence", presenceRouter(ctx));
+  app.route("/v1/places", placesRouter(ctx));
+  app.route("/v1/events", eventsRouter(ctx));
+  app.route("/v1/privacy", privacyRouter(ctx));
+  app.route("/v1/webhooks", webhooksRouter(ctx));
+  app.route("/v1/tokens", tokensRouter(ctx));
+
+  app.notFound((c) => c.json({ error: "not found" }, 404));
+  app.onError((err, c) => {
+    // eslint-disable-next-line no-console
+    console.error("request error:", err);
+    return c.json({ error: "internal server error" }, 500);
+  });
+
+  return app;
+}
