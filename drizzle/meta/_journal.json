@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1780672880154,
+      "tag": "0000_fancy_spencer_smythe",
+      "breakpoints": true
+    }
+  ]
+}

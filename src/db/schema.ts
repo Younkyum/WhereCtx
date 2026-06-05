@@ -1,0 +1,203 @@
+/**
+ * Drizzle ORM schema for the WhereCtx SQLite store (plan section 9.4 / 10).
+ *
+ * Design notes:
+ * - `presence` holds exactly one current row per user (single-user in v0.1).
+ * - Tokens are stored as SHA-256 hashes; the raw secret is never persisted.
+ * - Scopes / event lists are stored as JSON text columns for portability.
+ * - Timestamps are ISO-8601 strings for round-trip fidelity with the API.
+ */
+
+import {
+  index,
+  integer,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
+import type {
+  CoarsePlaceType,
+  IngestSource,
+  Motion,
+  PlaceType,
+  PresenceEventType,
+  PresenceStatus,
+  PrivacyMode,
+  TokenRole,
+  TokenScope,
+} from "../types.js";
+
+export const tokens = sqliteTable(
+  "tokens",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    role: text("role").$type<TokenRole>().notNull(),
+    scopes: text("scopes", { mode: "json" }).$type<TokenScope[]>().notNull(),
+    tokenHash: text("token_hash").notNull(),
+    createdAt: text("created_at").notNull(),
+    lastUsedAt: text("last_used_at"),
+  },
+  (t) => ({
+    tokenHashIdx: uniqueIndex("tokens_token_hash_idx").on(t.tokenHash),
+  }),
+);
+
+export const places = sqliteTable(
+  "places",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull(),
+    label: text("label"),
+    lat: real("lat").notNull(),
+    lon: real("lon").notNull(),
+    radiusM: real("radius_m").notNull(),
+    type: text("type").$type<PlaceType>().notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => ({
+    nameIdx: uniqueIndex("places_user_name_idx").on(t.userId, t.name),
+  }),
+);
+
+export const presence = sqliteTable("presence", {
+  userId: text("user_id").primaryKey(),
+  status: text("status").$type<PresenceStatus>().notNull(),
+  label: text("label"),
+
+  preciseLat: real("precise_lat"),
+  preciseLon: real("precise_lon"),
+  accuracyM: real("accuracy_m"),
+  altitudeM: real("altitude_m"),
+  speedMps: real("speed_mps"),
+  headingDeg: real("heading_deg"),
+
+  geohash: text("geohash"),
+  city: text("city"),
+  area: text("area"),
+  coarsePlaceType: text("coarse_place_type").$type<CoarsePlaceType>(),
+
+  motion: text("motion").$type<Motion>(),
+
+  batteryLevel: real("battery_level"),
+  batteryCharging: integer("battery_charging", { mode: "boolean" }),
+
+  source: text("source").$type<IngestSource>().notNull(),
+
+  privacyMode: text("privacy_mode").$type<PrivacyMode>().notNull(),
+  allowPreciseToAgents: integer("allow_precise_to_agents", { mode: "boolean" })
+    .notNull()
+    .default(false),
+
+  /** Name of the place the user is currently inside, for enter/leave events. */
+  currentPlaceName: text("current_place_name"),
+  /** Whether a `presence.became_stale` event has already fired for this reading. */
+  staleEventFired: integer("stale_event_fired", { mode: "boolean" })
+    .notNull()
+    .default(false),
+
+  updatedAt: text("updated_at").notNull(),
+  receivedAt: text("received_at").notNull(),
+  staleAfterSec: integer("stale_after_sec").notNull(),
+});
+
+export const presenceEvents = sqliteTable(
+  "presence_events",
+  {
+    id: text("id").primaryKey(),
+    type: text("type").$type<PresenceEventType>().notNull(),
+    placeName: text("place_name"),
+    status: text("status"),
+    source: text("source"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    createdAtIdx: index("presence_events_created_at_idx").on(t.createdAt),
+  }),
+);
+
+export const locationHistory = sqliteTable(
+  "location_history",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    lat: real("lat").notNull(),
+    lon: real("lon").notNull(),
+    accuracyM: real("accuracy_m"),
+    source: text("source"),
+    recordedAt: text("recorded_at").notNull(),
+  },
+  (t) => ({
+    recordedAtIdx: index("location_history_recorded_at_idx").on(t.recordedAt),
+  }),
+);
+
+export const privacySettings = sqliteTable("privacy_settings", {
+  userId: text("user_id").primaryKey(),
+  defaultAgentAccess: text("default_agent_access").$type<PrivacyMode>().notNull(),
+  allowPreciseLocation: integer("allow_precise_location", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  preciseRequiresReason: integer("precise_requires_reason", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  preciseRequiresApproval: integer("precise_requires_approval", {
+    mode: "boolean",
+  })
+    .notNull()
+    .default(false),
+  hideHomeExactCoordinates: integer("hide_home_exact_coordinates", {
+    mode: "boolean",
+  })
+    .notNull()
+    .default(true),
+  retentionHours: integer("retention_hours").notNull().default(24),
+  storeRawHistory: integer("store_raw_history", { mode: "boolean" })
+    .notNull()
+    .default(false),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const webhooks = sqliteTable("webhooks", {
+  id: text("id").primaryKey(),
+  url: text("url").notNull(),
+  // JSON array of PresenceEventType, or ["*"] for all events.
+  events: text("events", { mode: "json" }).$type<string[]>().notNull(),
+  secret: text("secret"),
+  active: integer("active", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull(),
+});
+
+export const reminders = sqliteTable(
+  "reminders",
+  {
+    id: text("id").primaryKey(),
+    placeName: text("place_name").notNull(),
+    message: text("message").notNull(),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    createdAt: text("created_at").notNull(),
+    triggeredAt: text("triggered_at"),
+  },
+  (t) => ({
+    activeIdx: index("reminders_active_idx").on(t.active),
+  }),
+);
+
+export const schema = {
+  tokens,
+  places,
+  presence,
+  presenceEvents,
+  locationHistory,
+  privacySettings,
+  webhooks,
+  reminders,
+};
+
+// NOTE: all timestamp columns store app-generated ISO-8601 strings
+// (`new Date().toISOString()`). We intentionally avoid SQL CURRENT_TIMESTAMP
+// defaults, which emit a different `YYYY-MM-DD HH:MM:SS` format and would break
+// `updatedAgoSec` math and lexical sorting.
