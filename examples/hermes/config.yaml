@@ -1,0 +1,8 @@
+# Hermes MCP server configuration for WhereCtx.
+# Add this under your Hermes mcp_servers section.
+
+mcp_servers:
+  wherectx:
+    url: "https://wherectx.example.com/mcp"
+    headers:
+      Authorization: "Bearer AGENT_TOKEN"

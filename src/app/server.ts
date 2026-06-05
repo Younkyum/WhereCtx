@@ -5,7 +5,9 @@
 
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
+import { dashboardRouter } from "../dashboard/router.js";
 import { eventsRouter } from "../api/events.js";
 import { ingestRouter } from "../api/ingest.js";
 import { placesRouter } from "../api/places.js";
@@ -16,6 +18,27 @@ import { webhooksRouter } from "../api/webhooks.js";
 
 export function buildApp(ctx: AppContext): Hono {
   const app = new Hono();
+
+  // Security headers (defense-in-depth on the admin dashboard especially): CSP,
+  // nosniff, frame-deny, no referrer leakage (review finding D3).
+  app.use(
+    "*",
+    secureHeaders({
+      contentSecurityPolicy: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"], // dashboard JS is inline
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'"],
+        connectSrc: ["'self'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'none'"],
+        formAction: ["'self'"],
+      },
+      xFrameOptions: "DENY",
+      xContentTypeOptions: "nosniff",
+      referrerPolicy: "no-referrer",
+    }),
+  );
 
   // Cap request bodies well above any legitimate payload (ingest/admin bodies
   // are tiny) to close the OOM/DoS vector on an internet-exposed bind (P8).
@@ -31,6 +54,8 @@ export function buildApp(ctx: AppContext): Hono {
     c.json({ name: "wherectx", version: "0.1.0", status: "ok" }),
   );
   app.get("/healthz", (c) => c.json({ status: "ok" }));
+
+  app.route("/dashboard", dashboardRouter());
 
   app.route("/v1/ingest", ingestRouter(ctx));
   app.route("/v1/presence", presenceRouter(ctx));

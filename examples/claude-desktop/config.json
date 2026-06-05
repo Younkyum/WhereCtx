@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "wherectx": {
+      "url": "https://wherectx.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer AGENT_TOKEN"
+      }
+    }
+  }
+}

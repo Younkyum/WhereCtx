@@ -1,0 +1,23 @@
+# Minimal WhereCtx Docker Compose for a quick self-host.
+# Build from the repo root:  docker compose -f examples/docker/docker-compose.yml up -d
+# (or copy the repo's docker-compose.example.yml to the root and edit it there.)
+
+services:
+  wherectx:
+    build:
+      context: ../..
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/data
+    environment:
+      DATABASE_URL: "sqlite:////data/wherectx.db"
+      BASE_URL: "http://localhost:8787"
+      # Replace with strong random values (placeholders are refused at boot).
+      ADMIN_TOKEN: "change-me-admin"
+      DEVICE_TOKEN: "change-me-device"
+      AGENT_TOKEN: "change-me-agent"
+      DEFAULT_AGENT_PRIVACY: "coarse"
+      ALLOW_PRECISE_TO_AGENT: "false"
+      HIDE_HOME_EXACT_COORDINATES: "true"
+    restart: unless-stopped

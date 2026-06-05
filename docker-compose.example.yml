@@ -1,0 +1,41 @@
+# WhereCtx — example Docker Compose (plan section 11).
+# Copy to docker-compose.yml, set strong tokens, then: docker compose up -d
+#
+# Builds the image from this repo. To use a published image instead, replace the
+# `build: .` line with `image: ghcr.io/<owner>/wherectx:latest`.
+
+services:
+  wherectx:
+    build: .
+    # image: ghcr.io/<owner>/wherectx:latest
+    ports:
+      - "8787:8787"
+    volumes:
+      # The container runs as uid 10001 (non-root). For this bind mount, run
+      #   mkdir -p ./data && sudo chown 10001 ./data
+      # once before `docker compose up`, or switch to a named volume.
+      - ./data:/data
+    environment:
+      # Storage (mounted volume so data survives restarts).
+      DATABASE_URL: "sqlite:////data/wherectx.db"
+      # Public URL used to build map links.
+      BASE_URL: "http://localhost:8787"
+      # Tokens — REPLACE these with long random strings. Tokens left as
+      # "change-me-*" are refused at boot (a strong admin token is auto-generated
+      # and printed once in the logs instead).
+      ADMIN_TOKEN: "change-me-admin"
+      DEVICE_TOKEN: "change-me-device"
+      AGENT_TOKEN: "change-me-agent"
+      # Privacy defaults (presence-first).
+      DEFAULT_AGENT_PRIVACY: "coarse"
+      PRECISE_REQUIRES_REASON: "true"
+      ALLOW_PRECISE_TO_AGENT: "false"
+      HIDE_HOME_EXACT_COORDINATES: "true"
+      RETENTION_HOURS: "24"
+      STORE_RAW_HISTORY: "false"
+      # Geofence near-band multiplier.
+      NEAR_RADIUS_MULTIPLIER: "3"
+      # SSRF guard: keep false unless you deliberately deliver webhooks to a LAN
+      # service (e.g. a local Home Assistant).
+      WEBHOOK_ALLOW_PRIVATE_TARGETS: "false"
+    restart: unless-stopped

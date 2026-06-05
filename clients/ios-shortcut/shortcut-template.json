@@ -1,0 +1,15 @@
+{
+  "_comment": "Reference for the JSON body the iOS Shortcut should POST to /v1/ingest/shortcut. Replace the values with Shortcuts Magic Variables from the 'Get Current Location' action. Field names are case/space-insensitive on the shortcut endpoint.",
+  "endpoint": "POST https://wherectx.example.com/v1/ingest/shortcut",
+  "headers": {
+    "Authorization": "Bearer DEVICE_TOKEN",
+    "Content-Type": "application/json"
+  },
+  "body": {
+    "Latitude": 37.123456,
+    "Longitude": 127.123456,
+    "Horizontal Accuracy": 21,
+    "Altitude": 30,
+    "Battery Level": 0.8
+  }
+}
