@@ -1,20 +1,22 @@
 # ── build stage ────────────────────────────────────────────────────────
-FROM node:24-slim AS build
+# Node 20 LTS (not 24): npm's install finalizer ("Exit handler") breaks on old
+# NAS kernels (e.g. Synology DSM on Linux 4.4) — node:20 runs cleanly there and
+# everywhere else. glibc base for broad @libsql/client prebuild compatibility.
+FROM node:20-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --no-audit --no-fund
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
 # ── runtime stage ──────────────────────────────────────────────────────
-# debian-slim (glibc) for broad @libsql/client prebuild compatibility.
-FROM node:24-slim AS runtime
+FROM node:20-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # Only production deps.
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 # Compiled app + the canonical migrations (required at boot).
 COPY --from=build /app/dist ./dist
 COPY drizzle ./drizzle
