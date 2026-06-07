@@ -1,0 +1,49 @@
+# WhereCtx on a NAS, exposed via Cloudflare Tunnel.
+#
+# - `wherectx` runs the prebuilt image from GHCR (no on-NAS build).
+# - `cloudflared` is the tunnel; it reaches wherectx over the internal Docker
+#   network at http://wherectx:8787. NO ports are published to the NAS/LAN, so
+#   nothing is reachable except through the authenticated Cloudflare Tunnel.
+#
+# Put this file + a `.env` (see .env.nas.example) in a folder on the NAS
+# (e.g. /volume1/docker/wherectx) and create a Container Manager Project from it.
+
+services:
+  wherectx:
+    image: ghcr.io/younkyum/wherectx:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "sqlite:////data/wherectx.db"
+      BASE_URL: "${BASE_URL}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN}"
+      DEVICE_TOKEN: "${DEVICE_TOKEN}"
+      AGENT_TOKEN: "${AGENT_TOKEN}"
+      DEFAULT_AGENT_PRIVACY: "coarse"
+      PRECISE_REQUIRES_REASON: "true"
+      ALLOW_PRECISE_TO_AGENT: "false"
+      HIDE_HOME_EXACT_COORDINATES: "true"
+      RETENTION_HOURS: "24"
+      STORE_RAW_HISTORY: "false"
+      NEAR_RADIUS_MULTIPLIER: "3"
+      # Set true ONLY if you want webhooks to reach a LAN service (e.g. Home
+      # Assistant on the same network). Default false blocks SSRF to private IPs.
+      WEBHOOK_ALLOW_PRIVATE_TARGETS: "false"
+    volumes:
+      # Named volume — Docker initializes it owned by the container's non-root
+      # user (uid 10001), so no manual chown is needed.
+      - wherectx-data:/data
+    # No `ports:` on purpose — tunnel-only. To ALSO allow LAN access, uncomment:
+    # ports:
+    #   - "8787:8787"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "${CF_TUNNEL_TOKEN}"
+    depends_on:
+      - wherectx
+
+volumes:
+  wherectx-data:
