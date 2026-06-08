@@ -183,6 +183,27 @@ describe("places privacy", () => {
     });
     expect(r.status).toBe(400);
   });
+
+  it("re-evaluates the current status when a place is added at the location", async () => {
+    // Stand far from home: status freezes to "away" at ingest time.
+    await req("/v1/ingest", { method: "POST", token: DEVICE, body: { lat: 37.51, lon: 127.52 } });
+    let body = (await (await req("/v1/presence", { token: AGENT })).json()) as { status: string };
+    expect(body.status).toBe("away");
+
+    // Register "work" right here — status must flip immediately, not on the next reading.
+    await req("/v1/places", {
+      method: "POST",
+      token: ADMIN,
+      body: { name: "work", type: "work", useCurrentLocation: true },
+    });
+    body = (await (await req("/v1/presence", { token: AGENT })).json()) as { status: string };
+    expect(body.status).toBe("work");
+
+    // Removing it flips back to "away" without waiting for a new reading.
+    await req("/v1/places/work", { method: "DELETE", token: ADMIN });
+    body = (await (await req("/v1/presence", { token: AGENT })).json()) as { status: string };
+    expect(body.status).toBe("away");
+  });
 });
 
 describe("token management", () => {

@@ -86,6 +86,12 @@ export function placesRouter(ctx: AppContext): Hono<AppEnv> {
       lon,
       radiusM: d.radiusM ?? DEFAULT_RADIUS_M,
     });
+    // Status is frozen at ingest time; adding/moving a place can change the
+    // current geofence verdict, so re-evaluate against the last known location
+    // and dispatch any resulting events. Without this, registering "work" while
+    // standing at work still shows "away" until the next reading arrives.
+    const result = await ctx.service.reevaluateCurrent();
+    if (result) await ctx.onEvents?.(result.events);
     return c.json({ place }, 201);
   });
 
@@ -93,6 +99,10 @@ export function placesRouter(ctx: AppContext): Hono<AppEnv> {
     const name = c.req.param("name");
     const deleted = await ctx.placesStore.deleteByName(userId, name);
     if (!deleted) return c.json({ error: "place not found" }, 404);
+    // Removing a place can flip the current status (e.g. work -> away); keep the
+    // displayed status consistent without waiting for the next reading.
+    const result = await ctx.service.reevaluateCurrent();
+    if (result) await ctx.onEvents?.(result.events);
     return c.json({ ok: true });
   });
 

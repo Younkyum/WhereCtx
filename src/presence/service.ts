@@ -226,6 +226,62 @@ export class PresenceService {
   }
 
   /**
+   * Re-evaluate the current presence against the latest set of places, reusing
+   * the last known coordinate. Status is computed at ingest time and then frozen
+   * on the stored row, so adding/moving/removing a place does NOT change the
+   * displayed status until the next location reading arrives — e.g. registering
+   * "work" while standing at work but still reading "away". Callers (the places
+   * API) invoke this after a place change and dispatch the returned events.
+   * Returns null when there is no current location to re-evaluate. Serialized
+   * per user so it cannot race a concurrent ingest.
+   */
+  async reevaluateCurrent(): Promise<ProcessResult | null> {
+    return this.mutex.run(this.userId, async () => {
+      const userId = this.userId;
+      const prev = await this.deps.presenceStore.getCurrent(userId);
+      if (!prev?.precise) return null;
+
+      const places = await this.deps.placesStore.list(userId);
+      const geo = computeGeofence(
+        prev.precise.lat,
+        prev.precise.lon,
+        places,
+        this.deps.config.geofence.nearRadiusMultiplier,
+      );
+
+      // Same motion refinement as processReadingLocked.
+      let status: PresenceStatus = geo.status;
+      let label = geo.label;
+      if (status === "away" && (prev.motion === "driving" || prev.motion === "transit")) {
+        status = "transit";
+        label = labelForStatus("transit");
+      }
+
+      const nextPlaceName = geo.matchedPlace?.name;
+      // No change → nothing to persist or emit.
+      if (status === prev.status && nextPlaceName === prev.currentPlaceName) {
+        return { presence: toPresenceContext(prev), events: [], triggeredReminders: [] };
+      }
+
+      const next: StoredPresence = {
+        ...prev,
+        status,
+        label,
+        coarse: {
+          ...prev.coarse,
+          placeType: coarsePlaceTypeFor(geo.matchedPlace),
+        },
+        currentPlaceName: nextPlaceName,
+      };
+
+      await this.deps.presenceStore.upsert(next);
+      const events = await this.emitTransitionEvents(prev, next);
+      const triggeredReminders = await this.fireReminders(prev, next);
+      return { presence: toPresenceContext(next), events, triggeredReminders };
+    });
+  }
+
+  /**
    * Apply a privacy-settings change and emit `presence.privacy_changed`
    * (review finding F7 — previously this event only fired incidentally on the
    * next ingest). Updates the current presence row's privacy snapshot too so a
