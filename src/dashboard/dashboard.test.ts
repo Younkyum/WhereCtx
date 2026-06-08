@@ -48,9 +48,10 @@ describe("dashboard", () => {
     expect(DASHBOARD_HTML).toMatch(/I18N\s*=\s*\{/);
     expect(DASHBOARD_HTML).toContain("en:");
     expect(DASHBOARD_HTML).toContain("ko:");
-    // A representative Korean string and English string.
-    expect(DASHBOARD_HTML).toContain("관리자 대시보드");
-    expect(DASHBOARD_HTML).toContain("admin dashboard");
+    // Representative Korean + English strings present in both tables.
+    expect(DASHBOARD_HTML).toContain("프라이버시"); // privacy.title (ko)
+    expect(DASHBOARD_HTML).toContain("관리자 토큰"); // connect.placeholder (ko)
+    expect(DASHBOARD_HTML).toContain("Default agent access"); // privacy.access (en)
     // Language toggle + i18n-tagged elements.
     expect(DASHBOARD_HTML).toContain('data-lang="ko"');
     expect(DASHBOARD_HTML).toContain('data-lang="en"');
