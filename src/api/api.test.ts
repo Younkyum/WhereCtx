@@ -160,6 +160,29 @@ describe("places privacy", () => {
     expect((await req("/v1/places/home", { method: "DELETE", token: ADMIN })).status).toBe(200);
     expect((await req("/v1/places/home", { method: "DELETE", token: ADMIN })).status).toBe(404);
   });
+
+  it("adds a place from the current location", async () => {
+    await req("/v1/ingest", { method: "POST", token: DEVICE, body: { lat: 37.51, lon: 127.52 } });
+    const r = await req("/v1/places", {
+      method: "POST",
+      token: ADMIN,
+      body: { name: "here", type: "custom", useCurrentLocation: true },
+    });
+    expect(r.status).toBe(201);
+    const body = (await r.json()) as { place: { name: string; lat: number; radiusM: number } };
+    expect(body.place.name).toBe("here");
+    expect(body.place.lat).toBe(37.51);
+    expect(body.place.radiusM).toBe(150);
+  });
+
+  it("400s useCurrentLocation when there is no current location", async () => {
+    const r = await req("/v1/places", {
+      method: "POST",
+      token: ADMIN,
+      body: { name: "x", type: "custom", useCurrentLocation: true },
+    });
+    expect(r.status).toBe(400);
+  });
 });
 
 describe("token management", () => {

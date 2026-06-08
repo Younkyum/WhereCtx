@@ -20,11 +20,17 @@ import type { AppEnv } from "./types.js";
 const PlaceSchema = z.object({
   name: z.string().min(1).max(64),
   label: z.string().max(128).optional(),
-  lat: z.number().min(-90).max(90),
-  lon: z.number().min(-180).max(180),
-  radiusM: z.number().positive().max(100_000),
+  // lat/lon are optional when useCurrentLocation is set (server fills them from
+  // the current presence — works even at a protected home, since this is an
+  // admin action and coordinates are never sent to the client).
+  lat: z.number().min(-90).max(90).optional(),
+  lon: z.number().min(-180).max(180).optional(),
+  radiusM: z.number().positive().max(100_000).optional(),
   type: z.enum(["home", "work", "custom"]),
+  useCurrentLocation: z.boolean().optional(),
 });
+
+const DEFAULT_RADIUS_M = 150;
 
 /**
  * Agent-facing place view: name + type only. We deliberately omit lat/lon (the
@@ -59,7 +65,27 @@ export function placesRouter(ctx: AppContext): Hono<AppEnv> {
     if (!parsed.success) {
       return c.json({ error: "invalid place", detail: zodMessages(parsed.error) }, 400);
     }
-    const place = await ctx.placesStore.upsert(userId, parsed.data);
+    const d = parsed.data;
+    let { lat, lon } = d;
+    if (d.useCurrentLocation) {
+      const current = await ctx.presenceStore.getCurrent(userId);
+      if (!current?.precise) {
+        return c.json({ error: "no current location available to use" }, 400);
+      }
+      lat = current.precise.lat;
+      lon = current.precise.lon;
+    }
+    if (lat === undefined || lon === undefined) {
+      return c.json({ error: "lat/lon are required (or set useCurrentLocation)" }, 400);
+    }
+    const place = await ctx.placesStore.upsert(userId, {
+      name: d.name,
+      label: d.label,
+      type: d.type,
+      lat,
+      lon,
+      radiusM: d.radiusM ?? DEFAULT_RADIUS_M,
+    });
     return c.json({ place }, 201);
   });
 

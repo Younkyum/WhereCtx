@@ -28,6 +28,12 @@ import { secondsSince, isStale } from "../util/time.js";
 /** Cap on active location reminders, to bound writes from read-scoped tokens. */
 const MAX_ACTIVE_REMINDERS = 100;
 
+/** Cap on registered places, to bound writes from read-scoped tokens. */
+const MAX_PLACES = 100;
+
+/** Default geofence radius (meters) when an agent omits it. */
+const DEFAULT_RADIUS_M = 150;
+
 const ok = (data: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(data) }],
 });
@@ -193,6 +199,64 @@ export function buildMcpServer(ctx: AppContext, token: VerifiedToken): McpServer
       }
       const reminder = await ctx.remindersStore.create(place, message);
       return ok({ id: reminder.id, place: reminder.placeName, message: reminder.message });
+    },
+  );
+
+  const placeType = z.enum(["home", "work", "custom"]);
+
+  server.registerTool(
+    "create_place",
+    {
+      description:
+        "Register a place / geofence at explicit coordinates. type is home, work, or custom; radiusM defaults to 150m.",
+      inputSchema: {
+        name: z.string().min(1).max(64).describe("Place name, e.g. 'gym'"),
+        type: placeType.describe("home | work | custom"),
+        lat: z.number().min(-90).max(90),
+        lon: z.number().min(-180).max(180),
+        radiusM: z.number().positive().max(100_000).optional().describe("Geofence radius in meters (default 150)"),
+      },
+    },
+    async ({ name, type, lat, lon, radiusM }) => {
+      if ((await ctx.placesStore.list(userId)).length >= MAX_PLACES) {
+        return err(`place limit reached (${MAX_PLACES})`);
+      }
+      const place = await ctx.placesStore.upsert(userId, {
+        name,
+        type,
+        lat,
+        lon,
+        radiusM: radiusM ?? DEFAULT_RADIUS_M,
+      });
+      return ok({ name: place.name, type: place.type, radiusM: place.radiusM });
+    },
+  );
+
+  server.registerTool(
+    "remember_current_place",
+    {
+      description:
+        "Register the user's CURRENT location as a place / geofence under the given name. Uses the last known location server-side; coordinates are not returned. Refused if there is no recent location.",
+      inputSchema: {
+        name: z.string().min(1).max(64).describe("Name for this place, e.g. 'gym'"),
+        type: placeType.optional().describe("home | work | custom (default custom)"),
+        radiusM: z.number().positive().max(100_000).optional().describe("Geofence radius in meters (default 150)"),
+      },
+    },
+    async ({ name, type, radiusM }) => {
+      if ((await ctx.placesStore.list(userId)).length >= MAX_PLACES) {
+        return err(`place limit reached (${MAX_PLACES})`);
+      }
+      const current = await ctx.presenceStore.getCurrent(userId);
+      if (!current?.precise) return err("no current location available to remember");
+      const place = await ctx.placesStore.upsert(userId, {
+        name,
+        type: type ?? "custom",
+        lat: current.precise.lat,
+        lon: current.precise.lon,
+        radiusM: radiusM ?? DEFAULT_RADIUS_M,
+      });
+      return ok({ name: place.name, type: place.type, radiusM: place.radiusM });
     },
   );
 

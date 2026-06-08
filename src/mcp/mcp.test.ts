@@ -76,21 +76,46 @@ beforeEach(async () => {
 });
 
 describe("MCP server", () => {
-  it("exposes all seven plan tools", async () => {
+  it("exposes the expected tools (incl. place management)", async () => {
     await connect();
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(
       [
         "create_location_reminder",
+        "create_place",
         "get_location_age",
         "get_precise_location",
         "get_presence",
         "is_near_place",
         "list_places",
         "list_recent_presence_events",
+        "remember_current_place",
       ].sort(),
     );
+  });
+
+  it("create_place registers a geofence", async () => {
+    await connect();
+    const { data } = await callJson("create_place", { name: "gym", type: "custom", lat: 37.4, lon: 127.1, radiusM: 120 });
+    expect(data.name).toBe("gym");
+    const places = await ctx.placesStore.list("default");
+    expect(places.some((p) => p.name === "gym")).toBe(true);
+  });
+
+  it("remember_current_place uses the current location", async () => {
+    await ctx.service.processReading(reading(37.61, 127.22));
+    await connect();
+    const { data } = await callJson("remember_current_place", { name: "spot" });
+    expect(data.name).toBe("spot");
+    const p = (await ctx.placesStore.list("default")).find((x) => x.name === "spot");
+    expect(p?.lat).toBe(37.61);
+  });
+
+  it("remember_current_place errors when there is no location", async () => {
+    await connect();
+    const { isError } = await callJson("remember_current_place", { name: "nope" });
+    expect(isError).toBe(true);
   });
 
   it("get_presence returns coarse status with no raw coordinates", async () => {

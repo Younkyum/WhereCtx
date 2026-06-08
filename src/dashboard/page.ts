@@ -226,7 +226,13 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
           <div class="phead"><span class="pdot"></span><span class="ptitle" data-i18n="places.title">Places</span></div>
           <table id="places"><thead><tr><th data-i18n="places.name">Name</th><th data-i18n="places.type">Type</th><th data-i18n="places.lat">Lat</th><th data-i18n="places.lon">Lon</th><th data-i18n="places.radius">Radius (m)</th><th></th></tr></thead><tbody></tbody></table>
           <div class="empty hidden" data-empty="places" data-i18n="places.empty">No places yet</div>
-          <form id="placeForm" class="actions-row">
+          <form id="placeHereForm" class="actions-row">
+            <input name="name" data-i18n-ph="places.name" placeholder="name" required style="width:150px" />
+            <select name="type" style="width:auto"><option value="custom">custom</option><option value="home">home</option><option value="work">work</option></select>
+            <button class="btn" data-i18n="places.addHere">📍 Add current location</button>
+          </form>
+          <div class="micro" style="margin:14px 0 4px" data-i18n="places.byCoords">or by coordinates</div>
+          <form id="placeForm" class="actions-row" style="margin-top:0">
             <input name="name" data-i18n-ph="places.name" placeholder="name" required style="width:130px" />
             <select name="type" style="width:auto"><option value="home">home</option><option value="work">work</option><option value="custom">custom</option></select>
             <input name="lat" type="number" step="any" placeholder="lat" required style="width:120px" />
@@ -276,7 +282,7 @@ var I18N = {
     'presence.title':'Current presence','presence.refresh':'Refresh','presence.precise':'Precise','presence.none':'No presence recorded yet','presence.hidden':'Hidden from agents',
     'presence.updatedAgo':'updated {x} ago','presence.fresh':'fresh','presence.stale':'stale','presence.motion':'motion','presence.access':'access',
     'privacy.title':'Privacy','privacy.access':'Default agent access','privacy.allowPrecise':'Allow precise to agents','privacy.requireReason':'Precise requires reason','privacy.requireApproval':'Precise requires approval','privacy.hideHome':'Protect home coordinates','privacy.storeHistory':'Store raw history','privacy.retention':'Retention (h)','privacy.save':'Save privacy',
-    'places.title':'Places','places.name':'Name','places.type':'Type','places.lat':'Lat','places.lon':'Lon','places.radius':'Radius (m)','places.add':'Add / update','places.empty':'No places yet',
+    'places.title':'Places','places.name':'Name','places.type':'Type','places.lat':'Lat','places.lon':'Lon','places.radius':'Radius (m)','places.add':'Add / update','places.addHere':'Add current location','places.byCoords':'or by coordinates','places.empty':'No places yet',
     'events.title':'Events','events.type':'Type','events.place':'Place','events.when':'When','events.empty':'No events yet',
     'tokens.title':'Tokens','tokens.name':'Name','tokens.role':'Role','tokens.lastUsed':'Last used','tokens.create':'Create','tokens.never':'never','tokens.newSecret':'New secret (shown once)','tokens.empty':'No tokens yet',
     'webhooks.title':'Webhooks','webhooks.events':'Events','webhooks.active':'Active','webhooks.add':'Add','webhooks.secret':'signing secret (optional)','webhooks.deadletters':'Dead-letters','webhooks.error':'Error','webhooks.empty':'No webhooks yet','webhooks.dlEmpty':'None — all delivered',
@@ -293,7 +299,7 @@ var I18N = {
     'presence.title':'현재 위치 상태','presence.refresh':'새로고침','presence.precise':'정밀 위치','presence.none':'아직 기록된 위치가 없습니다','presence.hidden':'에이전트에 비공개',
     'presence.updatedAgo':'{x} 전 갱신','presence.fresh':'최신','presence.stale':'오래됨','presence.motion':'이동','presence.access':'접근',
     'privacy.title':'프라이버시','privacy.access':'기본 에이전트 접근','privacy.allowPrecise':'에이전트에 정밀 위치 허용','privacy.requireReason':'정밀 위치에 사유 필요','privacy.requireApproval':'정밀 위치에 승인 필요','privacy.hideHome':'집 좌표 보호','privacy.storeHistory':'원시 위치 기록 저장','privacy.retention':'보관 (시간)','privacy.save':'저장',
-    'places.title':'장소','places.name':'이름','places.type':'유형','places.lat':'위도','places.lon':'경도','places.radius':'반경 (m)','places.add':'추가 / 수정','places.empty':'등록된 장소가 없습니다',
+    'places.title':'장소','places.name':'이름','places.type':'유형','places.lat':'위도','places.lon':'경도','places.radius':'반경 (m)','places.add':'추가 / 수정','places.addHere':'현재 위치를 장소로 추가','places.byCoords':'또는 좌표로 추가','places.empty':'등록된 장소가 없습니다',
     'events.title':'이벤트','events.type':'유형','events.place':'장소','events.when':'시각','events.empty':'이벤트가 없습니다',
     'tokens.title':'토큰','tokens.name':'이름','tokens.role':'역할','tokens.lastUsed':'마지막 사용','tokens.create':'생성','tokens.never':'사용 안 함','tokens.newSecret':'새 시크릿 (한 번만 표시됩니다)','tokens.empty':'토큰이 없습니다',
     'webhooks.title':'웹훅','webhooks.events':'이벤트','webhooks.active':'활성','webhooks.add':'추가','webhooks.secret':'서명 시크릿 (선택)','webhooks.deadletters':'전송 실패 기록','webhooks.error':'오류','webhooks.empty':'등록된 웹훅이 없습니다','webhooks.dlEmpty':'없음 — 모두 전송됨',
@@ -481,6 +487,9 @@ $('#precise').onclick = async function(){ try { var p = await api('/v1/presence/
 $('#privacyForm').onsubmit = async function(ev){ ev.preventDefault(); var f=ev.target;
   var body = { defaultAgentAccess:f.defaultAgentAccess.value, allowPreciseLocation:f.allowPreciseLocation.checked, preciseRequiresReason:f.preciseRequiresReason.checked, preciseRequiresApproval:f.preciseRequiresApproval.checked, hideHomeExactCoordinates:f.hideHomeExactCoordinates.checked, storeRawHistory:f.storeRawHistory.checked, retentionHours:Number(f.retentionHours.value) };
   try { await api('/v1/privacy', { method:'PUT', body:body }); toast(t('toast.saved')); loadPresence(); } catch(e){ fail(e); }
+};
+$('#placeHereForm').onsubmit = async function(ev){ ev.preventDefault(); var f=ev.target;
+  try { await api('/v1/places', { method:'POST', body:{ name:f.name.value, type:f.type.value, useCurrentLocation:true } }); toast(t('toast.saved')); f.reset(); loadPlaces(); loadPresence(); } catch(e){ fail(e); }
 };
 $('#placeForm').onsubmit = async function(ev){ ev.preventDefault(); var f=ev.target;
   var body = { name:f.name.value, type:f.type.value, lat:Number(f.lat.value), lon:Number(f.lon.value), radiusM:Number(f.radiusM.value) };
