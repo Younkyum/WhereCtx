@@ -38,9 +38,25 @@ describe("dashboard", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
     const html = await res.text();
-    for (const id of ['id="presence"', 'id="privacyForm"', 'id="places"', 'id="tokens"', 'id="webhooks"']) {
+    for (const id of ['id="heroStatus"', 'id="privacyForm"', 'id="places"', 'id="tokens"', 'id="webhooks"']) {
       expect(html).toContain(id);
     }
+  });
+
+  it("ships English + Korean i18n with a language toggle", () => {
+    // Both language tables present.
+    expect(DASHBOARD_HTML).toMatch(/I18N\s*=\s*\{/);
+    expect(DASHBOARD_HTML).toContain("en:");
+    expect(DASHBOARD_HTML).toContain("ko:");
+    // A representative Korean string and English string.
+    expect(DASHBOARD_HTML).toContain("관리자 대시보드");
+    expect(DASHBOARD_HTML).toContain("admin dashboard");
+    // Language toggle + i18n-tagged elements.
+    expect(DASHBOARD_HTML).toContain('data-lang="ko"');
+    expect(DASHBOARD_HTML).toContain('data-lang="en"');
+    expect(DASHBOARD_HTML).toContain("data-i18n=");
+    // Language preference is persisted.
+    expect(DASHBOARD_HTML).toContain("wherectx_lang");
   });
 
   it("sends a Content-Security-Policy and security headers", async () => {
