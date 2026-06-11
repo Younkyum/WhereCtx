@@ -18,6 +18,7 @@ const PatchSchema = z
     preciseRequiresReason: z.boolean(),
     preciseRequiresApproval: z.boolean(),
     hideHomeExactCoordinates: z.boolean(),
+    protectHomePlace: z.boolean(),
     retentionHours: z.number().int().min(0).max(8760),
     storeRawHistory: z.boolean(),
   })

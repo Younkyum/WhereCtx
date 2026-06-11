@@ -95,8 +95,21 @@ export class WebhookDispatcher {
     this.running = true;
     try {
       const hooks = await this.opts.webhooksStore.listActive();
-      for (const hook of hooks) {
-        await this.drainHook(hook);
+      // Drop attempt counters for hooks that no longer exist / were deactivated
+      // so the map cannot accumulate orphaned entries (review P7).
+      const activeIds = new Set(hooks.map((h) => h.id));
+      for (const key of this.attempts.keys()) {
+        const hookId = key.slice(0, key.indexOf(":"));
+        if (!activeIds.has(hookId)) this.attempts.delete(key);
+      }
+      // Hooks have independent cursors; drain them concurrently so one slow or
+      // down endpoint cannot delay the others (review P9).
+      const results = await Promise.allSettled(hooks.map((h) => this.drainHook(h)));
+      for (const r of results) {
+        if (r.status === "rejected") {
+          // eslint-disable-next-line no-console
+          console.error("webhook drain error:", r.reason);
+        }
       }
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -160,7 +173,19 @@ export class WebhookDispatcher {
       "user-agent": "wherectx/0.1",
     };
     if (hook.secret) {
-      const sig = createHmac("sha256", hook.secret).update(body).digest("hex");
+      // BREAKING CHANGE (v0.2): The signed payload is `${timestamp}.${body}`, NOT
+      // just `${body}` as it was in v0.1. Consumers MUST update their verification
+      // logic to concatenate the `x-wherectx-timestamp` header value, a literal
+      // dot, and the raw request body before computing the HMAC, otherwise all
+      // signature checks will fail.
+      //
+      // Sign `${timestamp}.${body}` and expose the timestamp so consumers can
+      // reject replayed deliveries (review M3; same shape as Stripe/GitHub).
+      // Verify by recomputing HMAC-SHA256(secret, `${x-wherectx-timestamp}.${rawBody}`)
+      // and rejecting when |now - timestamp| exceeds a small tolerance (e.g. 5 min).
+      const ts = Math.floor(this.opts.clock().getTime() / 1000).toString();
+      const sig = createHmac("sha256", hook.secret).update(`${ts}.${body}`).digest("hex");
+      headers["x-wherectx-timestamp"] = ts;
       headers["x-wherectx-signature"] = `sha256=${sig}`;
     }
     const controller = new AbortController();

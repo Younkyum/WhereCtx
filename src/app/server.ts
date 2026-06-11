@@ -5,8 +5,10 @@
 
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
+import { AuthFailureLimiter, authFailureGuard } from "../api/rateLimit.js";
 import { dashboardRouter } from "../dashboard/router.js";
 import { eventsRouter } from "../api/events.js";
 import { ingestRouter } from "../api/ingest.js";
@@ -16,8 +18,14 @@ import { privacyRouter } from "../api/privacy.js";
 import { tokensRouter } from "../api/tokens.js";
 import { webhooksRouter } from "../api/webhooks.js";
 
-export function buildApp(ctx: AppContext): Hono {
+export interface BuildAppOptions {
+  /** Shared with the MCP handler so both surfaces count auth failures together. */
+  authLimiter?: AuthFailureLimiter;
+}
+
+export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   const app = new Hono();
+  const authLimiter = options.authLimiter ?? new AuthFailureLimiter();
 
   // Security headers (defense-in-depth on the admin dashboard especially): CSP,
   // nosniff, frame-deny, no referrer leakage (review finding D3).
@@ -26,7 +34,7 @@ export function buildApp(ctx: AppContext): Hono {
     secureHeaders({
       contentSecurityPolicy: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'"], // dashboard JS is inline
+        scriptSrc: ["'self'"], // dashboard JS is served at /dashboard/app.js (M5)
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'"],
         connectSrc: ["'self'"],
@@ -49,6 +57,21 @@ export function buildApp(ctx: AppContext): Hono {
       onError: (c) => c.json({ error: "payload too large" }, 413),
     }),
   );
+
+  // Restrictive CORS (review M2): browsers may only read API responses from the
+  // configured origin. Non-browser clients are unaffected. The dashboard is
+  // same-origin, so this changes nothing for normal operation.
+  app.use(
+    "/v1/*",
+    cors({
+      origin: ctx.config.baseUrl,
+      allowMethods: ["GET", "POST", "PUT", "DELETE"],
+      allowHeaders: ["Authorization", "Content-Type"],
+    }),
+  );
+
+  // Throttle repeated auth failures per client (review M1).
+  app.use("/v1/*", authFailureGuard(authLimiter));
 
   app.get("/", (c) =>
     c.json({ name: "wherectx", version: "0.1.0", status: "ok" }),

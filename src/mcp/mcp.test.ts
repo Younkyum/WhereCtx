@@ -20,11 +20,14 @@ const config: WhereCtxConfig = {
     preciseRequiresReason: true,
     allowPreciseToAgent: false,
     hideHomeExactCoordinates: true,
+    protectHomePlace: true,
     staleAfterSec: 900,
     retentionHours: 24,
     storeRawHistory: false,
   },
   geofence: { nearRadiusMultiplier: 3 },
+  webhooks: { allowPrivateTargets: false },
+  events: { retentionHours: 720 },
 };
 
 const agentToken: VerifiedToken = {
@@ -32,6 +35,14 @@ const agentToken: VerifiedToken = {
   name: "agent",
   role: "agent",
   scopes: ROLE_SCOPES.agent,
+  createdAt: "2026-06-05T00:00:00.000Z",
+};
+
+const adminToken: VerifiedToken = {
+  id: "t2",
+  name: "admin",
+  role: "admin",
+  scopes: ROLE_SCOPES.admin,
   createdAt: "2026-06-05T00:00:00.000Z",
 };
 
@@ -196,5 +207,82 @@ describe("MCP server", () => {
       message: "x",
     });
     expect(isError).toBe(true);
+  });
+
+  describe("home place protection", () => {
+    it("blocks an agent from creating a home-typed place", async () => {
+      await connect();
+      const { isError, data } = await callJson("create_place", {
+        name: "home2",
+        type: "home",
+        lat: 38.0,
+        lon: 128.0,
+      });
+      expect(isError).toBe(true);
+      expect(data.error).toContain("manage_places");
+      expect(await ctx.placesStore.get("default", "home2")).toBeNull();
+    });
+
+    it("blocks an agent from overwriting the existing home place (even as type custom)", async () => {
+      await connect();
+      const { isError } = await callJson("create_place", {
+        name: "home",
+        type: "custom",
+        lat: 0,
+        lon: 0,
+      });
+      expect(isError).toBe(true);
+      const home = await ctx.placesStore.get("default", "home");
+      expect(home?.lat).toBe(37.0); // unchanged
+    });
+
+    it("blocks remember_current_place for the home place", async () => {
+      await ctx.service.processReading(reading(37.61, 127.22));
+      await connect();
+      const { isError } = await callJson("remember_current_place", {
+        name: "home",
+      });
+      expect(isError).toBe(true);
+      const home = await ctx.placesStore.get("default", "home");
+      expect(home?.lat).toBe(37.0); // unchanged
+    });
+
+    it("still allows agents to create non-home places while protection is on", async () => {
+      await connect();
+      const { isError } = await callJson("create_place", {
+        name: "cafe",
+        type: "custom",
+        lat: 37.5,
+        lon: 127.0,
+      });
+      expect(isError).toBe(false);
+    });
+
+    it("allows admin tokens to write home places regardless of the toggle", async () => {
+      await connect(adminToken);
+      const { isError } = await callJson("create_place", {
+        name: "home",
+        type: "home",
+        lat: 38.0,
+        lon: 128.0,
+      });
+      expect(isError).toBe(false);
+      const home = await ctx.placesStore.get("default", "home");
+      expect(home?.lat).toBe(38.0);
+    });
+
+    it("allows agent home writes when the dashboard toggle is off", async () => {
+      await ctx.service.changePrivacySettings({ protectHomePlace: false });
+      await connect();
+      const { isError } = await callJson("create_place", {
+        name: "home",
+        type: "home",
+        lat: 39.0,
+        lon: 129.0,
+      });
+      expect(isError).toBe(false);
+      const home = await ctx.placesStore.get("default", "home");
+      expect(home?.lat).toBe(39.0);
+    });
   });
 });

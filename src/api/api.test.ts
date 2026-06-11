@@ -20,11 +20,14 @@ const config: WhereCtxConfig = {
     preciseRequiresReason: true,
     allowPreciseToAgent: false,
     hideHomeExactCoordinates: true,
+    protectHomePlace: true,
     staleAfterSec: 900,
     retentionHours: 24,
     storeRawHistory: false,
   },
   geofence: { nearRadiusMultiplier: 3 },
+  webhooks: { allowPrivateTargets: false },
+  events: { retentionHours: 720 },
 };
 
 let app: Hono;

@@ -39,8 +39,9 @@ const OwnTracksSchema = z
     batt: z.number().optional(),
     bs: z.number().optional(),
     tst: z.number().optional(),
-  })
-  .passthrough();
+  });
+// Unknown keys are stripped (zod default; review L1). `_type` stays in the
+// schema so non-location OwnTracks messages are still recognized and ignored.
 
 const KMH_TO_MPS = 1 / 3.6;
 

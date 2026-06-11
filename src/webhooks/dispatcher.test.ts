@@ -109,21 +109,102 @@ describe("WebhookDispatcher", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it("signs the payload with HMAC-SHA256 when a secret is set", async () => {
+  it("signs `timestamp.body` with HMAC-SHA256 and exposes the timestamp", async () => {
     const secret = "shhh-very-secret-value";
     await webhooks.create({ url: "https://example.test/hook", events: ["*"], secret });
     nowMs += 1000;
     await events.append({ type: "presence.updated", status: "home" });
 
-    let captured: { body: string; sig?: string } | null = null;
+    let captured: { body: string; sig?: string; ts?: string } | null = null;
     const fetchFn = vi.fn(async (_url: string, init: any) => {
-      captured = { body: init.body, sig: init.headers["x-wherectx-signature"] };
+      captured = {
+        body: init.body,
+        sig: init.headers["x-wherectx-signature"],
+        ts: init.headers["x-wherectx-timestamp"],
+      };
       return new Response(null, { status: 200 });
     });
     await makeDispatcher({ fetchFn: fetchFn as any }).tick();
 
-    const expected = "sha256=" + createHmac("sha256", secret).update(captured!.body).digest("hex");
+    // Timestamp comes from the injected clock; the signed payload is
+    // `${timestamp}.${body}` so deliveries cannot be replayed indefinitely (M3).
+    expect(captured!.ts).toBe(String(Math.floor(nowMs / 1000)));
+    const expected =
+      "sha256=" +
+      createHmac("sha256", secret)
+        .update(`${captured!.ts}.${captured!.body}`)
+        .digest("hex");
     expect(captured!.sig).toBe(expected);
+  });
+
+  it("encrypts secrets at rest when a SecretBox is configured and still signs correctly", async () => {
+    const { SecretBox } = await import("./secretBox.js");
+    const box = new SecretBox("test-encryption-key");
+    const store = new WebhooksStore(handle.db, clock, box);
+    const secret = "shhh-very-secret-value";
+    await store.create({ url: "https://example.test/hook", events: ["*"], secret });
+
+    // Raw row must not contain the plaintext secret.
+    const raw = await handle.client.execute("SELECT secret FROM webhooks");
+    const storedSecret = String(raw.rows[0]!["secret"]);
+    expect(storedSecret).not.toContain(secret);
+    expect(storedSecret.startsWith("enc:v1:")).toBe(true);
+
+    nowMs += 1000;
+    await events.append({ type: "presence.updated", status: "home" });
+
+    let captured: { body: string; sig?: string; ts?: string } | null = null;
+    const fetchFn = vi.fn(async (_url: string, init: any) => {
+      captured = {
+        body: init.body,
+        sig: init.headers["x-wherectx-signature"],
+        ts: init.headers["x-wherectx-timestamp"],
+      };
+      return new Response(null, { status: 200 });
+    });
+    await makeDispatcher({ webhooksStore: store, fetchFn: fetchFn as any }).tick();
+
+    // Signature must use the DECRYPTED secret.
+    const expected =
+      "sha256=" +
+      createHmac("sha256", secret)
+        .update(`${captured!.ts}.${captured!.body}`)
+        .digest("hex");
+    expect(captured!.sig).toBe(expected);
+  });
+
+  it("skips hooks whose secrets cannot be decrypted (fail closed)", async () => {
+    const { SecretBox } = await import("./secretBox.js");
+    const writeBox = new SecretBox("key-A");
+    const writeStore = new WebhooksStore(handle.db, clock, writeBox);
+    await writeStore.create({ url: "https://example.test/hook", events: ["*"], secret: "s3cret-value" });
+
+    // Same rows read with a DIFFERENT key -> hook must be excluded, not
+    // delivered with a wrong signature.
+    const readStore = new WebhooksStore(handle.db, clock, new SecretBox("key-B"));
+    expect(await readStore.listActive()).toHaveLength(0);
+
+    nowMs += 1000;
+    await events.append({ type: "presence.updated", status: "home" });
+    const fetchFn = vi.fn(async () => new Response(null, { status: 200 }));
+    await makeDispatcher({ webhooksStore: readStore, fetchFn: fetchFn as any }).tick();
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("re-encrypts legacy plaintext secrets on demand", async () => {
+    const secret = "legacy-plaintext-secret";
+    await webhooks.create({ url: "https://example.test/hook", events: ["*"], secret });
+
+    const { SecretBox } = await import("./secretBox.js");
+    const store = new WebhooksStore(handle.db, clock, new SecretBox("test-key"));
+    expect(await store.encryptLegacySecrets()).toBe(1);
+    expect(await store.encryptLegacySecrets()).toBe(0); // idempotent
+
+    const raw = await handle.client.execute("SELECT secret FROM webhooks");
+    expect(String(raw.rows[0]!["secret"]).startsWith("enc:v1:")).toBe(true);
+    // Decrypted view still returns the original secret.
+    const [hook] = await store.list();
+    expect(hook!.secret).toBe(secret);
   });
 
   it("dead-letters an event after maxAttempts and advances past it", async () => {

@@ -5,7 +5,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { reminders } from "../db/schema.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
@@ -85,9 +85,15 @@ export class RemindersStore {
   }
 
   async markTriggered(id: string): Promise<void> {
+    await this.markTriggeredBatch([id]);
+  }
+
+  /** Mark several reminders triggered with a single UPDATE (review P2). */
+  async markTriggeredBatch(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
     await this.db
       .update(reminders)
       .set({ active: false, triggeredAt: nowIso(this.clock) })
-      .where(eq(reminders.id, id));
+      .where(inArray(reminders.id, ids));
   }
 }

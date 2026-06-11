@@ -209,6 +209,7 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
               <label><input type="checkbox" name="preciseRequiresReason" /> <span data-i18n="privacy.requireReason">Precise requires reason</span></label>
               <label><input type="checkbox" name="preciseRequiresApproval" /> <span data-i18n="privacy.requireApproval">Precise requires approval</span></label>
               <label><input type="checkbox" name="hideHomeExactCoordinates" /> <span data-i18n="privacy.hideHome">Protect home coordinates</span></label>
+              <label><input type="checkbox" name="protectHomePlace" /> <span data-i18n="privacy.protectHomePlace">Home place requires admin</span></label>
               <label><input type="checkbox" name="storeRawHistory" /> <span data-i18n="privacy.storeHistory">Store raw history</span></label>
               <label><span data-i18n="privacy.retention">Retention (h)</span> <input type="number" name="retentionHours" min="0" max="8760" style="width:80px" /></label>
             </div>
@@ -272,8 +273,15 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
   </main>
 </div>
 <div id="toast"></div>
-<script>
-var I18N = {
+<script src="/dashboard/app.js" defer></script>
+</body>
+</html>`;
+
+/**
+ * Dashboard client script, served separately at /dashboard/app.js so the CSP
+ * can stay 'self'-only for scripts (no 'unsafe-inline'; review finding M5).
+ */
+export const DASHBOARD_JS = /* js */ `var I18N = {
   en: {
     'app.subtitle':'presence console',
     'nav.overview':'Overview',
@@ -281,7 +289,7 @@ var I18N = {
     'connect.placeholder':'admin token','connect.button':'Connect','connect.disconnect':'Disconnect','connect.connected':'connected',
     'presence.title':'Current presence','presence.refresh':'Refresh','presence.precise':'Precise','presence.none':'No presence recorded yet','presence.hidden':'Hidden from agents',
     'presence.updatedAgo':'updated {x} ago','presence.fresh':'fresh','presence.stale':'stale','presence.motion':'motion','presence.access':'access',
-    'privacy.title':'Privacy','privacy.access':'Default agent access','privacy.allowPrecise':'Allow precise to agents','privacy.requireReason':'Precise requires reason','privacy.requireApproval':'Precise requires approval','privacy.hideHome':'Protect home coordinates','privacy.storeHistory':'Store raw history','privacy.retention':'Retention (h)','privacy.save':'Save privacy',
+    'privacy.title':'Privacy','privacy.access':'Default agent access','privacy.allowPrecise':'Allow precise to agents','privacy.requireReason':'Precise requires reason','privacy.requireApproval':'Precise requires approval','privacy.hideHome':'Protect home coordinates','privacy.protectHomePlace':'Home place requires admin','privacy.storeHistory':'Store raw history','privacy.retention':'Retention (h)','privacy.save':'Save privacy',
     'places.title':'Places','places.name':'Name','places.type':'Type','places.lat':'Lat','places.lon':'Lon','places.radius':'Radius (m)','places.add':'Add / update','places.addHere':'Add current location','places.byCoords':'or by coordinates','places.empty':'No places yet',
     'events.title':'Events','events.type':'Type','events.place':'Place','events.when':'When','events.empty':'No events yet',
     'tokens.title':'Tokens','tokens.name':'Name','tokens.role':'Role','tokens.lastUsed':'Last used','tokens.create':'Create','tokens.never':'never','tokens.newSecret':'New secret (shown once)','tokens.empty':'No tokens yet',
@@ -298,7 +306,7 @@ var I18N = {
     'connect.placeholder':'관리자 토큰','connect.button':'연결','connect.disconnect':'연결 해제','connect.connected':'연결됨',
     'presence.title':'현재 위치 상태','presence.refresh':'새로고침','presence.precise':'정밀 위치','presence.none':'아직 기록된 위치가 없습니다','presence.hidden':'에이전트에 비공개',
     'presence.updatedAgo':'{x} 전 갱신','presence.fresh':'최신','presence.stale':'오래됨','presence.motion':'이동','presence.access':'접근',
-    'privacy.title':'프라이버시','privacy.access':'기본 에이전트 접근','privacy.allowPrecise':'에이전트에 정밀 위치 허용','privacy.requireReason':'정밀 위치에 사유 필요','privacy.requireApproval':'정밀 위치에 승인 필요','privacy.hideHome':'집 좌표 보호','privacy.storeHistory':'원시 위치 기록 저장','privacy.retention':'보관 (시간)','privacy.save':'저장',
+    'privacy.title':'프라이버시','privacy.access':'기본 에이전트 접근','privacy.allowPrecise':'에이전트에 정밀 위치 허용','privacy.requireReason':'정밀 위치에 사유 필요','privacy.requireApproval':'정밀 위치에 승인 필요','privacy.hideHome':'집 좌표 보호','privacy.protectHomePlace':'집 장소는 관리자만 변경','privacy.storeHistory':'원시 위치 기록 저장','privacy.retention':'보관 (시간)','privacy.save':'저장',
     'places.title':'장소','places.name':'이름','places.type':'유형','places.lat':'위도','places.lon':'경도','places.radius':'반경 (m)','places.add':'추가 / 수정','places.addHere':'현재 위치를 장소로 추가','places.byCoords':'또는 좌표로 추가','places.empty':'등록된 장소가 없습니다',
     'events.title':'이벤트','events.type':'유형','events.place':'장소','events.when':'시각','events.empty':'이벤트가 없습니다',
     'tokens.title':'토큰','tokens.name':'이름','tokens.role':'역할','tokens.lastUsed':'마지막 사용','tokens.create':'생성','tokens.never':'사용 안 함','tokens.newSecret':'새 시크릿 (한 번만 표시됩니다)','tokens.empty':'토큰이 없습니다',
@@ -388,7 +396,7 @@ async function loadPrivacy(){
   try {
     var r = await api('/v1/privacy'); var s = r.settings; var f = $('#privacyForm');
     f.defaultAgentAccess.value = s.defaultAgentAccess;
-    ['allowPreciseLocation','preciseRequiresReason','preciseRequiresApproval','hideHomeExactCoordinates','storeRawHistory'].forEach(function(k){ f[k].checked = !!s[k]; });
+    ['allowPreciseLocation','preciseRequiresReason','preciseRequiresApproval','hideHomeExactCoordinates','protectHomePlace','storeRawHistory'].forEach(function(k){ f[k].checked = !!s[k]; });
     f.retentionHours.value = s.retentionHours;
   } catch(e){ fail(e); }
 }
@@ -485,7 +493,7 @@ $('#refresh').onclick = loadPresence;
 $('#precise').onclick = async function(){ try { var p = await api('/v1/presence/precise?reason=dashboard'); var w = window.open(p.mapUrl,'_blank'); if(!w) toast(p.mapUrl); } catch(e){ fail(e); } };
 
 $('#privacyForm').onsubmit = async function(ev){ ev.preventDefault(); var f=ev.target;
-  var body = { defaultAgentAccess:f.defaultAgentAccess.value, allowPreciseLocation:f.allowPreciseLocation.checked, preciseRequiresReason:f.preciseRequiresReason.checked, preciseRequiresApproval:f.preciseRequiresApproval.checked, hideHomeExactCoordinates:f.hideHomeExactCoordinates.checked, storeRawHistory:f.storeRawHistory.checked, retentionHours:Number(f.retentionHours.value) };
+  var body = { defaultAgentAccess:f.defaultAgentAccess.value, allowPreciseLocation:f.allowPreciseLocation.checked, preciseRequiresReason:f.preciseRequiresReason.checked, preciseRequiresApproval:f.preciseRequiresApproval.checked, hideHomeExactCoordinates:f.hideHomeExactCoordinates.checked, protectHomePlace:f.protectHomePlace.checked, storeRawHistory:f.storeRawHistory.checked, retentionHours:Number(f.retentionHours.value) };
   try { await api('/v1/privacy', { method:'PUT', body:body }); toast(t('toast.saved')); loadPresence(); } catch(e){ fail(e); }
 };
 $('#placeHereForm').onsubmit = async function(ev){ ev.preventDefault(); var f=ev.target;
@@ -511,6 +519,4 @@ $('#gateToken').value = TOKEN;
 setConnected(!!TOKEN);
 if(TOKEN){ loadAll(); }
 setInterval(function(){ if(TOKEN) loadPresence(); }, 20000);
-</script>
-</body>
-</html>`;
+`;

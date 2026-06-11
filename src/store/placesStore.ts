@@ -4,7 +4,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { places } from "../db/schema.js";
 import type { Place, PlaceType } from "../types.js";
@@ -58,6 +58,14 @@ export class PlacesStore {
       .from(places)
       .where(eq(places.userId, userId))) as PlaceRow[];
     return rows.map(rowToPlace);
+  }
+
+  async count(userId: string): Promise<number> {
+    const rows = (await this.db
+      .select({ c: sql<number>`count(*)` })
+      .from(places)
+      .where(eq(places.userId, userId))) as Array<{ c: number }>;
+    return rows[0]?.c ?? 0;
   }
 
   async get(userId: string, name: string): Promise<Place | null> {

@@ -23,6 +23,7 @@ import {
   buildPreciseView,
 } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
+import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
 import { secondsSince, isStale } from "../util/time.js";
 
 /** Cap on active location reminders, to bound writes from read-scoped tokens. */
@@ -30,9 +31,6 @@ const MAX_ACTIVE_REMINDERS = 100;
 
 /** Cap on registered places, to bound writes from read-scoped tokens. */
 const MAX_PLACES = 100;
-
-/** Default geofence radius (meters) when an agent omits it. */
-const DEFAULT_RADIUS_M = 150;
 
 const ok = (data: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(data) }],
@@ -137,7 +135,7 @@ export function buildMcpServer(ctx: AppContext, token: VerifiedToken): McpServer
     async () => {
       const places = await ctx.placesStore.list(userId);
       if (isAdmin) return ok({ places });
-      return ok({ places: places.map((p) => ({ name: p.name, type: p.type })) });
+      return ok({ places: places.map(sanitizePlace) });
     },
   );
 
@@ -204,11 +202,39 @@ export function buildMcpServer(ctx: AppContext, token: VerifiedToken): McpServer
 
   const placeType = z.enum(["home", "work", "custom"]);
 
+  const canManagePlaces = token.scopes.includes("manage_places");
+
+  /**
+   * Home-place protection gate for agent place-writes (dashboard toggle,
+   * `protectHomePlace`, default ON). When protection is on, a token without
+   * `manage_places` may neither create a `home`-typed place nor touch an
+   * existing place whose stored type is `home` — otherwise an agent could move
+   * the home geofence and mislead the home-coordinate privacy protections.
+   * Fails closed if settings are missing. Returns an error message or null.
+   */
+  const homeWriteDenied = async (
+    name: string,
+    requestedType: PlaceType,
+  ): Promise<string | null> => {
+    if (canManagePlaces) return null;
+    const settings = await ctx.settings.get(userId);
+    const protectionOn = settings ? settings.protectHomePlace : true;
+    if (!protectionOn) return null;
+    if (requestedType === "home") {
+      return "creating or changing a 'home' place requires the manage_places scope (home place protection is enabled)";
+    }
+    const existing = await ctx.placesStore.get(userId, name);
+    if (existing?.type === "home") {
+      return `place "${name}" is the protected home place; modifying it requires the manage_places scope`;
+    }
+    return null;
+  };
+
   server.registerTool(
     "create_place",
     {
       description:
-        "Register a place / geofence at explicit coordinates. type is home, work, or custom; radiusM defaults to 150m.",
+        "Register a place / geofence at explicit coordinates. type is home, work, or custom; radiusM defaults to 150m. Creating or changing a 'home' place may require an admin token when home place protection is enabled.",
       inputSchema: {
         name: z.string().min(1).max(64).describe("Place name, e.g. 'gym'"),
         type: placeType.describe("home | work | custom"),
@@ -218,7 +244,9 @@ export function buildMcpServer(ctx: AppContext, token: VerifiedToken): McpServer
       },
     },
     async ({ name, type, lat, lon, radiusM }) => {
-      if ((await ctx.placesStore.list(userId)).length >= MAX_PLACES) {
+      const denied = await homeWriteDenied(name, type);
+      if (denied) return err(denied);
+      if ((await ctx.placesStore.count(userId)) >= MAX_PLACES) {
         return err(`place limit reached (${MAX_PLACES})`);
       }
       const place = await ctx.placesStore.upsert(userId, {
@@ -226,8 +254,13 @@ export function buildMcpServer(ctx: AppContext, token: VerifiedToken): McpServer
         type,
         lat,
         lon,
-        radiusM: radiusM ?? DEFAULT_RADIUS_M,
+        radiusM: radiusM ?? DEFAULT_PLACE_RADIUS_M,
       });
+      // Same as the REST surface: a new/moved place can change the current
+      // geofence verdict, so re-evaluate against the last known location and
+      // dispatch any resulting events (commit bd529b2 parity).
+      const result = await ctx.service.reevaluateCurrent();
+      if (result) await ctx.onEvents?.(result.events);
       return ok({ name: place.name, type: place.type, radiusM: place.radiusM });
     },
   );
@@ -236,7 +269,7 @@ export function buildMcpServer(ctx: AppContext, token: VerifiedToken): McpServer
     "remember_current_place",
     {
       description:
-        "Register the user's CURRENT location as a place / geofence under the given name. Uses the last known location server-side; coordinates are not returned. Refused if there is no recent location.",
+        "Register the user's CURRENT location as a place / geofence under the given name. Uses the last known location server-side; coordinates are not returned. Refused if there is no recent location. Remembering a 'home' place may require an admin token when home place protection is enabled.",
       inputSchema: {
         name: z.string().min(1).max(64).describe("Name for this place, e.g. 'gym'"),
         type: placeType.optional().describe("home | work | custom (default custom)"),
@@ -244,7 +277,9 @@ export function buildMcpServer(ctx: AppContext, token: VerifiedToken): McpServer
       },
     },
     async ({ name, type, radiusM }) => {
-      if ((await ctx.placesStore.list(userId)).length >= MAX_PLACES) {
+      const denied = await homeWriteDenied(name, type ?? "custom");
+      if (denied) return err(denied);
+      if ((await ctx.placesStore.count(userId)) >= MAX_PLACES) {
         return err(`place limit reached (${MAX_PLACES})`);
       }
       const current = await ctx.presenceStore.getCurrent(userId);
@@ -254,8 +289,13 @@ export function buildMcpServer(ctx: AppContext, token: VerifiedToken): McpServer
         type: type ?? "custom",
         lat: current.precise.lat,
         lon: current.precise.lon,
-        radiusM: radiusM ?? DEFAULT_RADIUS_M,
+        radiusM: radiusM ?? DEFAULT_PLACE_RADIUS_M,
       });
+      // Same as the REST surface: a new/moved place can change the current
+      // geofence verdict, so re-evaluate against the last known location and
+      // dispatch any resulting events (commit bd529b2 parity).
+      const result = await ctx.service.reevaluateCurrent();
+      if (result) await ctx.onEvents?.(result.events);
       return ok({ name: place.name, type: place.type, radiusM: place.radiusM });
     },
   );

@@ -17,6 +17,7 @@ import {
   WebhooksStore,
 } from "../store/index.js";
 import { PresenceService } from "../presence/service.js";
+import { SecretBox } from "../webhooks/secretBox.js";
 import { systemClock, type Clock } from "../util/time.js";
 import type { PresenceEvent } from "../types.js";
 
@@ -66,7 +67,10 @@ export async function createAppContext(
   const eventsStore = new EventsStore(db, clock);
   const historyStore = new HistoryStore(db, clock);
   const remindersStore = new RemindersStore(db, clock);
-  const webhooksStore = new WebhooksStore(db, clock);
+  const secretBox = config.webhooks.encryptionKey
+    ? new SecretBox(config.webhooks.encryptionKey)
+    : undefined;
+  const webhooksStore = new WebhooksStore(db, clock, secretBox);
 
   const service = new PresenceService({
     config,

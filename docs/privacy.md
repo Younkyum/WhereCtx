@@ -56,6 +56,16 @@ Coordinate rounding is not home-address anonymization, so WhereCtx refuses
 instead. Disable `HIDE_HOME_EXACT_COORDINATES` if you want home coordinates
 exposed to authorized agents.
 
+### Home *place* protection
+
+The home geofence itself is also protected (`protectHomePlace`, default on,
+seeded from `PROTECT_HOME_PLACE` and toggleable live from the dashboard's
+Privacy panel). While it is on, the MCP place-write tools (`create_place`,
+`remember_current_place`) require the `manage_places` scope to create a
+`home`-typed place or to touch an existing `home` place — otherwise an agent
+could quietly move "home" and defeat the coordinate protection above. REST
+place writes are always admin-only regardless of this toggle.
+
 ## Token roles & the "device can't read" rule
 
 - `device` tokens carry only `write_location` — they are rejected at every read
@@ -88,8 +98,10 @@ WhereCtx blocks targets that resolve to private/reserved addresses (loopback,
 `169.254.0.0/16` cloud metadata, RFC1918, ULA, link-local) at both create and
 delivery time, and uses `redirect: "manual"`. Set
 `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` only to deliberately reach a LAN service
-(e.g. a local Home Assistant). Webhook bodies are HMAC-SHA256 signed
-(`X-WhereCtx-Signature: sha256=…`) when the subscription has a secret.
+(e.g. a local Home Assistant). Webhook bodies are HMAC-SHA256 signed over
+`"<timestamp>.<body>"` (`X-WhereCtx-Signature`, `X-WhereCtx-Timestamp` — see
+docs/api.md for verification) when the subscription has a secret, and signing
+secrets are encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set.
 
 ## Deployment posture
 

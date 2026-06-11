@@ -17,6 +17,7 @@ import {
 } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
 import { bearerAuth, requireScope } from "./middleware.js";
+import { parseLimit } from "./validation.js";
 import type { AppEnv } from "./types.js";
 
 export function presenceRouter(ctx: AppContext): Hono<AppEnv> {
@@ -71,11 +72,8 @@ export function presenceRouter(ctx: AppContext): Hono<AppEnv> {
 
   // Raw history (admin only; empty unless STORE_RAW_HISTORY is enabled).
   app.get("/history", requireScope("manage_privacy"), async (c) => {
-    const limit = Number.parseInt(c.req.query("limit") ?? "100", 10);
-    const points = await ctx.historyStore.listRecent(
-      userId,
-      Number.isNaN(limit) ? 100 : limit,
-    );
+    const limit = parseLimit(c.req.query("limit"), 100, 1000);
+    const points = await ctx.historyStore.listRecent(userId, limit);
     return c.json({ points });
   });
 

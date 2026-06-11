@@ -84,8 +84,8 @@ GET /v1/privacy              # manage_privacy
 PUT /v1/privacy              # manage_privacy — partial update; emits privacy_changed
 ```
 Body keys: `defaultAgentAccess`, `allowPreciseLocation`, `preciseRequiresReason`,
-`preciseRequiresApproval`, `hideHomeExactCoordinates`, `retentionHours`,
-`storeRawHistory` (all optional).
+`preciseRequiresApproval`, `hideHomeExactCoordinates`, `protectHomePlace`,
+`retentionHours`, `storeRawHistory` (all optional).
 
 ## Tokens (admin)
 
@@ -103,9 +103,36 @@ POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "se
 GET    /v1/webhooks/dead-letters    # undeliverable events
 DELETE /v1/webhooks/:id
 ```
-Delivery is HMAC-signed (`X-WhereCtx-Signature`, `X-WhereCtx-Event`). URLs that
-resolve to private/reserved IPs are rejected (SSRF guard) unless
-`WEBHOOK_ALLOW_PRIVATE_TARGETS=true`.
+URLs that resolve to private/reserved IPs are rejected (SSRF guard) unless
+`WEBHOOK_ALLOW_PRIVATE_TARGETS=true`. Secrets are encrypted at rest when
+`WEBHOOK_ENCRYPTION_KEY` is set.
+
+### Delivery signature
+
+When the subscription has a secret, each delivery carries:
+
+```
+X-WhereCtx-Event:     presence.entered_place
+X-WhereCtx-Timestamp: 1780000000                  # unix seconds
+X-WhereCtx-Signature: sha256=<hex>
+```
+
+The signature is `HMAC-SHA256(secret, "<timestamp>.<raw body>")`. Verify by
+recomputing it over the literal timestamp header value, a dot, and the raw
+request body — and reject deliveries whose timestamp is older than a few
+minutes (replay protection):
+
+```js
+const expected = "sha256=" + crypto
+  .createHmac("sha256", secret)
+  .update(`${req.headers["x-wherectx-timestamp"]}.${rawBody}`)
+  .digest("hex");
+const fresh = Math.abs(Date.now() / 1000 - Number(req.headers["x-wherectx-timestamp"])) < 300;
+ok = fresh && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.headers["x-wherectx-signature"]));
+```
+
+> **Breaking change (v0.2):** v0.1 signed only the body. Consumers verifying
+> the old scheme must switch to `"<timestamp>.<body>"`.
 
 ### Webhook payload
 

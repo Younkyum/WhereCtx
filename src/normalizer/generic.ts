@@ -62,8 +62,9 @@ const GenericSchema = z
     charging: z.boolean().optional(),
     timestamp: z.union([z.string(), z.number()]).optional(),
     time: z.union([z.string(), z.number()]).optional(),
-  })
-  .passthrough();
+  });
+// Unknown keys are stripped (zod default) — they were never read, and not
+// carrying them avoids retaining attacker-supplied fields in memory (review L1).
 
 /** Reject device timestamps more than this far in the future (clock skew guard). */
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;

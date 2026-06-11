@@ -88,6 +88,8 @@ Your agent can now call:
 - `get_precise_location(reason)` — only when policy allows
 - `get_location_age()`, `list_places()`, `list_recent_presence_events()`
 - `create_location_reminder(place, message)`
+- `create_place(...)`, `remember_current_place(name)` — saving the `home` place
+  requires an admin token while home place protection is on (dashboard toggle)
 
 See [examples/](examples/) for Hermes and Claude Desktop configs and a
 recommended agent system prompt.
@@ -107,9 +109,15 @@ recommended agent system prompt.
 - **`hidden` mode** withholds presence entirely from agents.
 - **Home protection**: precise location is *denied* (not blurred) while you're at
   or near a `home` place, unless you disable `HIDE_HOME_EXACT_COORDINATES`.
+- **Home place protection**: agents may remember places via MCP, but creating or
+  moving the `home` geofence requires an admin token (`PROTECT_HOME_PLACE`,
+  toggleable live from the dashboard).
 - **Stale detection**: device timestamps far in the future are distrusted so
   presence can't be spoofed "fresh".
 - **Webhook SSRF guard**: delivery to private/reserved IPs is blocked by default.
+- **Signed webhooks**: deliveries are HMAC-signed over `timestamp.body` (replay
+  protection); secrets are encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set.
+- **Auth-failure rate limiting** on both the REST API and the MCP endpoint.
 
 Full details in [docs/privacy.md](docs/privacy.md).
 

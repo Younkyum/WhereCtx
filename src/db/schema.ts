@@ -132,6 +132,11 @@ export const locationHistory = sqliteTable(
   },
   (t) => ({
     recordedAtIdx: index("location_history_recorded_at_idx").on(t.recordedAt),
+    // listRecent/prune both filter by user_id then range on recorded_at.
+    userRecordedIdx: index("location_history_user_recorded_idx").on(
+      t.userId,
+      t.recordedAt,
+    ),
   }),
 );
 
@@ -152,6 +157,9 @@ export const privacySettings = sqliteTable("privacy_settings", {
   hideHomeExactCoordinates: integer("hide_home_exact_coordinates", {
     mode: "boolean",
   })
+    .notNull()
+    .default(true),
+  protectHomePlace: integer("protect_home_place", { mode: "boolean" })
     .notNull()
     .default(true),
   retentionHours: integer("retention_hours").notNull().default(24),

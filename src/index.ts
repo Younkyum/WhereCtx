@@ -10,6 +10,7 @@
 import { createServer } from "node:http";
 import { getRequestListener } from "@hono/node-server";
 import { loadConfig } from "./config.js";
+import { AuthFailureLimiter } from "./api/rateLimit.js";
 import { createAppContext, closeAppContext } from "./app/context.js";
 import { buildApp } from "./app/server.js";
 import { mcpNodeHandler } from "./mcp/http.js";
@@ -17,6 +18,7 @@ import { WebhookDispatcher } from "./webhooks/dispatcher.js";
 
 const STALE_SWEEP_MS = 60_000;
 const WEBHOOK_TICK_MS = 15_000;
+const PRUNE_SWEEP_MS = 6 * 3600_000;
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -33,6 +35,19 @@ async function main(): Promise<void> {
         "  Save it now — it will not be shown again:\n\n" +
         `    ${bootstrap.seed.generatedAdminSecret}\n` +
         "──────────────────────────────────────────────────────────────\n",
+    );
+  }
+
+  // Webhook secret hygiene: encrypt any legacy plaintext secrets once a key is
+  // configured, and warn when secrets are stored without one (review H2).
+  if (config.webhooks.encryptionKey) {
+    const migrated = await ctx.webhooksStore.encryptLegacySecrets();
+    if (migrated > 0) {
+      console.log(`✓ encrypted ${migrated} legacy webhook secret(s) at rest`);
+    }
+  } else if (await ctx.webhooksStore.hasPlaintextSecrets()) {
+    console.warn(
+      "⚠️  webhook signing secrets are stored as plaintext; set WEBHOOK_ENCRYPTION_KEY to encrypt them at rest",
     );
   }
 
@@ -57,9 +72,23 @@ async function main(): Promise<void> {
   }, STALE_SWEEP_MS);
   staleSweep.unref?.();
 
-  const app = buildApp(ctx);
+  // Retention pruning for the append-only tables (events + webhook dead-letters,
+  // review P3/L5). Runs at boot and then every few hours.
+  const pruneOnce = (): void => {
+    void Promise.all([
+      ctx.eventsStore.prune(config.events.retentionHours),
+      ctx.webhooksStore.pruneDeadLetters(config.events.retentionHours),
+    ]).catch((e) => console.error("prune sweep error:", e));
+  };
+  pruneOnce();
+  const pruneSweep = setInterval(pruneOnce, PRUNE_SWEEP_MS);
+  pruneSweep.unref?.();
+
+  // One shared limiter so REST and MCP auth failures count together.
+  const authLimiter = new AuthFailureLimiter();
+  const app = buildApp(ctx, { authLimiter });
   const honoListener = getRequestListener(app.fetch);
-  const mcp = mcpNodeHandler(ctx);
+  const mcp = mcpNodeHandler(ctx, authLimiter);
 
   const server = createServer((req, res) => {
     // Match on the parsed pathname so query strings / encodings don't confuse
@@ -92,6 +121,7 @@ async function main(): Promise<void> {
     console.log("shutting down…");
     dispatcher.stop();
     clearInterval(staleSweep);
+    clearInterval(pruneSweep);
     server.close(() => {
       closeAppContext(ctx);
       process.exit(0);

@@ -33,9 +33,17 @@ services:
       HIDE_HOME_EXACT_COORDINATES: "true"
       RETENTION_HOURS: "24"
       STORE_RAW_HISTORY: "false"
+      # Creating/moving the `home` place via MCP requires an admin token.
+      # Toggleable live from the dashboard.
+      PROTECT_HOME_PLACE: "true"
       # Geofence near-band multiplier.
       NEAR_RADIUS_MULTIPLIER: "3"
       # SSRF guard: keep false unless you deliberately deliver webhooks to a LAN
       # service (e.g. a local Home Assistant).
       WEBHOOK_ALLOW_PRIVATE_TARGETS: "false"
+      # Encrypt webhook signing secrets at rest (recommended). Generate with:
+      #   openssl rand -hex 32
+      # WEBHOOK_ENCRYPTION_KEY: "…"
+      # Retention for presence events + webhook dead-letters (hours).
+      EVENT_RETENTION_HOURS: "720"
     restart: unless-stopped

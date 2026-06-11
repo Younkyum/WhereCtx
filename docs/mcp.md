@@ -42,10 +42,21 @@ mcp_servers:
 | `get_location_age` | – | `{updatedAgoSec, stale, updatedAt}` |
 | `list_recent_presence_events` | `limit?: number` | recent events (place names omitted for agents) |
 | `create_location_reminder` | `place: string, message: string` | `{id, place, message}`; the place must exist; refused in hidden mode |
+| `create_place` | `name, type, lat, lon, radiusM?` | `{name, type, radiusM}`; registers/replaces a geofence |
+| `remember_current_place` | `name, type?, radiusM?` | `{name, type, radiusM}`; saves the **current** location as a place (coordinates are never returned) |
 
 All tools re-apply the same privacy rules as the REST API: hidden mode withholds,
 precise is policy-gated, home coordinates are protected, and coarse tools never
 return raw coordinates or geohash.
+
+### Home place protection
+
+By default (`PROTECT_HOME_PLACE=true`, toggleable live from the dashboard's
+Privacy panel), `create_place` and `remember_current_place` refuse to create a
+`home`-typed place — or to overwrite an existing `home` place under any type —
+unless the token carries the `manage_places` scope (admin). This stops an agent
+from moving the home geofence, which would mislead the home-coordinate privacy
+protections. Non-home places stay writable by agent tokens.
 
 ## Agent usage policy
 

@@ -14,6 +14,7 @@ import type { AppContext } from "../app/context.js";
 import { accessAtLeast } from "../privacy/policy.js";
 import type { PresenceEvent } from "../types.js";
 import { bearerAuth, requireScope } from "./middleware.js";
+import { parseLimit } from "./validation.js";
 import type { AppEnv } from "./types.js";
 
 function stripPlace(e: PresenceEvent): PresenceEvent {
@@ -35,8 +36,8 @@ export function eventsRouter(ctx: AppContext): Hono<AppEnv> {
     if (!isAdmin && !accessAtLeast(settings.defaultAgentAccess, "coarse")) {
       return c.json({ error: "events are hidden from agents by policy", privacy: "hidden" }, 403);
     }
-    const limit = Number.parseInt(c.req.query("limit") ?? "50", 10);
-    const events = await ctx.eventsStore.listRecent(Number.isNaN(limit) ? 50 : limit);
+    const limit = parseLimit(c.req.query("limit"), 50, 500);
+    const events = await ctx.eventsStore.listRecent(limit);
     return c.json({ events: isAdmin ? events : events.map(stripPlace) });
   });
 

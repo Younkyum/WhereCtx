@@ -74,9 +74,15 @@ export interface Config {
     preciseRequiresReason: boolean;
     allowPreciseToAgent: boolean;
     hideHomeExactCoordinates: boolean;
+    /** Seeds privacy_settings.protect_home_place on first boot. */
+    protectHomePlace: boolean;
     staleAfterSec: number;
     retentionHours: number;
     storeRawHistory: boolean;
+  };
+  events: {
+    /** Retention window for presence_events + webhook dead-letters (hours). */
+    retentionHours: number;
   };
   geofence: {
     nearRadiusMultiplier: number;
@@ -84,6 +90,12 @@ export interface Config {
   webhooks: {
     /** Allow webhook delivery to private/reserved IPs (LAN Home Assistant etc.). */
     allowPrivateTargets: boolean;
+    /**
+     * Optional key used to encrypt webhook signing secrets at rest (AES-256-GCM;
+     * the key is derived from this string via SHA-256). When unset, secrets are
+     * stored as plaintext (with a startup warning if any hook has a secret).
+     */
+    encryptionKey?: string;
   };
 }
 
@@ -112,15 +124,22 @@ export function loadConfig(): Config {
       preciseRequiresReason: envBool("PRECISE_REQUIRES_REASON", true),
       allowPreciseToAgent: envBool("ALLOW_PRECISE_TO_AGENT", false),
       hideHomeExactCoordinates: envBool("HIDE_HOME_EXACT_COORDINATES", true),
+      protectHomePlace: envBool("PROTECT_HOME_PLACE", true),
       staleAfterSec: envInt("STALE_AFTER_SEC", 900),
       retentionHours: envInt("RETENTION_HOURS", 24),
       storeRawHistory: envBool("STORE_RAW_HISTORY", false),
+    },
+    events: {
+      // 30 days by default. Floor of 1h so a misconfiguration cannot wipe the
+      // event log out from under undelivered webhook cursors.
+      retentionHours: Math.max(1, envInt("EVENT_RETENTION_HOURS", 720)),
     },
     geofence: {
       nearRadiusMultiplier,
     },
     webhooks: {
       allowPrivateTargets: envBool("WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
+      encryptionKey: envOptional("WEBHOOK_ENCRYPTION_KEY"),
     },
   });
 }

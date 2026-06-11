@@ -117,6 +117,19 @@ export interface PresenceEvent {
   createdAt: string;
 }
 
+/** Default geofence radius (meters) when a caller omits it (REST + MCP). */
+export const DEFAULT_PLACE_RADIUS_M = 150;
+
+/**
+ * Agent-facing place view: name + type only. lat/lon (the home address),
+ * radiusM (geofence size), and label (often the literal street address) are
+ * deliberately omitted for non-admin callers (review P6). Shared by the REST
+ * places API and the MCP `list_places` tool so the two surfaces cannot drift.
+ */
+export function sanitizePlace(place: Place): { name: string; type: PlaceType } {
+  return { name: place.name, type: place.type };
+}
+
 export type TokenScope =
   | "write_location"
   | "read_presence"
@@ -154,6 +167,14 @@ export interface PrivacySettings {
   preciseRequiresReason: boolean;
   preciseRequiresApproval: boolean;
   hideHomeExactCoordinates: boolean;
+  /**
+   * When true (default), creating or overwriting a `home` place requires the
+   * `manage_places` scope even on surfaces that allow agent place-writes (MCP).
+   * Toggleable from the dashboard; protects the home geofence from being moved
+   * by a read-scoped agent, which would mislead the home-coordinate privacy
+   * protections.
+   */
+  protectHomePlace: boolean;
   retentionHours: number;
   storeRawHistory: boolean;
 }

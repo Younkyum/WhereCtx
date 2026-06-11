@@ -1,0 +1,2 @@
+ALTER TABLE `privacy_settings` ADD `protect_home_place` integer DEFAULT true NOT NULL;--> statement-breakpoint
+CREATE INDEX `location_history_user_recorded_idx` ON `location_history` (`user_id`,`recorded_at`);

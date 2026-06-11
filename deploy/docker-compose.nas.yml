@@ -24,10 +24,17 @@ services:
       HIDE_HOME_EXACT_COORDINATES: "true"
       RETENTION_HOURS: "24"
       STORE_RAW_HISTORY: "false"
+      # Creating/moving the `home` place via MCP requires an admin token
+      # (toggleable live from the dashboard).
+      PROTECT_HOME_PLACE: "true"
       NEAR_RADIUS_MULTIPLIER: "3"
       # Set true ONLY if you want webhooks to reach a LAN service (e.g. Home
       # Assistant on the same network). Default false blocks SSRF to private IPs.
       WEBHOOK_ALLOW_PRIVATE_TARGETS: "false"
+      # Encrypt webhook signing secrets at rest (set in .env; empty = disabled).
+      WEBHOOK_ENCRYPTION_KEY: "${WEBHOOK_ENCRYPTION_KEY:-}"
+      # Retention for presence events + webhook dead-letters (hours).
+      EVENT_RETENTION_HOURS: "720"
     volumes:
       # Named volume — Docker initializes it owned by the container's non-root
       # user (uid 10001), so no manual chown is needed.
@@ -39,7 +46,13 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --no-autoupdate run
+    # Force the TCP-based http2 transport instead of the default QUIC (UDP).
+    # On a NAS/home network the kernel UDP receive buffer is often too small
+    # (cloudflared logs "failed to sufficiently increase receive buffer size"),
+    # which makes QUIC connections periodically drop with
+    # "timeout: no recent network activity" and fail in-flight requests — agents
+    # then see intermittent "server unstable" errors. http2 avoids this entirely.
+    command: tunnel --no-autoupdate --protocol http2 run
     environment:
       TUNNEL_TOKEN: "${CF_TUNNEL_TOKEN}"
     depends_on:

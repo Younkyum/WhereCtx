@@ -19,6 +19,7 @@ interface SettingsRow {
   preciseRequiresReason: boolean;
   preciseRequiresApproval: boolean;
   hideHomeExactCoordinates: boolean;
+  protectHomePlace: boolean;
   retentionHours: number;
   storeRawHistory: boolean;
   updatedAt: string;
@@ -31,6 +32,7 @@ function rowToSettings(row: SettingsRow): PrivacySettings {
     preciseRequiresReason: row.preciseRequiresReason,
     preciseRequiresApproval: row.preciseRequiresApproval,
     hideHomeExactCoordinates: row.hideHomeExactCoordinates,
+    protectHomePlace: row.protectHomePlace,
     retentionHours: row.retentionHours,
     storeRawHistory: row.storeRawHistory,
   };
@@ -62,6 +64,7 @@ export class SettingsStore {
       preciseRequiresReason: config.privacy.preciseRequiresReason,
       preciseRequiresApproval: false,
       hideHomeExactCoordinates: config.privacy.hideHomeExactCoordinates,
+      protectHomePlace: config.privacy.protectHomePlace,
       retentionHours: config.privacy.retentionHours,
       storeRawHistory: config.privacy.storeRawHistory,
       updatedAt: nowIso(this.clock),

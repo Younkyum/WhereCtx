@@ -4,7 +4,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, asc, desc, eq, gt, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, or } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { presenceEvents } from "../db/schema.js";
 import type { PresenceEvent, PresenceEventType } from "../types.js";
@@ -44,16 +44,39 @@ export class EventsStore {
   ) {}
 
   async append(event: NewPresenceEvent): Promise<PresenceEvent> {
-    const record: EventRow = {
+    const [stored] = await this.appendMany([event]);
+    return stored!;
+  }
+
+  /**
+   * Append a batch of events with a single INSERT. The ingest hot path emits up
+   * to 3 events per reading inside the per-user mutex; one round-trip instead
+   * of N keeps the mutex hold time down on slow storage (review P1).
+   */
+  async appendMany(events: NewPresenceEvent[]): Promise<PresenceEvent[]> {
+    if (events.length === 0) return [];
+    const createdAt = nowIso(this.clock);
+    const records: EventRow[] = events.map((event) => ({
       id: randomBytes(16).toString("hex"),
       type: event.type,
       placeName: event.placeName ?? null,
       status: event.status ?? null,
       source: event.source ?? null,
-      createdAt: nowIso(this.clock),
-    };
-    await this.db.insert(presenceEvents).values(record);
-    return rowToEvent(record);
+      createdAt,
+    }));
+    await this.db.insert(presenceEvents).values(records);
+    return records.map(rowToEvent);
+  }
+
+  /** Delete events older than the retention window. Returns rows removed. */
+  async prune(retentionHours: number): Promise<number> {
+    const cutoff = new Date(
+      this.clock().getTime() - retentionHours * 3600 * 1000,
+    ).toISOString();
+    const result = await this.db
+      .delete(presenceEvents)
+      .where(lt(presenceEvents.createdAt, cutoff));
+    return result.rowsAffected ?? 0;
   }
 
   async listRecent(limit = 50): Promise<PresenceEvent[]> {

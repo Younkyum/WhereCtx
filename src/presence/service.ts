@@ -80,15 +80,26 @@ export class PresenceService {
     return this.mutex.run(this.userId, () => this.processReadingLocked(reading));
   }
 
+  /** Settings with the (defensive) first-boot seed fallback. */
+  private async getSettings(userId: string): Promise<PrivacySettings> {
+    return (
+      (await this.deps.settingsStore.get(userId)) ??
+      (await this.deps.settingsStore.seedFromConfig(userId, this.deps.config))
+    );
+  }
+
   private async processReadingLocked(reading: NormalizedReading): Promise<ProcessResult> {
     const { config } = this.deps;
     const userId = this.userId;
 
-    const settings =
-      (await this.deps.settingsStore.get(userId)) ??
-      (await this.deps.settingsStore.seedFromConfig(userId, config));
+    // Independent reads — fetch concurrently to keep the mutex hold time down
+    // on slow storage (review P5).
+    const [settings, places, prev] = await Promise.all([
+      this.getSettings(userId),
+      this.deps.placesStore.list(userId),
+      this.deps.presenceStore.getCurrent(userId),
+    ]);
 
-    const places = await this.deps.placesStore.list(userId);
     const geo = computeGeofence(
       reading.precise.lat,
       reading.precise.lon,
@@ -103,8 +114,6 @@ export class PresenceService {
       status = "transit";
       label = labelForStatus("transit");
     }
-
-    const prev = await this.deps.presenceStore.getCurrent(userId);
 
     const next: StoredPresence = {
       userId,
@@ -183,11 +192,8 @@ export class PresenceService {
       pending.push({ type: "presence.privacy_changed", status: next.status });
     }
 
-    const stored: PresenceEvent[] = [];
-    for (const e of pending) {
-      stored.push(await this.deps.eventsStore.append(e));
-    }
-    return stored;
+    // Single batched INSERT — up to 3 events per reading, inside the mutex (P1).
+    return this.deps.eventsStore.appendMany(pending);
   }
 
   private async fireReminders(
@@ -197,9 +203,7 @@ export class PresenceService {
     const nextPlace = next.currentPlaceName;
     if (!nextPlace || prev?.currentPlaceName === nextPlace) return [];
     const reminders = await this.deps.remindersStore.listActiveForPlace(nextPlace);
-    for (const r of reminders) {
-      await this.deps.remindersStore.markTriggered(r.id);
-    }
+    await this.deps.remindersStore.markTriggeredBatch(reminders.map((r) => r.id));
     return reminders;
   }
 
@@ -291,12 +295,9 @@ export class PresenceService {
     patch: Partial<PrivacySettings>,
   ): Promise<{ settings: PrivacySettings; event: PresenceEvent | null }> {
     return this.mutex.run(this.userId, async () => {
-      const { config } = this.deps;
       const userId = this.userId;
 
-      const before =
-        (await this.deps.settingsStore.get(userId)) ??
-        (await this.deps.settingsStore.seedFromConfig(userId, config));
+      const before = await this.getSettings(userId);
       const after =
         (await this.deps.settingsStore.update(userId, patch)) ?? before;
 

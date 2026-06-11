@@ -31,11 +31,14 @@ const config: WhereCtxConfig = {
     preciseRequiresReason: true,
     allowPreciseToAgent: false,
     hideHomeExactCoordinates: true,
+    protectHomePlace: true,
     staleAfterSec: 900,
     retentionHours: 24,
     storeRawHistory: false,
   },
   geofence: { nearRadiusMultiplier: 3 },
+  webhooks: { allowPrivateTargets: false },
+  events: { retentionHours: 720 },
 };
 
 const T0 = Date.parse("2026-06-05T00:00:00.000Z");

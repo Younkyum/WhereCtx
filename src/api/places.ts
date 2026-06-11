@@ -12,7 +12,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { AppContext } from "../app/context.js";
-import type { Place } from "../types.js";
+import { DEFAULT_PLACE_RADIUS_M, sanitizePlace } from "../types.js";
 import { bearerAuth, requireAnyScope, requireScope } from "./middleware.js";
 import { zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
@@ -30,18 +30,6 @@ const PlaceSchema = z.object({
   useCurrentLocation: z.boolean().optional(),
 });
 
-const DEFAULT_RADIUS_M = 150;
-
-/**
- * Agent-facing place view: name + type only. We deliberately omit lat/lon (the
- * home address), and also radiusM/label/timestamps — radiusM leaks the geofence
- * size and label is often the literal address the operator typed (review P6).
- * Agents that need "am I near X?" use the geofence via MCP, not coordinates.
- */
-function sanitize(place: Place): { name: string; type: Place["type"] } {
-  return { name: place.name, type: place.type };
-}
-
 export function placesRouter(ctx: AppContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   app.use("*", bearerAuth(ctx));
@@ -51,7 +39,7 @@ export function placesRouter(ctx: AppContext): Hono<AppEnv> {
   app.get("/", requireAnyScope("read_presence", "manage_places"), async (c) => {
     const places = await ctx.placesStore.list(userId);
     const isAdmin = c.get("token").scopes.includes("manage_places");
-    return c.json({ places: isAdmin ? places : places.map(sanitize) });
+    return c.json({ places: isAdmin ? places : places.map(sanitizePlace) });
   });
 
   app.post("/", requireScope("manage_places"), async (c) => {
@@ -84,7 +72,7 @@ export function placesRouter(ctx: AppContext): Hono<AppEnv> {
       type: d.type,
       lat,
       lon,
-      radiusM: d.radiusM ?? DEFAULT_RADIUS_M,
+      radiusM: d.radiusM ?? DEFAULT_PLACE_RADIUS_M,
     });
     // Status is frozen at ingest time; adding/moving a place can change the
     // current geofence verdict, so re-evaluate against the last known location

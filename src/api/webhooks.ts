@@ -12,7 +12,7 @@ import { z } from "zod";
 import type { AppContext } from "../app/context.js";
 import { assertSafeWebhookUrl, SsrfError } from "../webhooks/ssrf.js";
 import { bearerAuth, requireScope } from "./middleware.js";
-import { zodMessages } from "./validation.js";
+import { parseLimit, zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
 
 const EVENT_TYPES = [
@@ -78,10 +78,8 @@ export function webhooksRouter(ctx: AppContext): Hono<AppEnv> {
 
   // Dead-letter log: events permanently undeliverable after max attempts.
   app.get("/dead-letters", async (c) => {
-    const limit = Number.parseInt(c.req.query("limit") ?? "100", 10);
-    const deadLetters = await ctx.webhooksStore.listDeadLetters(
-      Number.isNaN(limit) ? 100 : limit,
-    );
+    const limit = parseLimit(c.req.query("limit"), 100, 500);
+    const deadLetters = await ctx.webhooksStore.listDeadLetters(limit);
     return c.json({ deadLetters });
   });
 
