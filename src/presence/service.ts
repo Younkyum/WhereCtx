@@ -134,7 +134,8 @@ export class PresenceService {
 
     const events = await this.emitTransitionEvents(userId, prev, next);
 
-    // Raw history (opt-in) + retention pruning.
+    // Raw history (opt-in). Pruning runs either way, so points kept before
+    // history was turned off still age out.
     if (settings.storeRawHistory) {
       await this.deps.historyStore.append(userId, {
         lat: reading.precise.lat,
@@ -143,8 +144,8 @@ export class PresenceService {
         source: reading.source,
         recordedAt: reading.updatedAt,
       });
-      await this.deps.historyStore.prune(userId, settings.retentionHours);
     }
+    await this.deps.historyStore.prune(userId, settings.retentionHours);
 
     // Fire reminders attached to a newly-entered place.
     const triggeredReminders = await this.fireReminders(userId, prev, next);

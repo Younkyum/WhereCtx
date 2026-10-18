@@ -16,6 +16,7 @@ import {
   agentCoarseView,
   authorizePrecise,
   buildPreciseView,
+  mapUrl,
 } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
 import { haversineMeters } from "../geofence/distance.js";
@@ -114,7 +115,7 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
       truncated: range.truncated,
       points: range.points.map((p) => {
         const place = placeContaining(p, places);
-        return place ? { ...p, place } : p;
+        return { ...p, ...(place ? { place } : {}), mapUrl: mapUrl(p.lat, p.lon) };
       }),
     });
   });

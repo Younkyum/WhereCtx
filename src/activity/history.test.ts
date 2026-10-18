@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
+import type { AppContext } from "../app/context.js";
 import { Browser, TestClock, bootApp, setupOwner, signUpByInvite, type Enrolled } from "../testing/accounts.js";
 import { clearLogs, log } from "../util/log.js";
 
@@ -8,6 +9,7 @@ const MINUTE = 60_000;
 
 let clock: TestClock;
 let app: Hono;
+let ctx: AppContext;
 let owner: Enrolled;
 let mina: Browser;
 
@@ -36,7 +38,7 @@ const enableHistory = (browser: Browser) =>
 beforeEach(async () => {
   clock = new TestClock();
   const booted = await bootApp(clock);
-  app = booted.app;
+  ({ app, ctx } = booted);
   owner = await setupOwner(app, booted.setupCode);
   const ws = (await owner.browser.json("/v1/workspaces")).workspaces[0].id;
   const { url } = await owner.browser.json(`/v1/workspaces/${ws}/invites`, { body: { role: "member" } });
@@ -66,6 +68,7 @@ describe("GET /v1/presence/history", () => {
       [times[2], HOME.lat, "home"],
     ]);
     expect(body.points[0]).toMatchObject({ lon: HOME.lon, source: "manual" });
+    expect(body.points[0].mapUrl).toMatch(/^https:\/\//);
 
     const middle = await owner.browser.json(
       `/v1/presence/history?from=${encodeURIComponent(times[1]!)}&to=${encodeURIComponent(times[1]!)}`,
@@ -114,6 +117,24 @@ describe("GET /v1/presence/history", () => {
       ["ops", "presence.history", "allowed", true],
       ["bot", "presence.history", "denied", true],
     ]);
+  });
+});
+
+describe("history retention", () => {
+  it("ages points out after history is turned off, on the sweep and on the next reading", async () => {
+    await enableHistory(owner.browser);
+    await walk(owner.browser, [HOME, HOME]);
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { storeRawHistory: false } });
+    const all = "/v1/presence/history?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z";
+    expect((await owner.browser.json(all)).points).toHaveLength(2);
+
+    clock.advance(48 * 60 * MINUTE);
+    expect(await ctx.system.history.pruneExpired()).toBe(1);
+    expect((await owner.browser.json(all)).points).toHaveLength(1);
+
+    clock.advance(20 * MINUTE);
+    await walk(owner.browser, [HOME]);
+    expect((await owner.browser.json(all)).points).toHaveLength(0);
   });
 });
 

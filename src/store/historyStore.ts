@@ -5,9 +5,9 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, asc, eq, gte, lt, lte } from "drizzle-orm";
+import { and, asc, eq, gte, lt, lte, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
-import { locationHistory } from "../db/schema.js";
+import { locationHistory, privacySettings } from "../db/schema.js";
 import type { IngestSource, UserId } from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
@@ -78,6 +78,21 @@ export class HistoryStore {
       .orderBy(asc(locationHistory.recordedAt), asc(locationHistory.id))
       .limit(range.limit + 1)) as HistoryRow[];
     return { points: rows.slice(0, range.limit).map(rowToPoint), truncated: rows.length > range.limit };
+  }
+
+  /**
+   * Every user's points past their own retention (prune sweep), so history
+   * ages out even for someone whose phone stopped reporting.
+   */
+  async pruneExpired(): Promise<number> {
+    const now = nowIso(this.clock);
+    const result = await this.db.delete(locationHistory).where(
+      sql`${locationHistory.recordedAt} < (
+        SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ${now}, '-' || ${privacySettings.retentionHours} || ' hours')
+        FROM ${privacySettings} WHERE ${privacySettings.userId} = ${locationHistory.userId}
+      )`,
+    );
+    return result.rowsAffected ?? 0;
   }
 
   /** Delete history older than `retentionHours` for a user. Returns rows removed. */
