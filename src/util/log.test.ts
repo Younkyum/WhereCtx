@@ -39,6 +39,11 @@ describe("redaction", () => {
     ["named coordinates", "coordinates out of range (lat=37.5, lon=200)", "37.5"],
     ["named coordinates in JSON", '{"latitude": -33.9}', "33.9"],
     ["a long opaque run", "session " + "x".repeat(48), "x".repeat(48)],
+    ["userinfo in a URL", "connect https://admin:hunter2@db.example.com/x failed", "hunter2"],
+    ["userinfo without a password", "libsql://alice@db.example.com", "alice"],
+    ["a libsql authToken", "libsql://db.example.com?authToken=eyJhbGciOi.abc", "eyJhbGciOi"],
+    ["an api_key query parameter", "GET /x?api_key=k3y-value&y=2", "k3y-value"],
+    ["an access_token query parameter", "/cb?state=1&access_token=at-123", "at-123"],
   ])("masks %s in a string", (_name, input, leaked) => {
     expect(redactString(input)).not.toContain(leaked);
   });
@@ -60,6 +65,9 @@ describe("redaction", () => {
     "secret",
     "token",
     "adminToken",
+    "accessToken",
+    "authToken",
+    "apiKey",
     "authorization",
     "cookie",
     "sessionId",
@@ -72,6 +80,46 @@ describe("redaction", () => {
     expect(out[key]).toBe("[redacted]");
     expect(out.nested[key]).toBe("[redacted]");
     expect(JSON.stringify(out)).not.toContain("leak-me");
+  });
+
+  it.each(["sessionCount", "tokensIssued", "statusCode", "preciseRequiresReason", "secretsRotated"])(
+    "keeps the value under key %s, which only mentions a sensitive word",
+    (key) => {
+      expect(redactFields({ [key]: 3 })).toEqual({ [key]: 3 });
+    },
+  );
+
+  it.each(["Basic auth failed", "Bearer token missing", "Basic authentication is not offered"])(
+    "leaves prose about auth readable: %s",
+    (text) => {
+      expect(redactString(text)).toBe(text);
+    },
+  );
+
+  it("reads values JSON cannot: bigint, dates, URLs, maps, sets, and getters that throw", () => {
+    const tricky = {
+      get boom(): string {
+        throw new Error("getter");
+      },
+    };
+    const out = redactFields({
+      big: 12n,
+      at: new Date("2026-01-02T03:04:05.000Z"),
+      bad: new Date("nope"),
+      url: new URL("https://u:p4ss@example.com/?token=t0ken"),
+      map: new Map([["accessToken", "m1"], ["n", 1]]),
+      set: new Set(["a"]),
+      tricky,
+    });
+    expect(out).toEqual({
+      big: "12",
+      at: "2026-01-02T03:04:05.000Z",
+      bad: "Invalid Date",
+      url: "https://[redacted]@example.com/?token=[redacted]",
+      map: { accessToken: "[redacted]", n: 1 },
+      set: ["a"],
+      tricky: { boom: "[unreadable]" },
+    });
   });
 
   it("redacts an error's message and stack", () => {
@@ -139,6 +187,12 @@ describe("log", () => {
     expect(entry).toMatchObject({ level: "warn", fields: { token: "[redacted]", status: 400 } });
     expect(JSON.stringify(entry)).not.toContain(SECRET);
     expect(JSON.stringify(entry)).not.toContain("127.12345");
+  });
+
+  it("never throws, even for fields it cannot read", () => {
+    const hostile = new Proxy({}, { ownKeys: () => { throw new Error("no keys"); } });
+    expect(() => log.info("still here", hostile)).not.toThrow();
+    expect(written.join("")).toContain("could not be written");
   });
 
   it("never keeps a banner, which carries a secret on purpose", () => {

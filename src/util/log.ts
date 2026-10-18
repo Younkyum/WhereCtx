@@ -23,13 +23,50 @@ export type LogFields = Record<string, unknown>;
 export const RING_SIZE = 1000;
 const REDACTED = "[redacted]";
 
-const SENSITIVE_KEY =
-  /^(lat|lon|lng|latitude|longitude)$|precise|password|passwd|secret|token|authorization|cookie|session|recovery|setup_?code|access_?code|signature/i;
+/** A key is sensitive when its last word is one of these (`accessToken`, `secret`), not when it merely contains one (`tokensIssued`). */
+const SENSITIVE_WORDS = new Set([
+  "token",
+  "secret",
+  "password",
+  "passwd",
+  "authorization",
+  "cookie",
+  "session",
+  "signature",
+  "lat",
+  "lon",
+  "lng",
+  "latitude",
+  "longitude",
+  "precise",
+]);
+/** Or when its last two words are one of these (`sessionId`, `setup_code`). */
+const SENSITIVE_PAIRS = new Set(["session id", "setup code", "access code", "recovery code", "recovery codes", "api key"]);
+
+export function isSensitiveKey(key: string): boolean {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const last = words.at(-1) ?? "";
+  return SENSITIVE_WORDS.has(last) || SENSITIVE_PAIRS.has(words.slice(-2).join(" "));
+}
+
+/**
+ * A credential after "Bearer" or "Basic": six or more token characters with a
+ * digit, punctuation, or a lower-then-upper letter, so "Basic auth failed"
+ * and "Bearer token missing" stay readable.
+ */
+const CREDENTIAL = String.raw`(?=[^\s"',;]*(?:[0-9._~+/=-]|[a-z][A-Z]))[^\s"',;]{6,}`;
 
 const STRING_RULES: Array<[RegExp, string]> = [
-  [/\b(Bearer|Basic)\s+[^\s"',;]+/gi, `$1 ${REDACTED}`],
+  [new RegExp(String.raw`\b([Bb]earer|[Bb]asic|BEARER|BASIC)\s+${CREDENTIAL}`, "g"), `$1 ${REDACTED}`],
   [/\b(authorization|cookie|set-cookie)(["']?\s*[:=]\s*)[^\n]+/gi, `$1$2${REDACTED}`],
-  [/([?&](?:token|code|secret|password)=)[^&\s"']+/gi, `$1${REDACTED}`],
+  // userinfo in a URL: scheme://user:pass@host
+  [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@"']+@/gi, `$1${REDACTED}@`],
+  // Any query parameter whose name mentions a credential (token, authToken, api_key, code).
+  [/([?&][^=&\s"'#]*(?:token|secret|password|key|code|auth)[^=&\s"'#]*=)[^&\s"'#]+/gi, `$1${REDACTED}`],
   [/\b(wctx_session|__Host-wctx_session)=[^;\s"']+/g, `$1=${REDACTED}`],
   [/\bwctx_[A-Za-z0-9_-]+/g, `wctx_${REDACTED}`],
   [/\b(lat|lon|lng|latitude|longitude)(["']?\s*[=:]\s*)-?[\d.]+/gi, `$1$2${REDACTED}`],
@@ -74,15 +111,40 @@ export function serializeError(err: Error, depth = 0): Record<string, unknown> {
   };
 }
 
+/** One property, or a marker when reading it throws (a getter). */
+function readProperty(obj: object, key: string): unknown {
+  try {
+    return (obj as Record<string, unknown>)[key];
+  } catch {
+    return "[unreadable]";
+  }
+}
+
 function redactValue(value: unknown, depth: number): unknown {
-  if (typeof value === "string") return redactString(value);
+  switch (typeof value) {
+    case "string":
+      return redactString(value);
+    case "bigint":
+      return value.toString();
+    case "symbol":
+    case "function":
+      return `[${typeof value}]`;
+    case "object":
+      break;
+    default:
+      return value;
+  }
+  if (value === null) return null;
   if (value instanceof Error) return serializeError(value);
-  if (value === null || typeof value !== "object") return value;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? "Invalid Date" : value.toISOString();
+  if (value instanceof URL) return redactString(value.href);
   if (depth >= 4) return "[object]";
+  if (value instanceof Map) return redactValue(Object.fromEntries(value), depth);
+  if (value instanceof Set) return redactValue([...value], depth);
   if (Array.isArray(value)) return value.map((v) => redactValue(v, depth + 1));
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value)) {
-    out[k] = SENSITIVE_KEY.test(k) ? REDACTED : redactValue(v, depth + 1);
+  for (const key of Object.keys(value)) {
+    out[key] = isSensitiveKey(key) ? REDACTED : redactValue(readProperty(value, key), depth + 1);
   }
   return out;
 }
@@ -107,17 +169,28 @@ export function formatEntry(entry: LogEntry): string {
 
 const ring: LogEntry[] = [];
 
+/** Never throws: a log call must not fail the request that made it. */
 function write(level: LogLevel, msg: string, fields?: LogFields): void {
-  const entry: LogEntry = {
-    level,
-    time: new Date().toISOString(),
-    msg: redactString(msg),
-    ...(fields && Object.keys(fields).length > 0 ? { fields: redactFields(fields) } : {}),
-  };
-  ring.push(entry);
-  if (ring.length > RING_SIZE) ring.splice(0, ring.length - RING_SIZE);
+  const time = new Date().toISOString();
   const stream = level === "warn" || level === "error" ? process.stderr : process.stdout;
-  stream.write(formatEntry(entry) + "\n");
+  try {
+    const entry: LogEntry = {
+      level,
+      time,
+      msg: redactString(String(msg)),
+      ...(fields && Object.keys(fields).length > 0 ? { fields: redactFields(fields) } : {}),
+    };
+    const line = formatEntry(entry);
+    ring.push(entry);
+    if (ring.length > RING_SIZE) ring.splice(0, ring.length - RING_SIZE);
+    stream.write(line + "\n");
+  } catch {
+    try {
+      stream.write(`${time} ${level.toUpperCase()} [a log entry could not be written]\n`);
+    } catch {
+      /* nowhere left to report it */
+    }
+  }
 }
 
 /** `err` becomes a field, so a stack trace is redacted like any other value. */

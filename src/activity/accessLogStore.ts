@@ -8,12 +8,14 @@ import { newId } from "../auth/secrets.js";
 import type { Database } from "../db/index.js";
 import { accessLog } from "../db/schema.js";
 import type { UserId } from "../types.js";
+import { redactString } from "../util/log.js";
 import { nowIso, systemClock, type Clock } from "../util/time.js";
 import { ACCESS_TEXT_MAX, type AccessEntry, type AccessRecord, type Page } from "./types.js";
 
 export const ACCESS_PAGE_MAX = 200;
 
-const clip = (text: string | undefined): string | null => (text ? text.slice(0, ACCESS_TEXT_MAX) : null);
+/** Agent-supplied text (a reason) or a denial may quote a secret or coordinates, as an ingest rejection may. */
+const clip = (text: string | undefined): string | null => (text ? redactString(text).slice(0, ACCESS_TEXT_MAX) : null);
 
 /** A keyset cursor `createdAt|id`, so rows sharing a millisecond are neither skipped nor repeated. */
 export function encodeCursor(createdAt: string, id: string): string {

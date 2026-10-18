@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Hono } from "hono";
 import type { AppContext } from "../app/context.js";
+import { recentLogs } from "../util/log.js";
 import { Browser, TestClock, bootApp, setupOwner, signUpByInvite, type Enrolled } from "../testing/accounts.js";
 
 const DAY = 86_400_000;
@@ -65,6 +66,7 @@ describe("ingest log", () => {
     expect(entries.every((e) => e.token?.name === "Pixel" && e.token.id === phone.id)).toBe(true);
     expect(entries[3].reason).toMatch(/valid JSON/);
     expect(entries[0].reason).toMatch(/out of range/);
+    expect(recentLogs().filter((e) => /owntracks/i.test(e.msg))).toEqual([]);
   });
 
   it("never stores coordinates, not even inside a rejection message", async () => {

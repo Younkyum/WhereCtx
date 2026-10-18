@@ -75,6 +75,14 @@ describe("REST access log", () => {
     expect(precise.denial).toMatch(/precise location denied/);
   });
 
+  it("redacts a reason or a denial the way the ingest log does", async () => {
+    await asToken(`/v1/presence/precise?reason=${encodeURIComponent("meet at 37.56651, 126.97800 with Bearer abc.def-123")}`, agent);
+    const [entry] = (await accessOf(owner.browser)).entries;
+    expect(entry.reason).toContain("meet at");
+    expect(entry.reason).not.toContain("37.56651");
+    expect(entry.reason).not.toContain("abc.def-123");
+  });
+
   it("records hidden mode as hidden", async () => {
     await owner.browser.json("/v1/privacy", { method: "PUT", body: { defaultAgentAccess: "hidden" } });
     expect((await asToken("/v1/presence", agent)).status).toBe(403);

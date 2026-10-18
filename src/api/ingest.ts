@@ -130,8 +130,7 @@ export function ingestRouter(ctx: RouteContext): Hono<AppEnv> {
     } catch (err) {
       if (err instanceof NormalizeError) {
         // Preserve the OwnTracks array-response contract even on bad payloads,
-        // so the client does not retry-loop; the rejection is logged (P10).
-        log.warn("owntracks ingest rejected", { error: err.message });
+        // so the client does not retry-loop; the ingest log records it (P10).
         c.set("ingestVerdict", { outcome: "rejected", reason: err.message });
         return c.json([], 200);
       }
