@@ -1,5 +1,5 @@
 import type { AccountScope, UserScope } from "../app/context.js";
-import type { Principal } from "../auth/principal.js";
+import type { RestPrincipal } from "../auth/principal.js";
 
 /**
  * Hono environment, filled by `authenticate`: the principal for scope checks
@@ -7,7 +7,7 @@ import type { Principal } from "../auth/principal.js";
  */
 export type AppEnv = {
   Variables: {
-    principal: Principal;
+    principal: RestPrincipal;
     scope: UserScope;
   };
 };

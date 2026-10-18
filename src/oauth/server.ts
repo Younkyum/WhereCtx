@@ -7,16 +7,21 @@
  *
  * Shapes:
  * - The issuer is BASE_URL; the one protected resource is `${BASE_URL}/mcp`,
- *   and every access token is audience-bound to it.
+ *   and every access token is audience-bound to it. Every request reaches the
+ *   provider as if it arrived at BASE_URL, whatever its Host and proxy headers
+ *   say, so discovery, redirects and cookie flags never follow the request.
  * - Clients identify themselves with a Client ID Metadata Document (an https
  *   client_id the server fetches). Dynamic registration is opt-in.
- * - Every authorization shows consent; a grant lasts 30 days.
+ * - Every authorization shows consent, which needs a fresh passkey proof; a
+ *   grant lasts 30 days, and a person holds at most one per client.
  */
 
-import type { IncomingMessage, ServerResponse } from "node:http";
-import Provider, { errors, type Configuration, type Interaction } from "oidc-provider";
+import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
+import Provider, { errors, type Configuration, type Grant, type Interaction } from "oidc-provider";
 import type { WhereCtxConfig } from "../config.js";
-import type { Actor } from "../accounts/types.js";
+import { fail, hasFreshAuth, ok, type Actor, type Result } from "../accounts/types.js";
+import { SECURITY_HEADERS } from "../app/securityHeaders.js";
+import type { Clock } from "../util/time.js";
 import type { OAuthKeys } from "../accounts/serverSecretsStore.js";
 import type { UsersStore } from "../accounts/usersStore.js";
 import { asUserId, type UserId } from "../types.js";
@@ -41,11 +46,14 @@ export interface OAuthUrls {
   resourceMetadata: string;
 }
 
+/** The OAuth URLs for BASE_URL, in canonical form (lower-case host, no default port). */
 export function oauthUrls(baseUrl: string): OAuthUrls {
+  const url = new URL(baseUrl);
+  const issuer = `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
   return {
-    issuer: baseUrl,
-    resource: `${baseUrl}/mcp`,
-    resourceMetadata: `${baseUrl}/.well-known/oauth-protected-resource/mcp`,
+    issuer,
+    resource: `${issuer}/mcp`,
+    resourceMetadata: `${issuer}/.well-known/oauth-protected-resource/mcp`,
   };
 }
 
@@ -62,7 +70,10 @@ export interface ConsentRequest {
   client: { id: string; name: string | null; uri: string | null };
   redirectUri: string;
   redirectHost: string;
-  /** Every redirect URI is on this machine, so any local program could claim this name. */
+  /**
+   * The browser goes back to a program on this device (loopback http or an
+   * app's own URL scheme), so any local program could claim this client.
+   */
   localhostOnly: boolean;
   requestedScopes: OAuthScope[];
   resource: string;
@@ -82,13 +93,16 @@ export interface OAuthServerDeps {
   store: OAuthStore;
   users: UsersStore;
   keys: OAuthKeys;
+  clock: Clock;
   /** Replaces the fetch that retrieves Client ID Metadata Documents (tests). */
   fetch?: typeof fetch;
 }
 
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
-
-const isLoopback = (uri: string): boolean => LOOPBACK_HOSTS.has(URL.parse(uri)?.hostname ?? "");
+/** Only an https redirect reaches a website; anything else lands on the person's device. */
+const isLocalRedirect = (uri: string): boolean => {
+  const url = URL.parse(uri);
+  return url !== null && url.protocol !== "https:";
+};
 
 const asList = (value: unknown): string[] =>
   (Array.isArray(value) ? value : [value]).filter((v): v is string => typeof v === "string");
@@ -122,6 +136,7 @@ function providerConfig(deps: OAuthServerDeps, urls: OAuthUrls): Configuration {
       rpInitiatedLogout: { enabled: false },
       revocation: { enabled: true },
       introspection: { enabled: false },
+      pushedAuthorizationRequests: { enabled: false },
       registration: { enabled: deps.config.oauth.dynamicRegistration },
       clientIdMetadataDocument: { enabled: true, ack: "draft-02" },
       resourceIndicators: {
@@ -181,10 +196,31 @@ export class OAuthServer {
   readonly provider: Provider;
   readonly urls: OAuthUrls;
 
+  /** The Node listener for the protocol endpoints (app/listener.ts routes them here). */
+  readonly handler: RequestListener;
+  private readonly issuerUrl: URL;
+
   constructor(private readonly deps: OAuthServerDeps) {
     this.urls = oauthUrls(deps.config.baseUrl);
+    this.issuerUrl = new URL(this.urls.issuer);
     this.provider = new Provider(this.urls.issuer, providerConfig(deps, this.urls));
-    this.provider.proxy = deps.config.trustProxy !== "none";
+    // The provider reads its origin from the forwarded headers `atIssuer`
+    // overwrites, never from the client. TRUST_PROXY only picks the client IP.
+    this.provider.proxy = true;
+    this.provider.use(async (ctx, next) => {
+      ctx.set(SECURITY_HEADERS);
+      await next();
+    });
+    const callback = this.provider.callback();
+    this.handler = (req, res) => {
+      this.atIssuer(req);
+      void callback(req, res);
+    };
+  }
+
+  private atIssuer(req: IncomingMessage): void {
+    req.headers["x-forwarded-proto"] = this.issuerUrl.protocol.slice(0, -1);
+    req.headers["x-forwarded-host"] = this.issuerUrl.host;
   }
 
   /** RFC 9728 metadata for /mcp. */
@@ -208,11 +244,15 @@ export class OAuthServer {
     return { userId: user.id, scope: token.scope ?? "", grantId: token.grantId, clientId: token.clientId };
   }
 
-  /** The pending authorization `uid` names, if this browser started it and it has not expired. */
+  /**
+   * The pending authorization `uid` names, if this browser started it, it has
+   * not expired, and nobody has answered it yet.
+   */
   private async interaction(req: IncomingMessage, res: ServerResponse, uid: string): Promise<Interaction | null> {
+    this.atIssuer(req);
     try {
       const interaction = await this.provider.interactionDetails(req, res);
-      return interaction.uid === uid ? interaction : null;
+      return interaction.uid === uid && !interaction.result ? interaction : null;
     } catch (e) {
       if (e instanceof errors.SessionNotFound) return null;
       throw e;
@@ -228,26 +268,34 @@ export class OAuthServer {
     return {
       client: { id: client.clientId, name: client.clientName ?? null, uri: client.clientUri ?? null },
       redirectUri,
-      redirectHost: URL.parse(redirectUri)?.host ?? redirectUri,
-      localhostOnly: (client.redirectUris ?? []).every(isLoopback),
+      redirectHost: URL.parse(redirectUri)?.host || redirectUri,
+      localhostOnly: isLocalRedirect(redirectUri),
       requestedScopes: parseOAuthScopes(String(interaction.params.scope ?? "")),
       resource: this.urls.resource,
     };
   }
 
   /**
-   * Record the person's consent as a fresh grant and finish the interaction.
-   * Returns where the browser goes next (back into the authorization flow).
+   * Record the person's consent as a fresh grant, replacing any earlier grant
+   * to the same client, and finish the interaction. Returns where the browser
+   * goes next (back into the authorization flow); `not_found` when the
+   * interaction is gone or already answered.
    */
   async consent(
-    { userId }: Actor,
+    actor: Actor,
     req: IncomingMessage,
     res: ServerResponse,
     uid: string,
     optedIn: ReadonlySet<OAuthScope>,
-  ): Promise<string | null> {
+  ): Promise<Result<string>> {
+    // Consent mints a 30-day credential, like POST /v1/tokens, so a stolen
+    // session cookie alone must not be enough.
+    if (!hasFreshAuth(actor.reauthAt, this.deps.clock())) {
+      return fail("reauth_required", "confirm with your passkey first (POST /v1/me/reauth)");
+    }
+    const { userId } = actor;
     const interaction = await this.interaction(req, res, uid);
-    if (!interaction) return null;
+    if (!interaction) return fail("not_found", "authorization request not found");
     const { params } = interaction;
     const clientId = String(params.client_id);
     const requested = String(params.scope ?? "").split(" ").filter(Boolean);
@@ -268,12 +316,16 @@ export class OAuthServer {
     const client = await this.provider.Client.find(clientId);
     if (client?.clientName) await this.deps.store.nameGrant(grantId, client.clientName);
 
-    return this.provider.interactionResult(
+    const redirectTo = await this.provider.interactionResult(
       req,
       res,
       { login: { accountId: userId }, consent: { grantId } },
       { mergeWithLastSubmission: false },
     );
+    for (const earlier of await this.grantsOf(userId)) {
+      if (earlier.grant.jti !== grantId && earlier.clientId === clientId) await this.revoke(earlier.grant);
+    }
+    return ok(redirectTo);
   }
 
   async deny(req: IncomingMessage, res: ServerResponse, uid: string): Promise<string | null> {
@@ -286,17 +338,24 @@ export class OAuthServer {
     );
   }
 
+  /** A person's live grants with the client name stored at consent, oldest first. */
+  private async grantsOf(userId: UserId): Promise<Array<{ grant: Grant; clientId: string; clientName: string | null }>> {
+    const grants = [];
+    for (const { id, clientName } of await this.deps.store.grantsOf(userId)) {
+      const grant = await this.provider.Grant.find(id);
+      if (grant?.clientId && grant.accountId === userId) grants.push({ grant, clientId: grant.clientId, clientName });
+    }
+    return grants;
+  }
+
   async connectedApps(actor: Actor): Promise<ConnectedApp[]> {
-    const rows = await this.deps.store.grantsOf(actor.userId);
     const apps: ConnectedApp[] = [];
-    for (const row of rows) {
-      const grant = await this.provider.Grant.find(row.id);
-      if (!grant?.clientId) continue;
+    for (const { grant, clientId, clientName } of await this.grantsOf(actor.userId)) {
       const scopes = Object.keys(grant.resources ?? {}).map((r) => grant.getResourceScope(r)).join(" ");
       apps.push({
-        id: row.id,
-        clientId: grant.clientId,
-        clientName: row.clientName,
+        id: grant.jti,
+        clientId,
+        clientName,
         scopes: parseOAuthScopes(scopes),
         createdAt: new Date(grant.iat * 1000).toISOString(),
         expiresAt: grant.exp ? new Date(grant.exp * 1000).toISOString() : null,
@@ -309,13 +368,17 @@ export class OAuthServer {
   async disconnect(actor: Actor, grantId: string): Promise<boolean> {
     const grant = await this.provider.Grant.find(grantId);
     if (!grant || grant.accountId !== actor.userId) return false;
+    await this.revoke(grant);
+    return true;
+  }
+
+  private async revoke(grant: Grant): Promise<void> {
     const { AccessToken, RefreshToken, AuthorizationCode } = this.provider;
     await Promise.all([
       grant.destroy(),
-      AccessToken.revokeByGrantId(grantId),
-      RefreshToken.revokeByGrantId(grantId),
-      AuthorizationCode.revokeByGrantId(grantId),
+      AccessToken.revokeByGrantId(grant.jti),
+      RefreshToken.revokeByGrantId(grant.jti),
+      AuthorizationCode.revokeByGrantId(grant.jti),
     ]);
-    return true;
   }
 }

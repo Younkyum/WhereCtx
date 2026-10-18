@@ -1,21 +1,31 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer, type RequestListener, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppContext } from "../app/context.js";
-import { createListener } from "../app/listener.js";
+import { createListener, type ListenerOptions } from "../app/listener.js";
 import { RateLimiter } from "../api/rateLimit.js";
 import type { WhereCtxConfig } from "../config.js";
-import { OWNER_ADMIN, TestClock, bootApp, setupOwner, signUpByInvite, type Enrolled } from "../testing/accounts.js";
+import {
+  Browser,
+  OWNER_ADMIN,
+  TestClock,
+  bootApp,
+  reauth,
+  setupOwner,
+  signUpByInvite,
+  type Enrolled,
+} from "../testing/accounts.js";
 import { asUserId, type NormalizedReading } from "../types.js";
 
 const CLIENT_ID = "https://client.example/meta.json";
 const REDIRECT = "http://127.0.0.1:9876/cb";
+const WEB_REDIRECT = "https://client.example/cb";
 const CLIENT_METADATA = {
   client_id: CLIENT_ID,
   client_name: "Test Agent",
   client_uri: "https://client.example",
-  redirect_uris: [REDIRECT],
+  redirect_uris: [REDIRECT, WEB_REDIRECT],
   grant_types: ["authorization_code", "refresh_token"],
   response_types: ["code"],
   token_endpoint_auth_method: "none",
@@ -36,7 +46,10 @@ let resource: string;
 let owner: Enrolled;
 let app: Awaited<ReturnType<typeof bootApp>>["app"];
 
-async function boot(overrides: Partial<WhereCtxConfig> = {}): Promise<void> {
+async function boot(
+  overrides: Partial<WhereCtxConfig> = {},
+  listenerOptions: Partial<ListenerOptions> = {},
+): Promise<void> {
   let listener: RequestListener = (_req, res) => res.end();
   server = createServer((req, res) => listener(req, res));
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -49,8 +62,8 @@ async function boot(overrides: Partial<WhereCtxConfig> = {}): Promise<void> {
     { oauthFetch: metadataFetch },
   );
   ({ ctx, app } = booted);
-  listener = createListener(ctx, { authLimiter: new RateLimiter() });
-  owner = await setupOwner(app, booted.setupCode, base);
+  listener = createListener(ctx, { authLimiter: new RateLimiter(), ...listenerOptions });
+  owner = await setupOwner(app, booted.setupCode, overrides.baseUrl ?? base);
 }
 
 async function shutdown(): Promise<void> {
@@ -593,5 +606,223 @@ describe("dynamic client registration", () => {
     });
     expect(res.status).toBe(201);
     expect(((await res.json()) as { client_id: string }).client_id).toBeTruthy();
+  });
+});
+
+async function grantRows(): Promise<number> {
+  return (await owner.browser.json("/v1/oauth/grants")).grants.length;
+}
+
+describe("consent step-up", () => {
+  it("asks a session whose passkey proof is stale to confirm again, then consents", async () => {
+    const agent = new UserAgent(owner.browser.cookie);
+    const { uid } = await startAuthorization(agent);
+    clock.advance(11 * 60_000);
+    const stale = await agent.request(`/oauth/interaction/${uid}/confirm`, { json: { precise: false } });
+    expect(stale.status).toBe(403);
+    expect(await stale.json()).toMatchObject({ code: "reauth_required" });
+    expect(await grantRows()).toBe(0);
+
+    await reauth(owner.browser, owner.credentialId);
+    const fresh = await agent.request(`/oauth/interaction/${uid}/confirm`, { json: { precise: false } });
+    expect(fresh.status).toBe(200);
+  });
+});
+
+describe("one grant per person and client", () => {
+  it("replaces the earlier grant on re-consent, so its precise refresh token stops working", async () => {
+    const precise = await connect(new UserAgent(owner.browser.cookie), true);
+    expect(precise.scope).toBe("presence:read location:precise");
+    const coarse = await connect(new UserAgent(owner.browser.cookie), false);
+
+    const { grants } = await owner.browser.json("/v1/oauth/grants");
+    expect(grants).toEqual([expect.objectContaining({ clientId: CLIENT_ID, scopes: ["presence:read"] })]);
+    const refresh = await tokenRequest({ grant_type: "refresh_token", refresh_token: precise.refresh_token, client_id: CLIENT_ID });
+    expect(((await refresh.json()) as { error: string }).error).toBe("invalid_grant");
+    expect((await mcp(precise.access_token, "tools/list")).status).toBe(401);
+    expect((await mcp(coarse.access_token, "tools/list")).status).toBe(200);
+  });
+
+  it("refuses a second confirm of an answered interaction and lists one app", async () => {
+    const agent = new UserAgent(owner.browser.cookie);
+    const { uid } = await startAuthorization(agent);
+    expect((await agent.request(`/oauth/interaction/${uid}/confirm`, { json: { precise: false } })).status).toBe(200);
+    const again = await agent.request(`/oauth/interaction/${uid}/confirm`, { json: { precise: true } });
+    expect(again.status).toBe(404);
+    expect(await again.json()).toMatchObject({ code: "interaction_expired" });
+    expect(await grantRows()).toBe(1);
+  });
+});
+
+describe("local redirect warning", () => {
+  async function details(redirectUri: string) {
+    const agent = new UserAgent(owner.browser.cookie);
+    const { uid } = await startAuthorization(agent, { redirect_uri: redirectUri });
+    return (await (await agent.request(`/oauth/interaction/${uid}/details`)).json()) as { localhostOnly: boolean; redirectHost: string };
+  }
+
+  it("follows the redirect URI this request uses, not every registered one", async () => {
+    expect(await details(REDIRECT)).toMatchObject({ localhostOnly: true, redirectHost: "127.0.0.1:9876" });
+    expect(await details(WEB_REDIRECT)).toMatchObject({ localhostOnly: false, redirectHost: "client.example" });
+  });
+});
+
+describe("endpoints follow BASE_URL", () => {
+  it("advertises https endpoints from BASE_URL over a plain http connection, ignoring forwarded headers", async () => {
+    await shutdown();
+    await boot({ baseUrl: "https://where.example" });
+    const res = await fetch(`${base}/.well-known/oauth-authorization-server`, {
+      headers: { "x-forwarded-host": "evil.example", "x-forwarded-proto": "http", host: "evil.example" },
+    });
+    const meta = (await res.json()) as Record<string, string>;
+    expect(meta.issuer).toBe("https://where.example");
+    expect(meta.authorization_endpoint).toBe("https://where.example/oauth/authorize");
+    expect(meta.token_endpoint).toBe("https://where.example/oauth/token");
+    expect(meta.jwks_uri).toBe("https://where.example/oauth/jwks");
+
+    const { challenge } = pkce();
+    const started = await fetch(
+      `${base}${authorizeUrl({
+        client_id: CLIENT_ID,
+        response_type: "code",
+        redirect_uri: REDIRECT,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+        scope: "presence:read",
+        resource: "https://where.example/mcp",
+      })}`,
+      { redirect: "manual", headers: { "x-forwarded-host": "evil.example" } },
+    );
+    expect(started.status).toBe(303);
+    const cookies = started.headers.getSetCookie();
+    expect(cookies.length).toBeGreaterThan(0);
+    for (const cookie of cookies) expect(cookie.toLowerCase()).toContain("; secure");
+  });
+
+  it("canonicalizes BASE_URL's case and default port", async () => {
+    await shutdown();
+    await boot({ baseUrl: "https://Where.Example:443" });
+    const meta = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as Record<string, string>;
+    expect(meta.issuer).toBe("https://where.example");
+    expect(meta.token_endpoint).toBe("https://where.example/oauth/token");
+    const prm = (await (await fetch(`${base}/.well-known/oauth-protected-resource/mcp`)).json()) as Record<string, unknown>;
+    expect(prm).toMatchObject({ resource: "https://where.example/mcp", authorization_servers: ["https://where.example"] });
+  });
+});
+
+describe("protocol endpoint hardening", () => {
+  it("limits requests per client to the unauthenticated OAuth endpoints", async () => {
+    await shutdown();
+    await boot({}, { oauthLimiter: new RateLimiter({ max: 3 }) });
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i++) statuses.push((await tokenRequest({ grant_type: "refresh_token", refresh_token: "x", client_id: CLIENT_ID })).status);
+    expect(statuses).toEqual([400, 400, 400, 429]);
+    expect((await fetch(`${base}/.well-known/oauth-authorization-server`)).status).toBe(200);
+  });
+
+  it("sends the same security headers as the rest of the app", async () => {
+    const reference = await fetch(`${base}/healthz`);
+    for (const path of ["/.well-known/oauth-authorization-server", "/oauth/jwks", `${authorizeUrl({ client_id: CLIENT_ID })}`]) {
+      const res = await fetch(`${base}${path}`, { redirect: "manual" });
+      for (const header of ["content-security-policy", "x-frame-options", "x-content-type-options", "referrer-policy"]) {
+        expect(res.headers.get(header), `${header} on ${path}`).toBe(reference.headers.get(header));
+      }
+    }
+    expect(reference.headers.get("x-frame-options")).toBe("DENY");
+  });
+
+  it("offers no pushed authorization requests", async () => {
+    const meta = (await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
+    expect(meta.pushed_authorization_request_endpoint).toBeUndefined();
+    const res = await fetch(`${base}/oauth/par`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "client_id=x" });
+    expect(res.status).toBe(404);
+  });
+
+  it("expires a dynamically registered client after 30 days", async () => {
+    await shutdown();
+    await boot({ oauth: { dynamicRegistration: true } });
+    const res = await fetch(`${base}/oauth/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" }),
+    });
+    expect(res.status).toBe(201);
+    const { rows } = await ctx.handle.client.execute("SELECT model, expires_at FROM oauth_store WHERE model IN ('Client', 'RegistrationAccessToken')");
+    expect(rows).toHaveLength(2);
+    const thirtyDays = Date.now() + 30 * 24 * 3600_000;
+    for (const row of rows) expect(Math.abs(Number(row.expires_at) - thirtyDays)).toBeLessThan(60_000);
+  });
+});
+
+describe("/mcp failed-auth limiter", () => {
+  it("does not count credential-less discovery probes", async () => {
+    const tokens = await connect(new UserAgent(owner.browser.cookie));
+    for (let i = 0; i < 35; i++) expect((await mcp(undefined, "tools/list")).status).toBe(401);
+    expect((await mcp(tokens.access_token, "tools/list")).status).toBe(200);
+  });
+
+  it("still blocks a client that keeps presenting bad tokens", async () => {
+    for (let i = 0; i < 30; i++) expect((await mcp("guess-token", "tools/list")).status).toBe(401);
+    expect((await mcp("guess-token", "tools/list")).status).toBe(429);
+  });
+});
+
+describe("secrets at rest", () => {
+  it("keeps no OAuth code or token value in oauth_store, and still honours them", async () => {
+    const authorized = await consent(new UserAgent(owner.browser.cookie));
+    const codeRows = JSON.stringify((await ctx.handle.client.execute("SELECT * FROM oauth_store")).rows);
+    expect(codeRows).not.toContain(authorized.code);
+
+    const tokens = (await (await exchange(authorized)).json()) as Tokens;
+    const rows = JSON.stringify((await ctx.handle.client.execute("SELECT * FROM oauth_store")).rows);
+    expect(rows).not.toContain(tokens.access_token);
+    expect(rows).not.toContain(tokens.refresh_token);
+    expect(rows).not.toContain(authorized.code);
+
+    expect((await mcp(tokens.access_token, "tools/list")).status).toBe(200);
+    const refreshed = await tokenRequest({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: CLIENT_ID });
+    expect(refreshed.status).toBe(200);
+  });
+});
+
+describe("account compromise paths", () => {
+  it("revokes every OAuth grant when someone signs in with a recovery code", async () => {
+    const tokens = await connect(new UserAgent(owner.browser.cookie));
+    const recovered = new Browser(app, base);
+    await recovered.json("/v1/auth/recover", { body: { code: owner.recoveryCodes[0] } });
+
+    expect((await mcp(tokens.access_token, "tools/list")).status).toBe(401);
+    const refresh = await tokenRequest({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: CLIENT_ID });
+    expect(((await refresh.json()) as { error: string }).error).toBe("invalid_grant");
+    expect((await recovered.json("/v1/oauth/grants")).grants).toEqual([]);
+  });
+
+  it("revokes every OAuth grant when the person signs out everywhere else", async () => {
+    const tokens = await connect(new UserAgent(owner.browser.cookie));
+    await owner.browser.json("/v1/me/sessions/revoke-others", { body: {} });
+    expect((await mcp(tokens.access_token, "tools/list")).status).toBe(401);
+    expect(await grantRows()).toBe(0);
+  });
+});
+
+describe("openid", () => {
+  it("is never granted, so no ID token is issued", async () => {
+    const authorized = await consent(new UserAgent(owner.browser.cookie), false, { scope: "openid presence:read", nonce: "n1" });
+    const res = await exchange(authorized);
+    expect(res.status).toBe(200);
+    const tokens = (await res.json()) as Tokens & { id_token?: string };
+    expect(tokens.id_token).toBeUndefined();
+    expect(tokens.scope).toBe("presence:read");
+  });
+});
+
+describe("/mcp robustness", () => {
+  it("answers 500 when credential lookup fails, and keeps serving", async () => {
+    const spy = vi.spyOn(ctx.system.tokens, "verify").mockRejectedValueOnce(new Error("database is locked"));
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect((await mcp(BOOTSTRAP_AGENT, "tools/list")).status).toBe(500);
+    expect((await mcp(BOOTSTRAP_AGENT, "tools/list")).status).toBe(200);
+    spy.mockRestore();
+    errors.mockRestore();
   });
 });

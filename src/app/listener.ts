@@ -5,9 +5,9 @@
  * falls through to Hono is fail-safe (a 404, never an auth bypass).
  */
 
-import type { RequestListener } from "node:http";
+import type { IncomingMessage, RequestListener, ServerResponse } from "node:http";
 import { getRequestListener } from "@hono/node-server";
-import type { RateLimiter } from "../api/rateLimit.js";
+import { RateLimiter, nodeClientKey } from "../api/rateLimit.js";
 import { mcpNodeHandler } from "../mcp/http.js";
 import type { AppContext } from "./context.js";
 import { buildApp, type BuildAppOptions } from "./server.js";
@@ -27,17 +27,37 @@ export function surfaceFor(pathname: string): Surface {
   return "app";
 }
 
+/** OAuth endpoints anyone may call without a credential, each costing a database write or a fetch. */
+const OAUTH_STARTERS = new Set(["/oauth/authorize", "/oauth/token", "/oauth/register"]);
+
 export interface ListenerOptions extends BuildAppOptions {
   /** Shared by REST and MCP so auth failures on either count together. */
   authLimiter: RateLimiter;
+  /** Requests per client to the OAuth starters. */
+  oauthLimiter?: RateLimiter;
 }
+
+type Handler = (req: IncomingMessage, res: ServerResponse, pathname: string) => void;
 
 export function createListener(ctx: AppContext, options: ListenerOptions): RequestListener {
   const mcp = mcpNodeHandler(ctx, options.authLimiter);
-  const handlers: Record<Surface, RequestListener> = {
+  const oauthLimiter = options.oauthLimiter ?? new RateLimiter({ windowMs: 60_000, max: 60 });
+  const app = getRequestListener(buildApp(ctx, options).fetch);
+  const handlers: Record<Surface, Handler> = {
     mcp: (req, res) => void mcp(req, res),
-    oauth: ctx.oauth.provider.callback(),
-    app: getRequestListener(buildApp(ctx, options).fetch),
+    oauth: (req, res, pathname) => {
+      if (OAUTH_STARTERS.has(pathname)) {
+        const key = nodeClientKey(req, ctx.config.trustProxy);
+        if (oauthLimiter.isBlocked(key)) {
+          res.writeHead(429, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "too many requests; retry later" }));
+          return;
+        }
+        oauthLimiter.record(key);
+      }
+      ctx.oauth.handler(req, res);
+    },
+    app: (req, res) => void app(req, res),
   };
   return (req, res) => {
     // Match on the parsed pathname so query strings and encodings cannot
@@ -48,6 +68,6 @@ export function createListener(ctx: AppContext, options: ListenerOptions): Reque
     } catch {
       /* keep raw */
     }
-    handlers[surfaceFor(pathname)](req, res);
+    handlers[surfaceFor(pathname)](req, res, pathname);
   };
 }

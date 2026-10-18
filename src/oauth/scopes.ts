@@ -40,10 +40,11 @@ export function oauthScopeFor(tokenScope: TokenScope): OAuthScope | undefined {
 }
 
 /**
- * Whether consent grants a requested scope. Scopes outside the table are the
- * protocol's own (offline_access), which carry no access and are granted.
+ * Whether consent grants a requested scope. Outside the table only
+ * offline_access passes; it carries no access of its own. oidc-provider always
+ * offers `openid`, and refusing it here is what keeps it from issuing ID tokens.
  */
 export function consentGrants(scope: string, optedIn: ReadonlySet<OAuthScope>): boolean {
-  if (!isOAuthScope(scope)) return true;
+  if (!isOAuthScope(scope)) return scope === "offline_access";
   return OAUTH_SCOPES[scope].consent === "always" || optedIn.has(scope);
 }

@@ -5,11 +5,11 @@ Several people can use one install. Every location row belongs to one user,
 and every request acts for exactly one user.
 
 ```
-phone (OwnTracks, Shortcut, HTTP)    browser (passkey session)       agent (MCP, token)
+phone (OwnTracks, Shortcut, HTTP)    browser (passkey session)   agent (MCP, token or OAuth)
         │ POST /v1/ingest*                 │ /dashboard, /v1/*              │ POST /mcp
         ▼                                  ▼                                ▼
    ┌────────────────────────── resolve the Principal ───────────────────────────┐
-   │ token (device, agent, admin)  or  session (signed-in person)               │
+   │ token (device, agent, admin), session (signed-in person), or oauth (/mcp)  │
    └──────────────┬───────────────────────────────┬─────────────────────────────┘
                   │ ctx.forUser(userId)           │ ctx.forSession(actor)
                   ▼                               ▼
@@ -34,12 +34,15 @@ phone (OwnTracks, Shortcut, HTTP)    browser (passkey session)       agent (MCP,
 - `{ via: "session" }`: a person signed in with a passkey and holding the
   session cookie. They have every scope over their own data, and the session
   records when it last proved a passkey (`reauthAt`) for step-up checks.
+- `{ via: "oauth" }`: an MCP client presenting an OAuth access token a person
+  consented to. Its scopes come from the registry in `src/oauth/scopes.ts`.
+  Only `/mcp` resolves it; REST's environment type excludes it.
 
 `src/api/middleware.ts` has two mounts. `authenticate` accepts either kind
 and attaches a `UserScope`. `sessionAuth` accepts only a session and attaches
 an `AccountScope`. `/v1/me`, `/v1/workspaces`, `/v1/shares`, and
-`/v1/people` use `sessionAuth`, so no token reaches them. `/mcp` accepts
-tokens only.
+`/v1/people` use `sessionAuth`, so no token reaches them. `/mcp` accepts a
+WhereCtx token or an OAuth access token.
 
 ## Scopes keep users apart
 
@@ -158,6 +161,7 @@ adds at runtime. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-
 | `src/presence/` | `PresenceService` |
 | `src/api/` | Hono routers, auth middleware, rate limiting |
 | `src/mcp/` | MCP server (9 tools) and the raw-Node `/mcp` handler |
+| `src/oauth/` | OAuth 2.1 authorization server for MCP clients (oidc-provider), its store, scopes, and consent API |
 | `src/webhooks/` | Dispatcher, SSRF guard, secret encryption |
 | `src/dashboard/` | Serves `dist/web` |
 | `src/app/` | Context, scopes, and HTTP app assembly |
@@ -166,13 +170,19 @@ adds at runtime. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-
 
 ## Composition
 
-`src/index.ts` creates one Node `http.Server`. A request whose path is `/mcp`
-goes to the MCP handler, which writes to the Node response directly.
-Everything else goes to the Hono app through `getRequestListener`. Boot also
-prints the setup code while no passkey exists, starts the webhook dispatcher,
-the stale sweep every minute, and the prune sweep every 6 hours. The prune
-sweep removes old events, dead letters, share audit rows, sessions, invites,
-nonces, and access codes.
+`src/index.ts` creates one Node `http.Server` over the listener in
+`src/app/listener.ts`, which splits requests into three surfaces:
+
+- `/mcp` goes to the MCP handler, which writes to the Node response directly.
+- The OAuth protocol endpoints (`/oauth/*` except `/oauth/interaction/*`, and
+  the two authorization server metadata paths) go to oidc-provider.
+- Everything else, the consent API under `/oauth/interaction/*` included, goes
+  to the Hono app through `getRequestListener`.
+
+Boot also prints the setup code while no passkey exists, starts the webhook
+dispatcher, the stale sweep every minute, and the prune sweep every 6 hours.
+The prune sweep removes old events, dead letters, share audit rows, sessions,
+invites, nonces, access codes, and expired OAuth rows.
 
 ## Storage
 

@@ -150,9 +150,12 @@ secrets are encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set.
 
 People sign in with passkeys that require user verification (biometric or
 PIN). The server stores only SHA-256 hashes of session cookies, recovery
-codes, setup codes, and access codes. Adding or deleting a passkey, replacing
-recovery codes, minting a token, and sharing more all need a passkey proof
-from the last 10 minutes. See [decisions.md](decisions.md#accounts-workspaces-passkeys).
+codes, setup codes, access codes, and OAuth authorization codes, access
+tokens, and refresh tokens. Adding or deleting a passkey, replacing recovery
+codes, minting a token, connecting an MCP app, and sharing more all need a
+passkey proof from the last 10 minutes. Signing in with a recovery code or an
+access code, deleting a passkey, replacing recovery codes, and signing out
+everywhere else also revoke every connected MCP app. See [decisions.md](decisions.md#accounts-workspaces-passkeys).
 
 ## Deployment posture
 

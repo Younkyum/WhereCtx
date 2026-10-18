@@ -65,6 +65,8 @@ export class ServerSecretsStore {
 
   /** Insert-if-absent then read, so instances booting together converge on one value. */
   private async getOrCreate(name: string, make: () => string): Promise<string> {
+    const stored = await this.get(name);
+    if (stored !== null) return stored;
     await this.db
       .insert(serverSecrets)
       .values({ name, value: make(), createdAt: nowIso(this.clock) })

@@ -34,11 +34,14 @@ export type Principal =
   | { via: "oauth"; userId: UserId; scopes: TokenScope[]; grantId: string; clientId: string };
 
 export type SessionPrincipal = Extract<Principal, { via: "session" }>;
+export type TokenPrincipal = Extract<Principal, { via: "token" }>;
+/** What REST accepts: every principal but OAuth, whose tokens only /mcp honours. */
+export type RestPrincipal = Exclude<Principal, { via: "oauth" }>;
 
 export async function resolveTokenPrincipal(
   ctx: Pick<AppContext, "system">,
   secret: string | null | undefined,
-): Promise<Principal | null> {
+): Promise<TokenPrincipal | null> {
   const token = await ctx.system.tokens.verify(secret);
   return token && { via: "token", userId: token.userId, scopes: token.scopes };
 }

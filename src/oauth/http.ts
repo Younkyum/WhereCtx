@@ -5,7 +5,7 @@
  *   GET  /.well-known/oauth-protected-resource[/mcp]  -> RFC 9728 metadata for /mcp
  *   GET  /oauth/interaction/:uid           -> 303 to the dashboard's consent screen
  *   GET  /oauth/interaction/:uid/details   -> what the client asks for (session)
- *   POST /oauth/interaction/:uid/confirm   -> {precise} -> {redirectTo} (session)
+ *   POST /oauth/interaction/:uid/confirm   -> {precise} -> {redirectTo} (fresh session)
  *   POST /oauth/interaction/:uid/abort     -> {redirectTo} (session)
  *   GET    /v1/oauth/grants                -> the person's connected apps (session)
  *   DELETE /v1/oauth/grants/:id            -> disconnect one (session)
@@ -19,7 +19,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import type { AppContext } from "../app/context.js";
-import { parseBody } from "../api/accountHttp.js";
+import { parseBody, respond } from "../api/accountHttp.js";
 import { noStore, sessionAuth } from "../api/middleware.js";
 import type { SessionEnv } from "../api/types.js";
 import type { OAuthScope } from "./scopes.js";
@@ -56,10 +56,11 @@ export function oauthRouter(ctx: AppContext): Hono<InteractionEnv> {
     const body = await parseBody(c, Confirm);
     if (body instanceof Response) return body;
     const optedIn = new Set<OAuthScope>(body.precise ? ["location:precise"] : []);
-    const redirectTo = await c
+    const result = await c
       .get("account")
       .oauth.consent(c.env.incoming, c.env.outgoing, c.req.param("uid"), optedIn);
-    return redirectTo ? c.json({ redirectTo }) : c.json(EXPIRED, 404);
+    if (!result.ok && result.code === "not_found") return c.json(EXPIRED, 404);
+    return respond(c, result, (redirectTo) => c.json({ redirectTo }));
   });
 
   app.post("/oauth/interaction/:uid/abort", signedIn, async (c) => {

@@ -8,7 +8,7 @@ have one reference. It started by resolving the plan's "Open Questions"
 
 | # | Question | Decision |
 |---|----------|----------|
-| 1 | Node.js or Bun? | **Node.js** (>=20). Broadest self-hosting compatibility; libsql prebuilds avoid native compilation. |
+| 1 | Node.js or Bun? | **Node.js** (`^22.12 \|\| >=24`). Broadest self-hosting compatibility; libsql prebuilds avoid native compilation. |
 | 2 | MCP transport? | **Streamable HTTP** for v0.1 (the plan's config examples advertise a URL). stdio can be added later. |
 | 3 | Precise approval interactive vs static? | **Static policy only** in v0.1 (`ALLOW_PRECISE_TO_AGENT`, `PRECISE_REQUIRES_REASON`). Interactive approval is v0.2. |
 | 4 | Store raw history by default? | **No.** `STORE_RAW_HISTORY=false`. Presence-first philosophy. |
@@ -279,3 +279,17 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
   token, then as an OAuth token.
 - **The runtime moves to Node 22.** oidc-provider 9 supports Node 22 LTS and
   later. Node 24 is still avoided for the NAS reason in the `Dockerfile`.
+- **Endpoints follow `BASE_URL`, never the request.** Every request reaches
+  oidc-provider with `X-Forwarded-Proto` and `X-Forwarded-Host` overwritten
+  from `BASE_URL`, and the provider always trusts them. Discovery, redirects
+  back from consent, and the `Secure` flag on its cookies therefore match
+  `BASE_URL` whatever `Host` header or proxy setup a request comes through.
+  `TRUST_PROXY` still only decides which header carries the client IP.
+- **Consent needs a fresh passkey proof.** Allowing an app mints a 30-day
+  credential, the same as `POST /v1/tokens`, so a stolen session cookie alone
+  is not enough. A person holds at most one grant per client: consenting again
+  revokes the earlier grant and every token issued under it.
+- **Losing a device ends connected apps too.** Recovery, an operator access
+  code, deleting a passkey, replacing recovery codes, and signing out
+  everywhere else end every other session. They now also revoke every OAuth
+  grant of the person.

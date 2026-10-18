@@ -27,8 +27,12 @@ the rest on its own:
    an authorization code flow with PKCE.
 3. Your browser opens the WhereCtx consent screen. Sign in with your passkey
    if you are not signed in.
-4. Check the app name and the redirect host, choose whether to allow precise
-   location, and click **Allow**.
+4. Check the verified app ID, the redirect host, and the account. Choose
+   whether to allow precise location, and click **Allow**.
+5. If your last passkey proof is older than 10 minutes, confirm with your
+   passkey again.
+
+Connecting the same app again replaces its earlier connection.
 
 To disconnect an app, open **Agents** in the dashboard and click **Revoke**
 next to it under **Connected apps**. Its access and refresh tokens stop
@@ -68,7 +72,12 @@ WhereCtx follows the
 [MCP authorization spec, revision 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization).
 The authorization server is embedded and runs on
 [oidc-provider](https://github.com/panva/node-oidc-provider). Its issuer is
-`BASE_URL`, so `BASE_URL` must be the public `https` origin.
+`BASE_URL` in canonical form (lower-case host, no default port), so
+`BASE_URL` must be the public `https` origin. Every endpoint URL, redirect,
+and cookie flag comes from `BASE_URL`. The server ignores the request's
+`Host`, `X-Forwarded-Host`, and `X-Forwarded-Proto` headers here, whatever
+`TRUST_PROXY` says. `TRUST_PROXY` only picks the header that carries the
+client IP for rate limits.
 
 ### Endpoints
 
@@ -80,9 +89,8 @@ The authorization server is embedded and runs on
 | `/oauth/token` | token endpoint |
 | `/oauth/revoke` | token revocation (RFC 7009) |
 | `/oauth/jwks` | the server's public signing key |
-| `/oauth/par` | pushed authorization requests |
 | `/oauth/register` | dynamic client registration, only when `OAUTH_DYNAMIC_REGISTRATION=true` |
-| `/oauth/interaction/:uid` | sends the browser to the dashboard consent screen |
+| `/oauth/interaction/:uid` | sends the browser to the dashboard consent screen. `POST …/confirm` needs a passkey proof from the last 10 minutes. |
 | `/v1/oauth/grants` | `GET` lists your connected apps, `DELETE /v1/oauth/grants/:id` revokes one (session only) |
 
 ### Scopes
@@ -91,7 +99,8 @@ The authorization server is embedded and runs on
 |-------------|--------|-----------------------|
 | `presence:read` | `read_presence` | always granted when requested |
 | `location:precise` | `read_precise_location` | granted only if you tick the box. It is unticked by default. |
-| `offline_access` | a refresh token | granted when requested |
+| `offline_access` | nothing | granted when requested. It does not decide refresh tokens. |
+| `openid` | nothing | never granted, so no ID token is issued |
 
 Precise location stays subject to the privacy settings, as it is for agent
 tokens. An OAuth token never gets `manage_places`, so the home place stays
@@ -105,12 +114,19 @@ protected from it.
   advertises `client_id_metadata_document_supported: true`. It refuses to
   fetch documents from private or special-use addresses.
 - Dynamic client registration is off. The MCP spec deprecates it. Set
-  `OAUTH_DYNAMIC_REGISTRATION=true` to turn it on for older clients.
+  `OAUTH_DYNAMIC_REGISTRATION=true` to turn it on for older clients. A
+  registered client expires after 30 days.
 - Every client is public (`token_endpoint_auth_method: none`). PKCE with
   `S256` is required.
-- The consent screen shows the redirect host. It warns when every redirect URI
-  is on `localhost`, because any program on that machine could use the name.
-  Consent is asked on every authorization, never skipped.
+- The consent screen shows the host of the `client_id` as the verified app
+  ID. The app name is the title, and the website is labelled as the app's own
+  claim: neither is verified. The screen also shows the redirect host and the
+  account that is consenting. It warns when this request's redirect URI is
+  not `https` (loopback `http` or an app's own URL scheme), because any
+  program on that device could use the name. Consent is asked on every
+  authorization, never skipped.
+- `/oauth/authorize`, `/oauth/token`, and `/oauth/register` allow 60 requests
+  per client per minute.
 
 ### Tokens
 
@@ -119,7 +135,16 @@ protected from it.
   slash are accepted.
 - Access tokens are opaque, last 10 minutes, and are bound to `/mcp` as their
   audience. REST endpoints under `/v1/` reject them.
-- Refresh tokens rotate on every use and last 30 days, as long as the grant.
+- A refresh token is issued whenever the client's metadata lists the
+  `refresh_token` grant type, with or without `offline_access`. Refresh
+  tokens rotate on every use and last 30 days, as long as the grant.
+- A person holds one grant per client. Consenting again revokes the earlier
+  grant and every token issued under it.
+- Authorization codes, access tokens, and refresh tokens are stored as
+  SHA-256 hashes.
+- Signing in with a recovery code or an access code, deleting a passkey,
+  replacing recovery codes, and signing out everywhere else revoke every
+  connected app.
 - Authorization responses include `iss` (RFC 9207).
 - Signing and cookie keys are generated on first boot and kept in the
   database, so every instance sharing it agrees.
@@ -128,7 +153,7 @@ protected from it.
 
 | Case | Status | `WWW-Authenticate` |
 |------|--------|--------------------|
-| no credential | `401` | `Bearer scope="presence:read location:precise", resource_metadata="…"` |
+| no credential | `401` | `Bearer scope="presence:read location:precise", resource_metadata="…"`. Does not count toward the failed-auth limit. |
 | unknown, expired, or revoked token, or a token for another resource | `401` | adds `error="invalid_token"` |
 | token without `read_presence` | `403` | `Bearer error="insufficient_scope", scope="presence:read", resource_metadata="…"` |
 

@@ -4,16 +4,40 @@
  * itself (a person's grants, for the Agents screen) and the prune sweep.
  *
  * Expiry follows the library's clock (Date.now), not the app clock: the
- * library computes every `expiresIn` against it.
+ * library computes every `expiresIn` against it. A row the library gives no
+ * lifetime (a dynamically registered client) lasts 30 days, so every row is
+ * eventually pruned.
+ *
+ * Token values are bearer secrets, so their rows are keyed by the value's
+ * SHA-256 and keep no copy of it; the library always looks them up by the raw
+ * value, which `find` puts back as the payload's `jti`.
  */
 
-import { and, eq, gt, isNull, lte, or } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 import type { Adapter, AdapterPayload } from "oidc-provider";
 import type { Database } from "../db/index.js";
 import { oauthStore } from "../db/schema.js";
 import type { UserId } from "../types.js";
 
 type Row = typeof oauthStore.$inferSelect;
+
+const DEFAULT_TTL_SEC = 30 * 24 * 3600;
+
+/** Models whose id is the token value a client presents. All are looked up by id alone. */
+const SECRET_ID_MODELS: ReadonlySet<string> = new Set([
+  "AccessToken",
+  "AuthorizationCode",
+  "RefreshToken",
+  "ClientCredentials",
+  "InitialAccessToken",
+  "RegistrationAccessToken",
+]);
+
+/** A grant and the models issued under it. */
+const GRANT_BOUND_MODELS = ["Grant", "AccessToken", "RefreshToken", "AuthorizationCode"];
+
+const sha256 = (value: string) => createHash("sha256").update(value).digest("base64url");
 
 function toPayload(row: Row | undefined): AdapterPayload | undefined {
   if (!row || (row.expiresAt !== null && row.expiresAt <= Date.now())) return undefined;
@@ -22,13 +46,21 @@ function toPayload(row: Row | undefined): AdapterPayload | undefined {
 }
 
 class ModelAdapter implements Adapter {
+  private readonly secretIds: boolean;
+
   constructor(
     private readonly db: Database,
     private readonly model: string,
-  ) {}
+  ) {
+    this.secretIds = SECRET_ID_MODELS.has(model);
+  }
+
+  private key(id: string): string {
+    return this.secretIds ? sha256(id) : id;
+  }
 
   private where(id: string) {
-    return and(eq(oauthStore.model, this.model), eq(oauthStore.id, id));
+    return and(eq(oauthStore.model, this.model), eq(oauthStore.id, this.key(id)));
   }
 
   private async first(condition: ReturnType<typeof and>): Promise<AdapterPayload | undefined> {
@@ -36,24 +68,26 @@ class ModelAdapter implements Adapter {
     return toPayload(rows[0]);
   }
 
-  async upsert(id: string, payload: AdapterPayload, expiresIn?: number): Promise<void> {
+  async upsert(id: string, payload: AdapterPayload, expiresIn: number = DEFAULT_TTL_SEC): Promise<void> {
+    const { jti: _secret, ...withoutSecret } = payload;
     const columns = {
-      payload: payload as Record<string, unknown>,
+      payload: (this.secretIds ? withoutSecret : payload) as Record<string, unknown>,
       grantId: payload.grantId ?? null,
       uid: payload.uid ?? null,
       userCode: payload.userCode ?? null,
       accountId: payload.accountId ?? null,
-      expiresAt: expiresIn === undefined ? null : Date.now() + expiresIn * 1000,
+      expiresAt: Date.now() + expiresIn * 1000,
       consumedAt: null,
     };
     await this.db
       .insert(oauthStore)
-      .values({ model: this.model, id, ...columns })
+      .values({ model: this.model, id: this.key(id), ...columns })
       .onConflictDoUpdate({ target: [oauthStore.model, oauthStore.id], set: columns });
   }
 
-  find(id: string): Promise<AdapterPayload | undefined> {
-    return this.first(this.where(id));
+  async find(id: string): Promise<AdapterPayload | undefined> {
+    const payload = await this.first(this.where(id));
+    return payload && this.secretIds ? { ...payload, jti: id } : payload;
   }
 
   findByUid(uid: string): Promise<AdapterPayload | undefined> {
@@ -84,6 +118,13 @@ export class OAuthStore {
 
   /** The oidc-provider `adapter` option: one adapter per model name. */
   readonly adapter = (model: string): Adapter => new ModelAdapter(this.db, model);
+
+  /** Delete every grant of a person and every code and token issued under them. */
+  async revokeAllFor(accountId: UserId): Promise<void> {
+    await this.db
+      .delete(oauthStore)
+      .where(and(inArray(oauthStore.model, GRANT_BOUND_MODELS), eq(oauthStore.accountId, accountId)));
+  }
 
   /** The ids and client names of a person's unexpired grants, oldest first. */
   async grantsOf(accountId: UserId): Promise<Array<{ id: string; clientName: string | null }>> {

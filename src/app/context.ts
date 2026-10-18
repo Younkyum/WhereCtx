@@ -272,6 +272,7 @@ export async function createAppContext(
   const webauthn = options.ceremony ?? new SimpleWebAuthnCeremony(config);
   const self = new SelfService({
     ...pick(system, ["users", "workspaces", "passkeys", "sessions", "recovery"]),
+    oauthGrants: system.oauth,
     ceremonies,
     webauthn,
     clock,
@@ -281,6 +282,7 @@ export async function createAppContext(
     store: system.oauth,
     users: system.users,
     keys: await system.serverSecrets.oauthKeys(),
+    clock,
     fetch: options.oauthFetch,
   });
   const services: AccountServices = {
@@ -308,6 +310,7 @@ export async function createAppContext(
         "serverSecrets",
         "settings",
       ]),
+      oauthGrants: system.oauth,
       ceremonies,
       webauthn,
       ownerId: owner,

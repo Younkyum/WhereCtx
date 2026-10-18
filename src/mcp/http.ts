@@ -88,8 +88,22 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   });
 }
 
-/** Returns a Node request listener for the MCP endpoint. */
+/** Returns a Node request listener for the MCP endpoint; it never rejects. */
 export function mcpNodeHandler(ctx: AppContext, authLimiter?: RateLimiter) {
+  const handle = mcpRequest(ctx, authLimiter);
+  return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      await handle(req, res);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("mcp request error:", e);
+      if (!res.headersSent) sendJson(res, 500, { error: "internal server error" });
+      else res.end();
+    }
+  };
+}
+
+function mcpRequest(ctx: AppContext, authLimiter?: RateLimiter) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // Same failed-auth throttle as the REST surface (shared limiter, review M1).
     const clientKey = authLimiter ? nodeClientKey(req, ctx.config.trustProxy) : "";
@@ -103,8 +117,11 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: RateLimiter) {
     const secret = bearerSecret(req);
     const principal = await resolveBearerPrincipal(ctx, secret);
     if (!principal) {
+      // A credential-less request is a client discovering where to get a
+      // token, not a guess, so only a rejected credential counts.
+      if (!secret) return refuse(res, "missing", resourceMetadata);
       authLimiter?.record(clientKey);
-      return refuse(res, secret ? "invalid" : "missing", resourceMetadata);
+      return refuse(res, "invalid", resourceMetadata);
     }
     if (!principal.scopes.includes("read_presence")) return refuse(res, "scope", resourceMetadata);
 
@@ -129,13 +146,7 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: RateLimiter) {
       void server.close();
     });
 
-    try {
-      await server.connect(transport);
-      await transport.handleRequest(req, res, body);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("mcp request error:", e);
-      if (!res.headersSent) sendJson(res, 500, { error: "internal server error" });
-    }
+    await server.connect(transport);
+    await transport.handleRequest(req, res, body);
   };
 }
