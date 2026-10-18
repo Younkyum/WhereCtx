@@ -13,15 +13,9 @@
  * read. It goes to stdout as is and never into the ring.
  */
 
-export const LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
-export type LogLevel = (typeof LOG_LEVELS)[number];
+import { LOG_LEVELS, type LogEntry, type LogLevel } from "./logEntry.js";
 
-export interface LogEntry {
-  level: LogLevel;
-  time: string;
-  msg: string;
-  fields?: Record<string, unknown>;
-}
+export { LOG_LEVELS, type LogEntry, type LogLevel };
 
 export type LogFields = Record<string, unknown>;
 

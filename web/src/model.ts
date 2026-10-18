@@ -212,3 +212,5 @@ export interface LogPage<T> {
   entries: T[];
   next?: string;
 }
+
+export { LOG_LEVELS, type LogEntry, type LogLevel } from "../../src/util/logEntry";

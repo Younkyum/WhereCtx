@@ -261,4 +261,28 @@ describe("log views", () => {
     expect(host.textContent).toContain("OwnTracks location missing lat/lon");
     expect(host.textContent).toContain("Rejected");
   });
+
+  it("Server logs is the operator's alone", async () => {
+    route("GET /v1/admin/logs?level=info&limit=200", () => ({
+      status: 200,
+      body: { entries: [{ level: "warn", time: "2026-10-18T01:00:00.000Z", msg: "owntracks ingest rejected", fields: { error: "bad" } }] },
+    }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { sharingPaused: false } } }));
+    route("GET /v1/presence", () => ({ status: 404, body: {} }));
+    route("GET /v1/people", () => ({ status: 200, body: { people: [] } }));
+
+    await open("#logs");
+    expect(host.querySelector("h1")?.textContent).toBe("Home");
+    expect(host.querySelector('a[href="#logs"]')).toBeNull();
+    await act(async () => root.unmount());
+    root = createRoot(host);
+
+    route("GET /v1/me", () => ({ status: 200, body: { ...ME, isOperator: true } }));
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.querySelector("h1")?.textContent).toBe("Server logs");
+    expect(host.querySelector('a[href="#logs"]')).not.toBeNull();
+    expect(host.textContent).toContain("owntracks ingest rejected");
+    expect(host.textContent).toContain("error=bad");
+  });
 });

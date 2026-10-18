@@ -25,6 +25,7 @@ import {
   House,
   Languages,
   MapPin,
+  ScrollText,
   Share2,
   ShieldCheck,
   Smartphone,
@@ -48,6 +49,7 @@ import { EventsView, PlacesView, PrivacyView, WebhooksView } from "./views/Data"
 import { Gate, InviteAccept } from "./views/Gate";
 import { HistoryView } from "./views/History";
 import { HomeView } from "./views/Home";
+import { ServerLogsView } from "./views/ServerLogs";
 import { SharingView } from "./views/Sharing";
 import { WorkspaceView, selectWorkspace } from "./views/Workspace";
 
@@ -57,6 +59,8 @@ interface View {
   label: I18nKey;
   /** Shown in the main section; the rest sit under "More". */
   main: boolean;
+  /** Only the instance owner sees it (GET /v1/me isOperator). */
+  operatorOnly?: boolean;
   Component: ComponentType;
 }
 
@@ -73,12 +77,17 @@ const VIEWS = [
   { id: "activity", icon: Eye, label: "nav.activity", main: false, Component: ActivityView },
   { id: "events", icon: Activity, label: "nav.events", main: false, Component: EventsView },
   { id: "webhooks", icon: Webhook, label: "nav.webhooks", main: false, Component: WebhooksView },
+  { id: "logs", icon: ScrollText, label: "nav.logs", main: false, operatorOnly: true, Component: ServerLogsView },
 ] as const satisfies readonly View[];
 
 type ViewId = (typeof VIEWS)[number]["id"];
 
-function viewFor(hash: string): (typeof VIEWS)[number] {
-  return VIEWS.find((v) => "#" + v.id === hash) ?? VIEWS[0];
+type AppView = (typeof VIEWS)[number];
+
+const allowed = (v: View, me: Me | null) => !v.operatorOnly || Boolean(me?.isOperator);
+
+function viewFor(hash: string, me: Me | null): AppView {
+  return VIEWS.find((v) => "#" + v.id === hash && allowed(v, me)) ?? VIEWS[0];
 }
 
 type Session = { kind: "booting" } | { kind: "signedOut" } | { kind: "signedIn"; me: Me };
@@ -201,7 +210,7 @@ function SessionRoot(prefs: Prefs) {
     [prefs, t, me, refreshMe, signOut],
   );
 
-  const view = viewFor(hash);
+  const view = viewFor(hash, me);
   useEffect(() => {
     document.title = me ? `${t(view.label)} · WhereCtx` : "WhereCtx";
   }, [me, t, view]);
@@ -289,7 +298,7 @@ function Shell({ route, children }: { route: ViewId | null; children: React.Reac
     window.scrollTo(0, 0);
   }, [route]);
   const items = (main: boolean) =>
-    VIEWS.filter((v) => v.main === main).map((v) => (
+    VIEWS.filter((v) => v.main === main && allowed(v, me)).map((v) => (
       <SideNavItem key={v.id} label={t(v.label)} icon={v.icon} href={"#" + v.id} isSelected={v.id === route} />
     ));
   return (

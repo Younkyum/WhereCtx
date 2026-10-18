@@ -441,6 +441,21 @@ export const EN = {
   "ingest.route.owntracks": "OwnTracks",
   "devices.ot.iosTitle": "On iPhone, allow setup links first",
   "devices.ot.iosDesc": "OwnTracks for iOS 26.2.2 and later refuses setup by link or file (\"URL or file configuration not allowed\"). In OwnTracks, open Settings, allow configuration by URL and config file, confirm the warning, then scan again. Turn it back off once the phone is connected.",
+
+  "nav.logs": "Server logs",
+  "logs.title": "Server logs",
+  "logs.desc": "What the server reported recently. Only you, as the server's operator, can see this.",
+  "logs.recent": "Recent entries",
+  "logs.level": "Show",
+  "logs.level.debug": "Debug",
+  "logs.level.info": "Info",
+  "logs.level.warn": "Warning",
+  "logs.level.error": "Error",
+  "logs.filter.info": "Everything",
+  "logs.filter.warn": "Warnings and errors",
+  "logs.filter.error": "Errors only",
+  "logs.empty": "Nothing logged at this level.",
+  "logs.note": "Tokens, cookies, codes and coordinates are removed before anything is kept. Only the last 1,000 entries since the server started are here; docker logs has the rest.",
 } as const;
 
 export type I18nKey = keyof typeof EN;
