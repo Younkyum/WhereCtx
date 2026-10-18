@@ -2,7 +2,11 @@
  * Drizzle ORM schema for the WhereCtx SQLite store (plan section 9.4 / 10).
  *
  * Design notes:
- * - `presence` holds exactly one current row per user (single-user in v0.1).
+ * - `presence` holds exactly one current row per user.
+ * - Every user-data table carries a NOT NULL `user_id` with no schema default:
+ *   a default would make `userId` optional in Drizzle's insert types, letting a
+ *   forgotten owner silently land rows in another tenant. Migration 0004 rebuilds
+ *   the pre-multi-user tables and backfills their owner in SQL.
  * - Tokens are stored as SHA-256 hashes; the raw secret is never persisted.
  * - Scopes / event lists are stored as JSON text columns for portability.
  * - Timestamps are ISO-8601 strings for round-trip fidelity with the API.
@@ -11,6 +15,7 @@
 import {
   index,
   integer,
+  primaryKey,
   real,
   sqliteTable,
   text,
@@ -24,14 +29,20 @@ import type {
   PresenceEventType,
   PresenceStatus,
   PrivacyMode,
+  ShareAuditAction,
+  ShareAuditReason,
+  ShareLevel,
   TokenRole,
   TokenScope,
 } from "../types.js";
+import type { WorkspaceRole } from "../accounts/types.js";
+import type { AuthenticatorTransportFuture } from "@simplewebauthn/server";
 
 export const tokens = sqliteTable(
   "tokens",
   {
     id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
     name: text("name").notNull(),
     role: text("role").$type<TokenRole>().notNull(),
     scopes: text("scopes", { mode: "json" }).$type<TokenScope[]>().notNull(),
@@ -41,6 +52,7 @@ export const tokens = sqliteTable(
   },
   (t) => ({
     tokenHashIdx: uniqueIndex("tokens_token_hash_idx").on(t.tokenHash),
+    userIdx: index("tokens_user_idx").on(t.userId),
   }),
 );
 
@@ -108,6 +120,7 @@ export const presenceEvents = sqliteTable(
   "presence_events",
   {
     id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
     type: text("type").$type<PresenceEventType>().notNull(),
     placeName: text("place_name"),
     status: text("status"),
@@ -116,6 +129,13 @@ export const presenceEvents = sqliteTable(
   },
   (t) => ({
     createdAtIdx: index("presence_events_created_at_idx").on(t.createdAt),
+    // listRecent/listSince filter by user_id then order/range on the
+    // (created_at, id) keyset cursor.
+    userCreatedIdx: index("presence_events_user_created_idx").on(
+      t.userId,
+      t.createdAt,
+      t.id,
+    ),
   }),
 );
 
@@ -166,20 +186,28 @@ export const privacySettings = sqliteTable("privacy_settings", {
   storeRawHistory: integer("store_raw_history", { mode: "boolean" })
     .notNull()
     .default(false),
+  sharingPaused: integer("sharing_paused", { mode: "boolean" }).notNull().default(false),
   updatedAt: text("updated_at").notNull(),
 });
 
-export const webhooks = sqliteTable("webhooks", {
-  id: text("id").primaryKey(),
-  url: text("url").notNull(),
-  // JSON array of PresenceEventType, or ["*"] for all events.
-  events: text("events", { mode: "json" }).$type<string[]>().notNull(),
-  secret: text("secret"),
-  active: integer("active", { mode: "boolean" }).notNull().default(true),
-  /** Delivery cursor: ISO createdAt of the last event delivered to this hook. */
-  cursor: text("cursor"),
-  createdAt: text("created_at").notNull(),
-});
+export const webhooks = sqliteTable(
+  "webhooks",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    url: text("url").notNull(),
+    // JSON array of PresenceEventType, or ["*"] for all events.
+    events: text("events", { mode: "json" }).$type<string[]>().notNull(),
+    secret: text("secret"),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    /** Delivery cursor: ISO createdAt of the last event delivered to this hook. */
+    cursor: text("cursor"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    userIdx: index("webhooks_user_idx").on(t.userId),
+  }),
+);
 
 /**
  * Dead-letter log for webhook events that could not be delivered after the
@@ -205,6 +233,7 @@ export const reminders = sqliteTable(
   "reminders",
   {
     id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
     placeName: text("place_name").notNull(),
     message: text("message").notNull(),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
@@ -212,7 +241,203 @@ export const reminders = sqliteTable(
     triggeredAt: text("triggered_at"),
   },
   (t) => ({
-    activeIdx: index("reminders_active_idx").on(t.active),
+    userActiveIdx: index("reminders_user_active_idx").on(t.userId, t.active),
+  }),
+);
+
+/**
+ * Human accounts. `id` is the same key every user-data table calls user_id.
+ * `webauthn_handle` (32 random bytes, hex) is the WebAuthn user.id handed to
+ * authenticators, so the internal id never leaves the server that way.
+ */
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    displayName: text("display_name").notNull(),
+    webauthnHandle: text("webauthn_handle").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    handleIdx: uniqueIndex("users_webauthn_handle_idx").on(t.webauthnHandle),
+  }),
+);
+
+export const workspaces = sqliteTable("workspaces", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const memberships = sqliteTable(
+  "memberships",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    userId: text("user_id").notNull(),
+    role: text("role").$type<WorkspaceRole>().notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.workspaceId, t.userId] }),
+    userIdx: index("memberships_user_idx").on(t.userId),
+  }),
+);
+
+/**
+ * Find-My style location sharing between two people: `owner` lets `viewer`
+ * see their presence at `level`. A share only counts while the two still
+ * belong to a common workspace: reads join on it, and a trigger in migration
+ * 0006 deletes the share when the last common membership goes.
+ */
+export const locationShares = sqliteTable(
+  "location_shares",
+  {
+    ownerUserId: text("owner_user_id").notNull(),
+    viewerUserId: text("viewer_user_id").notNull(),
+    level: text("level").$type<ShareLevel>().notNull(),
+    /** Withhold exact coordinates while the owner is at or near home. */
+    hideHomeExact: integer("hide_home_exact", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.ownerUserId, t.viewerUserId] }),
+    viewerIdx: index("location_shares_viewer_idx").on(t.viewerUserId),
+  }),
+);
+
+/**
+ * The owner's audit of their shares: grants, changes, revokes (with why, when
+ * not the owner's own doing) and precise views. `before_*` is null for a
+ * grant, `after_*` for a revoke, both for a precise view. Append-only, pruned
+ * after SHARE_AUDIT_RETENTION_DAYS.
+ */
+export const shareAudit = sqliteTable(
+  "share_audit",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id").notNull(),
+    viewerUserId: text("viewer_user_id").notNull(),
+    action: text("action").$type<ShareAuditAction>().notNull(),
+    reason: text("reason").$type<ShareAuditReason>(),
+    beforeLevel: text("before_level").$type<ShareLevel>(),
+    afterLevel: text("after_level").$type<ShareLevel>(),
+    beforeHideHome: integer("before_hide_home", { mode: "boolean" }),
+    afterHideHome: integer("after_hide_home", { mode: "boolean" }),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    ownerCreatedIdx: index("share_audit_owner_created_idx").on(t.ownerUserId, t.createdAt),
+  }),
+);
+
+/** WebAuthn credentials. `public_key` is the COSE key, base64url. */
+export const passkeys = sqliteTable(
+  "passkeys",
+  {
+    credentialId: text("credential_id").primaryKey(),
+    userId: text("user_id").notNull(),
+    publicKey: text("public_key").notNull(),
+    counter: integer("counter").notNull(),
+    transports: text("transports", { mode: "json" })
+      .$type<AuthenticatorTransportFuture[]>()
+      .notNull(),
+    name: text("name").notNull(),
+    createdAt: text("created_at").notNull(),
+    lastUsedAt: text("last_used_at"),
+  },
+  (t) => ({
+    userIdx: index("passkeys_user_idx").on(t.userId),
+  }),
+);
+
+/** Browser sessions. Only the SHA-256 of the cookie value is stored. */
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    idHash: text("id_hash").primaryKey(),
+    userId: text("user_id").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    lastSeenAt: text("last_seen_at").notNull(),
+    /** Last passkey (or recovery/access code) proof; gates sensitive changes. */
+    reauthAt: text("reauth_at").notNull(),
+    userAgent: text("user_agent"),
+  },
+  (t) => ({
+    userIdx: index("sessions_user_idx").on(t.userId),
+    expiresIdx: index("sessions_expires_idx").on(t.expiresAt),
+  }),
+);
+
+export const invites = sqliteTable(
+  "invites",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    role: text("role").$type<WorkspaceRole>().notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    usedAt: text("used_at"),
+    usedBy: text("used_by"),
+  },
+  (t) => ({
+    tokenHashIdx: uniqueIndex("invites_token_hash_idx").on(t.tokenHash),
+    workspaceIdx: index("invites_workspace_idx").on(t.workspaceId),
+  }),
+);
+
+/**
+ * Recovery codes: `lookup_id` is the public first group of the code and finds
+ * the row; only the SHA-256 of the remaining secret part is stored.
+ */
+export const recoveryCodes = sqliteTable(
+  "recovery_codes",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    lookupId: text("lookup_id").notNull(),
+    secretHash: text("secret_hash").notNull(),
+    usedAt: text("used_at"),
+  },
+  (t) => ({
+    lookupIdx: index("recovery_codes_lookup_idx").on(t.lookupId),
+    userIdx: index("recovery_codes_user_idx").on(t.userId),
+  }),
+);
+
+/** Operator-issued one-time codes that let a user register a passkey (reset-access). */
+export const accessCodes = sqliteTable(
+  "access_codes",
+  {
+    userId: text("user_id").primaryKey(),
+    codeHash: text("code_hash").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (t) => ({
+    codeHashIdx: uniqueIndex("access_codes_code_hash_idx").on(t.codeHash),
+  }),
+);
+
+/** Per-install secrets generated on first boot (ceremony signing key, setup code hash). */
+export const serverSecrets = sqliteTable("server_secrets", {
+  name: text("name").primaryKey(),
+  value: text("value").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Spent WebAuthn ceremony nonces, kept until the ceremony would have expired anyway. */
+export const usedNonces = sqliteTable(
+  "used_nonces",
+  {
+    nonce: text("nonce").primaryKey(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (t) => ({
+    expiresIdx: index("used_nonces_expires_idx").on(t.expiresAt),
   }),
 );
 
@@ -226,6 +451,18 @@ export const schema = {
   webhooks,
   webhookDeliveries,
   reminders,
+  users,
+  workspaces,
+  memberships,
+  locationShares,
+  shareAudit,
+  passkeys,
+  sessions,
+  invites,
+  recoveryCodes,
+  accessCodes,
+  serverSecrets,
+  usedNonces,
 };
 
 // NOTE: all timestamp columns store app-generated ISO-8601 strings

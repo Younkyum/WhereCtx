@@ -1,12 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { createDb, ensureSchema, type DbHandle } from "../db/index.js";
+import { asUserId } from "../types.js";
 import { EventsStore } from "../store/eventsStore.js";
 import { WebhooksStore } from "../store/webhooksStore.js";
 import { WebhookDispatcher, type DispatcherOptions } from "./dispatcher.js";
 
 let nowMs = Date.parse("2026-06-05T00:00:00.000Z");
 const clock = () => new Date(nowMs);
+
+const USER = asUserId("default");
 
 let handle: DbHandle;
 let events: EventsStore;
@@ -36,11 +39,11 @@ beforeEach(async () => {
 
 describe("WebhookDispatcher", () => {
   it("delivers events created after the cursor and advances it", async () => {
-    await webhooks.create({ url: "https://example.test/hook", events: ["*"] });
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"] });
     nowMs += 1000;
-    await events.append({ type: "presence.updated", status: "home" });
+    await events.append(USER, { type: "presence.updated", status: "home" });
     nowMs += 1; // distinct ms
-    await events.append({ type: "presence.entered_place", placeName: "home" });
+    await events.append(USER, { type: "presence.entered_place", placeName: "home" });
 
     const calls: Array<{ url: string; body: string }> = [];
     const fetchFn = vi.fn(async (url: string, init: any) => {
@@ -58,11 +61,11 @@ describe("WebhookDispatcher", () => {
   });
 
   it("does NOT drop sibling events that share a millisecond (composite cursor)", async () => {
-    await webhooks.create({ url: "https://example.test/hook", events: ["*"] });
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"] });
     nowMs += 1000;
     // Two events at the SAME createdAt (same nowMs) — the H2 boundary.
-    await events.append({ type: "presence.updated", status: "home" });
-    await events.append({ type: "presence.entered_place", placeName: "home" });
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    await events.append(USER, { type: "presence.entered_place", placeName: "home" });
 
     // Deliver only the first event per tick, failing afterward, to force the
     // cursor to be persisted mid-cluster.
@@ -85,10 +88,10 @@ describe("WebhookDispatcher", () => {
   });
 
   it("delivers a filtered hook's enter event even when an updated shares its ms", async () => {
-    await webhooks.create({ url: "https://example.test/hook", events: ["presence.entered_place"] });
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["presence.entered_place"] });
     nowMs += 1000;
-    await events.append({ type: "presence.updated", status: "home" }); // unsubscribed
-    await events.append({ type: "presence.entered_place", placeName: "home" }); // subscribed, same ms
+    await events.append(USER, { type: "presence.updated", status: "home" }); // unsubscribed
+    await events.append(USER, { type: "presence.entered_place", placeName: "home" }); // subscribed, same ms
 
     const fetchFn = vi.fn(async () => new Response(null, { status: 200 }));
     await makeDispatcher({ fetchFn: fetchFn as any }).tick();
@@ -98,11 +101,11 @@ describe("WebhookDispatcher", () => {
   });
 
   it("only delivers subscribed event types", async () => {
-    await webhooks.create({ url: "https://example.test/hook", events: ["presence.entered_place"] });
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["presence.entered_place"] });
     nowMs += 1000;
-    await events.append({ type: "presence.updated", status: "home" });
+    await events.append(USER, { type: "presence.updated", status: "home" });
     nowMs += 1;
-    await events.append({ type: "presence.entered_place", placeName: "home" });
+    await events.append(USER, { type: "presence.entered_place", placeName: "home" });
 
     const fetchFn = vi.fn(async () => new Response(null, { status: 200 }));
     await makeDispatcher({ fetchFn: fetchFn as any }).tick();
@@ -111,9 +114,9 @@ describe("WebhookDispatcher", () => {
 
   it("signs `timestamp.body` with HMAC-SHA256 and exposes the timestamp", async () => {
     const secret = "shhh-very-secret-value";
-    await webhooks.create({ url: "https://example.test/hook", events: ["*"], secret });
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], secret });
     nowMs += 1000;
-    await events.append({ type: "presence.updated", status: "home" });
+    await events.append(USER, { type: "presence.updated", status: "home" });
 
     let captured: { body: string; sig?: string; ts?: string } | null = null;
     const fetchFn = vi.fn(async (_url: string, init: any) => {
@@ -142,7 +145,7 @@ describe("WebhookDispatcher", () => {
     const box = new SecretBox("test-encryption-key");
     const store = new WebhooksStore(handle.db, clock, box);
     const secret = "shhh-very-secret-value";
-    await store.create({ url: "https://example.test/hook", events: ["*"], secret });
+    await store.create(USER, { url: "https://example.test/hook", events: ["*"], secret });
 
     // Raw row must not contain the plaintext secret.
     const raw = await handle.client.execute("SELECT secret FROM webhooks");
@@ -151,7 +154,7 @@ describe("WebhookDispatcher", () => {
     expect(storedSecret.startsWith("enc:v1:")).toBe(true);
 
     nowMs += 1000;
-    await events.append({ type: "presence.updated", status: "home" });
+    await events.append(USER, { type: "presence.updated", status: "home" });
 
     let captured: { body: string; sig?: string; ts?: string } | null = null;
     const fetchFn = vi.fn(async (_url: string, init: any) => {
@@ -177,7 +180,7 @@ describe("WebhookDispatcher", () => {
     const { SecretBox } = await import("./secretBox.js");
     const writeBox = new SecretBox("key-A");
     const writeStore = new WebhooksStore(handle.db, clock, writeBox);
-    await writeStore.create({ url: "https://example.test/hook", events: ["*"], secret: "s3cret-value" });
+    await writeStore.create(USER, { url: "https://example.test/hook", events: ["*"], secret: "s3cret-value" });
 
     // Same rows read with a DIFFERENT key -> hook must be excluded, not
     // delivered with a wrong signature.
@@ -185,7 +188,7 @@ describe("WebhookDispatcher", () => {
     expect(await readStore.listActive()).toHaveLength(0);
 
     nowMs += 1000;
-    await events.append({ type: "presence.updated", status: "home" });
+    await events.append(USER, { type: "presence.updated", status: "home" });
     const fetchFn = vi.fn(async () => new Response(null, { status: 200 }));
     await makeDispatcher({ webhooksStore: readStore, fetchFn: fetchFn as any }).tick();
     expect(fetchFn).not.toHaveBeenCalled();
@@ -193,7 +196,7 @@ describe("WebhookDispatcher", () => {
 
   it("re-encrypts legacy plaintext secrets on demand", async () => {
     const secret = "legacy-plaintext-secret";
-    await webhooks.create({ url: "https://example.test/hook", events: ["*"], secret });
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], secret });
 
     const { SecretBox } = await import("./secretBox.js");
     const store = new WebhooksStore(handle.db, clock, new SecretBox("test-key"));
@@ -203,30 +206,30 @@ describe("WebhookDispatcher", () => {
     const raw = await handle.client.execute("SELECT secret FROM webhooks");
     expect(String(raw.rows[0]!["secret"]).startsWith("enc:v1:")).toBe(true);
     // Decrypted view still returns the original secret.
-    const [hook] = await store.list();
+    const [hook] = await store.list(USER);
     expect(hook!.secret).toBe(secret);
   });
 
   it("dead-letters an event after maxAttempts and advances past it", async () => {
-    await webhooks.create({ url: "https://example.test/hook", events: ["*"] });
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"] });
     nowMs += 1000;
-    await events.append({ type: "presence.updated", status: "home" });
+    await events.append(USER, { type: "presence.updated", status: "home" });
 
     const fetchFn = vi.fn(async () => new Response(null, { status: 500 }));
     const dispatcher = makeDispatcher({ fetchFn: fetchFn as any, maxAttempts: 2 });
     await dispatcher.tick(); // attempt 1
     await dispatcher.tick(); // attempt 2 -> dead-letter + advance
 
-    const dead = await webhooks.listDeadLetters();
+    const dead = await webhooks.listDeadLetters(USER);
     expect(dead).toHaveLength(1);
     expect(dead[0]!.eventType).toBe("presence.updated");
     expect(dead[0]!.error).toContain("500");
   });
 
   it("refuses to deliver to a private/reserved target (SSRF) and dead-letters", async () => {
-    await webhooks.create({ url: "https://internal.test/hook", events: ["*"] });
+    await webhooks.create(USER, { url: "https://internal.test/hook", events: ["*"] });
     nowMs += 1000;
-    await events.append({ type: "presence.updated", status: "home" });
+    await events.append(USER, { type: "presence.updated", status: "home" });
 
     const fetchFn = vi.fn(async () => new Response(null, { status: 200 }));
     const dispatcher = makeDispatcher({
@@ -238,8 +241,101 @@ describe("WebhookDispatcher", () => {
     await dispatcher.tick();
 
     expect(fetchFn).not.toHaveBeenCalled(); // never actually POSTed
-    const dead = await webhooks.listDeadLetters();
+    const dead = await webhooks.listDeadLetters(USER);
     expect(dead).toHaveLength(1);
     expect(dead[0]!.error).toMatch(/private|reserved/);
+  });
+});
+
+describe("WebhookDispatcher scheduling", () => {
+  const OTHER = asUserId("other");
+
+  /** A fake endpoint per URL: "hang" waits until aborted, "ok" answers 200. */
+  function endpoints(behavior: (url: string) => "hang" | "ok") {
+    const delivered: Array<{ url: string; id: string }> = [];
+    const hanging = new Set<string>();
+    const fetchFn = (async (url: string, init: RequestInit) => {
+      if (behavior(url) === "ok") {
+        delivered.push({ url, id: JSON.parse(String(init.body)).id });
+        return new Response(null, { status: 200 });
+      }
+      hanging.add(url);
+      return new Promise<Response>((_, reject) => {
+        init.signal!.addEventListener("abort", () => {
+          hanging.delete(url);
+          reject(new Error("aborted"));
+        });
+      });
+    }) as unknown as typeof fetch;
+    return { fetchFn, delivered, hanging };
+  }
+
+  it("delivers another user's new events while one user's endpoint hangs", async () => {
+    await webhooks.create(USER, { url: "https://slow.test/hook", events: ["*"] });
+    await webhooks.create(OTHER, { url: "https://fast.test/hook", events: ["*"] });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    const first = await events.append(OTHER, { type: "presence.updated", status: "home" });
+
+    const ep = endpoints((url) => (url.includes("slow") ? "hang" : "ok"));
+    const dispatcher = makeDispatcher({ fetchFn: ep.fetchFn, timeoutMs: 60_000 });
+    dispatcher.nudge();
+    await vi.waitFor(() => expect(ep.delivered.map((d) => d.id)).toEqual([first.id]));
+
+    nowMs += 1;
+    const second = await events.append(OTHER, { type: "presence.entered_place", placeName: "home" });
+    dispatcher.nudge();
+    await vi.waitFor(() => expect(ep.delivered.map((d) => d.id)).toEqual([first.id, second.id]));
+    expect(ep.hanging).toEqual(new Set(["https://slow.test/hook"]));
+
+    await dispatcher.stop();
+    expect(ep.hanging.size).toBe(0);
+    expect(await webhooks.listDeadLetters(USER)).toEqual([]);
+  });
+
+  it("caps drains per user and in total", async () => {
+    for (let i = 0; i < 3; i++) await webhooks.create(USER, { url: `https://a${i}.test/hook`, events: ["*"] });
+    for (let i = 0; i < 3; i++) await webhooks.create(OTHER, { url: `https://b${i}.test/hook`, events: ["*"] });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    await events.append(OTHER, { type: "presence.updated", status: "home" });
+
+    const ep = endpoints(() => "hang");
+    const dispatcher = makeDispatcher({
+      fetchFn: ep.fetchFn,
+      timeoutMs: 60_000,
+      maxConcurrent: 3,
+      perUserSlots: 2,
+    });
+    dispatcher.nudge();
+    await vi.waitFor(() => expect(ep.hanging.size).toBe(3));
+    await new Promise((r) => setTimeout(r, 20));
+    const perUser = (prefix: string) => [...ep.hanging].filter((u) => u.startsWith(prefix)).length;
+    expect(ep.hanging.size).toBe(3);
+    expect(perUser("https://a")).toBe(2);
+    expect(perUser("https://b")).toBe(1);
+    await dispatcher.stop();
+  });
+
+  it("stops a drain at its time budget and resumes from the cursor", async () => {
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"] });
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      nowMs += 1000;
+      ids.push((await events.append(USER, { type: "presence.updated", status: "home" })).id);
+    }
+
+    const delivered: string[] = [];
+    const fetchFn = (async (_url: string, init: RequestInit) => {
+      delivered.push(JSON.parse(String(init.body)).id);
+      nowMs += 4_000;
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+    const dispatcher = makeDispatcher({ fetchFn, drainBudgetMs: 10_000 });
+
+    await dispatcher.tick();
+    expect(delivered).toEqual(ids.slice(0, 3));
+    await dispatcher.tick();
+    expect(delivered).toEqual(ids);
   });
 });

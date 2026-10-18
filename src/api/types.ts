@@ -1,8 +1,23 @@
-import type { VerifiedToken } from "../auth/tokens.js";
+import type { AccountScope, UserScope } from "../app/context.js";
+import type { Principal } from "../auth/principal.js";
 
-/** Hono environment: the authenticated token is attached by bearerAuth. */
+/**
+ * Hono environment, filled by `authenticate`: the principal for scope checks
+ * and the user scope every handler reads and writes through.
+ */
 export type AppEnv = {
   Variables: {
-    token: VerifiedToken;
+    principal: Principal;
+    scope: UserScope;
+  };
+};
+
+/**
+ * Environment of routes behind `sessionAuth`: the signed-in person's account
+ * scope, the only thing those handlers act through.
+ */
+export type SessionEnv = {
+  Variables: {
+    account: AccountScope;
   };
 };

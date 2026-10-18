@@ -7,7 +7,7 @@
  * URLs work.
  */
 
-import type { PrivacyMode } from "./types.js";
+import { asUserId, type PrivacyMode, type UserId } from "./types.js";
 import { normalizeDatabaseUrl } from "./db/url.js";
 
 export { normalizeDatabaseUrl };
@@ -57,12 +57,36 @@ function envPrivacy(key: string, fallback: PrivacyMode): PrivacyMode {
   );
 }
 
+/**
+ * Which proxy headers name the client, for rate limiting. `none` uses the TCP
+ * peer address; `cloudflare` trusts `cf-connecting-ip` (Cloudflare Tunnel);
+ * `xff` trusts the first `x-forwarded-for` hop. Trust a header only when every
+ * request reaches the server through that proxy, or clients can spoof it.
+ */
+export type TrustProxy = "none" | "cloudflare" | "xff";
+
+function envTrustProxy(key: string): TrustProxy {
+  const v = envStr(key, "none");
+  if (v === "none" || v === "cloudflare" || v === "xff") return v;
+  throw new Error(`Invalid value for env ${key}: "${v}" (expected none|cloudflare|xff)`);
+}
+
 export interface Config {
   port: number;
   host: string;
   baseUrl: string;
+  trustProxy: TrustProxy;
+  /**
+   * Whether any signed-in person may create workspaces. When false, only
+   * USER_ID and people who own or administer a workspace may.
+   */
+  allowMemberWorkspaces: boolean;
   databaseUrl: string;
-  userId: string;
+  /**
+   * Owner of bootstrap tokens and the first-boot settings row. Read only by
+   * `createAppContext`; request paths take the user from their credential.
+   */
+  defaultUserId: UserId;
   bootstrapTokens: {
     admin?: string;
     device?: string;
@@ -83,6 +107,10 @@ export interface Config {
   events: {
     /** Retention window for presence_events + webhook dead-letters (hours). */
     retentionHours: number;
+  };
+  sharing: {
+    /** How long the share audit (grants, revokes, precise views) is kept (days). */
+    auditRetentionDays: number;
   };
   geofence: {
     nearRadiusMultiplier: number;
@@ -112,8 +140,10 @@ export function loadConfig(): Config {
     port: envInt("PORT", 8787),
     host: envStr("HOST", "0.0.0.0"),
     baseUrl,
+    trustProxy: envTrustProxy("TRUST_PROXY"),
+    allowMemberWorkspaces: envBool("ALLOW_MEMBER_WORKSPACES", true),
     databaseUrl: normalizeDatabaseUrl(envStr("DATABASE_URL", "file:./data/wherectx.db")),
-    userId: envStr("USER_ID", "default"),
+    defaultUserId: asUserId(envStr("USER_ID", "default")),
     bootstrapTokens: {
       admin: envOptional("ADMIN_TOKEN"),
       device: envOptional("DEVICE_TOKEN"),
@@ -133,6 +163,9 @@ export function loadConfig(): Config {
       // 30 days by default. Floor of 1h so a misconfiguration cannot wipe the
       // event log out from under undelivered webhook cursors.
       retentionHours: Math.max(1, envInt("EVENT_RETENTION_HOURS", 720)),
+    },
+    sharing: {
+      auditRetentionDays: Math.max(1, envInt("SHARE_AUDIT_RETENTION_DAYS", 365)),
     },
     geofence: {
       nearRadiusMultiplier,

@@ -2,13 +2,18 @@
  * Webhook subscriptions repository (plan section 9.8).
  * Each subscription has a target URL, a list of event types (or ["*"]), and an
  * optional shared secret used to sign deliveries (HMAC) in Phase 4.
+ *
+ * User-facing CRUD is scoped to the owning user. The dispatcher's `listActive`
+ * and the boot-time secret hygiene helpers are deliberately cross-user; each
+ * returned `Webhook` carries its `userId` so delivery reads only its owner's
+ * events.
  */
 
 import { randomBytes } from "node:crypto";
-import { desc, eq, isNotNull, lt } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { webhookDeliveries, webhooks } from "../db/schema.js";
-import type { PresenceEvent } from "../types.js";
+import { asUserId, type PresenceEvent, type UserId } from "../types.js";
 import { isEncryptedSecret, type SecretBox } from "../webhooks/secretBox.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
@@ -31,6 +36,7 @@ export interface DeadLetter {
 
 export interface Webhook {
   id: string;
+  userId: UserId;
   url: string;
   events: string[];
   secret?: string;
@@ -42,6 +48,7 @@ export interface Webhook {
 
 interface WebhookRow {
   id: string;
+  userId: string;
   url: string;
   events: string[];
   secret: string | null;
@@ -86,6 +93,7 @@ export class WebhooksStore {
     }
     return {
       id: row.id,
+      userId: asUserId(row.userId),
       url: row.url,
       events: row.events,
       secret,
@@ -95,16 +103,20 @@ export class WebhooksStore {
     };
   }
 
-  async create(input: {
-    url: string;
-    events: string[];
-    secret?: string;
-  }): Promise<Webhook> {
+  async create(
+    userId: UserId,
+    input: {
+      url: string;
+      events: string[];
+      secret?: string;
+    },
+  ): Promise<Webhook> {
     // Start the delivery cursor at "now" (with the max event id) so a new hook
     // receives future events only, not the entire historical backlog.
     const now = nowIso(this.clock);
     const record: WebhookRow = {
       id: randomBytes(16).toString("hex"),
+      userId,
       url: input.url,
       events: input.events.length > 0 ? input.events : ["*"],
       secret:
@@ -123,6 +135,7 @@ export class WebhooksStore {
     // never echo it back to clients after this point (the REST router strips it).
     return {
       id: record.id,
+      userId,
       url: record.url,
       events: record.events,
       secret: input.secret,
@@ -187,11 +200,25 @@ export class WebhooksStore {
     });
   }
 
-  async listDeadLetters(limit = 100): Promise<DeadLetter[]> {
+  /**
+   * Dead letters for the caller's own hooks. `webhook_deliveries` has no owner
+   * column, so ownership comes from the parent hook (deleting a hook deletes its
+   * dead letters).
+   */
+  async listDeadLetters(userId: UserId, limit = 100): Promise<DeadLetter[]> {
     const capped = Math.max(1, Math.min(limit, 500));
     const rows = (await this.db
-      .select()
+      .select({
+        id: webhookDeliveries.id,
+        webhookId: webhookDeliveries.webhookId,
+        eventId: webhookDeliveries.eventId,
+        eventType: webhookDeliveries.eventType,
+        error: webhookDeliveries.error,
+        createdAt: webhookDeliveries.createdAt,
+      })
       .from(webhookDeliveries)
+      .innerJoin(webhooks, eq(webhooks.id, webhookDeliveries.webhookId))
+      .where(eq(webhooks.userId, userId))
       .orderBy(desc(webhookDeliveries.createdAt))
       .limit(capped)) as Array<{
       id: string;
@@ -211,6 +238,7 @@ export class WebhooksStore {
     }));
   }
 
+  /** Every active hook across all users (dispatcher only). */
   async listActive(): Promise<Webhook[]> {
     const rows = (await this.db
       .select()
@@ -221,8 +249,11 @@ export class WebhooksStore {
       .filter((w): w is Webhook => w !== null);
   }
 
-  async list(): Promise<Webhook[]> {
-    const rows = (await this.db.select().from(webhooks)) as WebhookRow[];
+  async list(userId: UserId): Promise<Webhook[]> {
+    const rows = (await this.db
+      .select()
+      .from(webhooks)
+      .where(eq(webhooks.userId, userId))) as WebhookRow[];
     return rows
       .map((r) => this.rowToWebhook(r))
       .filter((w): w is Webhook => w !== null);
@@ -239,8 +270,28 @@ export class WebhooksStore {
     return result.rowsAffected ?? 0;
   }
 
-  async delete(id: string): Promise<boolean> {
-    const result = await this.db.delete(webhooks).where(eq(webhooks.id, id));
+  async count(userId: UserId): Promise<number> {
+    const rows = (await this.db
+      .select({ c: sql<number>`count(*)` })
+      .from(webhooks)
+      .where(eq(webhooks.userId, userId))) as Array<{ c: number }>;
+    return rows[0]?.c ?? 0;
+  }
+
+  /** Delete an owned hook together with its dead letters, atomically. */
+  async delete(userId: UserId, id: string): Promise<boolean> {
+    const owned = and(eq(webhooks.userId, userId), eq(webhooks.id, id));
+    const [, result] = await this.db.batch([
+      this.db
+        .delete(webhookDeliveries)
+        .where(
+          inArray(
+            webhookDeliveries.webhookId,
+            this.db.select({ id: webhooks.id }).from(webhooks).where(owned),
+          ),
+        ),
+      this.db.delete(webhooks).where(owned),
+    ]);
     return (result.rowsAffected ?? 0) > 0;
   }
 }

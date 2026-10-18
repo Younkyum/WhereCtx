@@ -1,8 +1,8 @@
-# WhereCtx — Design Decisions (v0.1)
+# WhereCtx design decisions
 
-This document records cross-cutting decisions so later phases (and reviewers)
-have a single, authoritative reference. It resolves the plan's "Open Questions"
-(section 22) and the ambiguities surfaced during Phase 1 review.
+This document records cross-cutting decisions so later phases and reviewers
+have one reference. It started by resolving the plan's "Open Questions"
+(section 22) for v0.1. Later entries are dated.
 
 ## Open Questions (plan §22) — resolved
 
@@ -13,7 +13,7 @@ have a single, authoritative reference. It resolves the plan's "Open Questions"
 | 3 | Precise approval interactive vs static? | **Static policy only** in v0.1 (`ALLOW_PRECISE_TO_AGENT`, `PRECISE_REQUIRES_REASON`). Interactive approval is v0.2. |
 | 4 | Store raw history by default? | **No.** `STORE_RAW_HISTORY=false`. Presence-first philosophy. |
 | 5 | Reverse geocoding in v0.1? | **No.** Coarse location uses geohash only. Reverse geocoding is an optional v0.2 integration. |
-| 6 | Single or multi-user in v0.1? | **Single-user.** All presence is attributed to `USER_ID` (default `"default"`). See "Single-user scope" below. |
+| 6 | Single or multi-user in v0.1? | **Single-user** in v0.1. Since then every row is owned by a user and several people share one install. See "Single-user scope" and the 2026-10-18 entry below. |
 | 7 | `near_home`/`home` separate or distance metadata? | **Separate statuses** (the plan enumerates both). `near_*` is derived from `radiusM * NEAR_RADIUS_MULTIPLIER`. |
 
 ## Config vs DB precedence (privacy / retention / stale)
@@ -21,10 +21,11 @@ have a single, authoritative reference. It resolves the plan's "Open Questions"
 Several values exist both as environment config **and** as persisted DB rows
 (`privacy_settings`, and per-reading fields on `presence`). The rule:
 
-> **Environment seeds the `privacy_settings` row on first boot. Thereafter the
-> persisted row is authoritative.** Dashboard/admin edits write the DB row and
-> must stick across restarts; env changes only affect a database that has not
-> yet been seeded.
+> **Environment seeds a user's `privacy_settings` row the first time it is
+> read** (at boot for `USER_ID`, on first request for any other user).
+> **Thereafter the persisted row is authoritative.** Dashboard/admin edits write
+> the DB row and must stick across restarts; env changes only affect users whose
+> row has not yet been seeded.
 
 Naming is aligned on `defaultAgentAccess` across the type (`PrivacySettings`),
 the DB column (`default_agent_access`), and the config field
@@ -37,13 +38,112 @@ re-age historical readings.
 
 ## Single-user scope (v0.1)
 
-v0.1 is explicitly single-user. `user_id` columns exist on the naturally
-user-owned entities (`presence`, `places`, `privacy_settings`,
-`location_history`) to make the v0.2 multi-user migration cheaper. Global/ops
-entities (`tokens`, `webhooks`, `reminders`, `presence_events`) are intentionally
-**not** user-scoped in v0.1. All store queries filter by `config.userId`. Multi-
-user (plan §15) will add the remaining `user_id` columns and per-token user
-binding in one migration.
+v0.1 shipped single-user. Migration 0004 rebuilt `tokens`, `webhooks`,
+`reminders`, and `presence_events` with a `user_id NOT NULL` column and no
+default, so every user-data table is now owned by a user. Pre-existing rows went
+to the owner of the single v0.1 `privacy_settings` row (the `USER_ID` that
+install booted with), or `'default'` if there was none. Every token belongs to a
+user, and every REST route and MCP tool works through a scope bound to the user
+of the presented token.
+
+`USER_ID` names the owner of the env-configured bootstrap tokens and of the
+settings row seeded at boot, and if that user has no admin token one is
+generated for it. Changing `USER_ID` after first boot does not move any data:
+existing rows and env tokens keep their original owner (boot warns when an env
+token belongs to someone else).
+
+## Accounts, workspaces, passkeys
+
+People sign in with passkeys and hold a browser session; tokens stay the
+credential of agents, devices, and automation. Sessions and passkeys are
+implemented in-house on `@simplewebauthn/server` rather than an auth framework:
+the surface is small (no passwords, no email, no OAuth) and keeping it in the
+codebase keeps the per-user scoping model in one place.
+
+- **Workspaces group people, not data.** Every location row still belongs to
+  one user. A workspace role grants rights over the workspace itself (name,
+  members, invites), never over another member's location.
+- **Roles are a registry** (`src/accounts/types.ts`): what each role may do,
+  and which roles it may grant or act on. Admins cannot create or touch owners.
+  Non-members get 404 for a workspace, never 403. The service checks the
+  registry before a write, and the write re-checks it in SQL
+  (`src/accounts/roleSql.ts`): an UPDATE or DELETE on a membership only lands
+  if the actor's *current* role may act on the target's *current* role (and on
+  the role being granted), next to the guard that a workspace keeps an owner.
+  A role that changes between the check and the write cannot be exceeded.
+- **Account scope.** Like `forUser(userId)` for location data,
+  `forSession(actor)` hands `/v1/me` and `/v1/workspaces` handlers an
+  `AccountScope` whose methods are pre-bound to the signed-in session. The
+  sign-in ceremonies get only `PasskeyAuth`, built from exactly the stores it
+  uses.
+- **First owner.** While no passkey exists, boot prints a one-time setup code
+  and stores its hash in `server_secrets`, so any instance sharing the
+  database can check it; a restart replaces it. Only someone who can read the
+  server log can register the first passkey, which goes to `USER_ID`.
+  Migration 0005 made every pre-existing user the owner of their own
+  "Default" workspace; boot does the same for `USER_ID` on a fresh install.
+- **Operator break-glass.** `node dist/cli.js reset-access <userId>` (or
+  `npm run reset-access -- <userId>`) stores a one-time access code for that
+  user (hashed, valid 1 hour) and prints it. `POST
+  /v1/auth/access-code/options|verify` registers a passkey with it, signs the
+  user out everywhere else, and issues new recovery codes. It is the way back
+  for someone with no passkey and no recovery code, and how migrated users
+  other than `USER_ID` claim their accounts. Shell access to the server is the
+  same trust as reading the setup code.
+- **Invites, not email.** An owner or admin creates a 7-day, single-use link
+  (`/dashboard/#invite=<token>`; the token always travels in JSON bodies,
+  never URL paths). An invite is only as good as its creator's current
+  standing: claiming it requires that the creator still holds a role allowed to
+  issue its role, and removing or demoting a member deletes their pending
+  invites that the new role cannot issue, in the same batch. Redeeming creates
+  the user, their first passkey, and the membership in one batch conditioned on
+  claiming the invite, so a race or crash cannot leave a half-joined account.
+  Caps (20 workspaces per user, 50 pending invites per workspace) are part of
+  the insert's own WHERE clause.
+- **Creating workspaces.** `ALLOW_MEMBER_WORKSPACES=true` (default) lets anyone
+  signed in create one. When false, only `USER_ID` and people who already own
+  or administer some workspace may; someone invited as a plain member cannot.
+- **Ceremonies are stateless.** Between the options and verify calls the
+  client carries a signed state: `{purpose, binding, challenge, exp, nonce}`
+  HMAC-SHA256-signed with a per-install key generated on first boot
+  (`server_secrets`). Verify checks the signature, the 5-minute expiry, the
+  purpose, and the binding (the signed-in user, the invite token, the access
+  code), then spends the nonce in `used_nonces` (insert-or-fail, pruned by the
+  sweep). Nothing is held in memory, so `/options` floods cannot evict real
+  ceremonies and any instance can finish a ceremony another started.
+- **User verification is required** for registration and sign-in: a passkey
+  is the only credential a person has. The WebAuthn user handle is 32 random
+  bytes per user (`users.webauthn_handle`), not the internal user id. A stored
+  signature counter only moves forward, and the write re-checks it.
+- **Recovery** is 8 single-use codes shown once at sign-up and regenerable.
+  Each is `LOOKUP-SECRET`: 6 public characters that find the row, then 24
+  secret characters (~117 bits) stored only as SHA-256 and compared in
+  constant time. Signing in with one ends every other session of the account.
+- **Step-up.** A session records when it last proved a passkey (`reauth_at`;
+  sign-in, setup, invite sign-up, recovery, and access codes all count).
+  Adding or deleting a passkey, replacing recovery codes, and minting any token
+  from a session need that proof within 10 minutes; `POST
+  /v1/me/reauth/options|verify` renews it. Tokens are minted only with a fresh
+  proof because a token outlives the session and works from anywhere; requests
+  authenticated by a token are not affected. Changing member roles or removing
+  members does not need step-up. Deleting a passkey or replacing recovery
+  codes also signs out every other session.
+- **Session cookie** `__Host-wctx_session` on https (Secure, Path=/, no
+  Domain, so a sibling subdomain cannot plant it), `wctx_session` on plain
+  http. HttpOnly, SameSite=Lax, 30 days sliding (refreshed at most daily) and
+  never more than 90 days from sign-in. Only its SHA-256 is stored. Signing in
+  again replaces the session the browser already had.
+  Cookie-authenticated writes, and every `/v1/auth` POST, must carry this
+  server's `Origin`. A Bearer header wins over a cookie.
+- **Rate limits.** Failed authentications are counted per client across REST
+  and MCP; the `/v1/auth/*/options` starters and `/v1/auth/recover` are also
+  limited by request count, and recovery attempts per lookup id. The client is
+  the socket peer unless `TRUST_PROXY` says every request comes through
+  Cloudflare (`cf-connecting-ip`) or a proxy that sets `x-forwarded-for`.
+  When the limiter's table is full, new keys share one overflow counter rather
+  than going uncounted.
+- **Tokens have no account rights.** `/v1/me` and `/v1/workspaces` require a
+  session. MCP stays token-only.
 
 ## Label fallback
 
@@ -54,9 +154,9 @@ mapping layer derives a fallback label from `status` (e.g. `near_home` →
 
 ## Token hardening (implemented in Phase 2 bootstrap)
 
-The `.env.example` ships placeholder tokens (`change-me-*`). The Phase 2 token
-bootstrap **refuses to seed** any token that still matches `/^change-me/` or is
-shorter than 24 characters, emitting a loud warning. Operators are directed to
+Bootstrap tokens are optional, and `.env.example` leaves them empty. The token
+bootstrap **refuses to seed** any token that matches `/^change-me/` or is
+shorter than 24 characters, and logs a warning. Operators are directed to
 generate strong random tokens. The default `HOST=0.0.0.0` bind is required for
 Docker; docs instruct operators to keep WhereCtx behind a reverse proxy and never
 expose it raw with placeholder tokens.
@@ -93,3 +193,52 @@ Enforcement lives in `src/privacy/policy.ts` and is exercised end-to-end by test
 All timestamp columns store app-generated **ISO-8601** strings
 (`new Date().toISOString()`). SQL `CURRENT_TIMESTAMP` defaults are intentionally
 avoided (different format → broken `updatedAgoSec` math and lexical sorting).
+
+## 2026-10-18: multi-user accounts, sharing, and the new dashboard
+
+- **Passkeys and sessions are in-house, on SimpleWebAuthn.** Better Auth was
+  the alternative. WhereCtx needs passkeys only, with no passwords, email, or
+  OAuth. A framework would bring its own user and session tables beside ours
+  and its own idea of who a request acts as. Owning the account routes keeps
+  the `Principal` and the per-user scopes in one model.
+- **Isolation is per row now. A database per user waits for hosting.** Every
+  table carries `user_id`, and handlers get only a `UserScope`, so a
+  cross-user read is a type error. A separate SQLite file per person would
+  give a harder wall, but it multiplies migrations and backups for a
+  household-sized install. It becomes worth it with a hosted, multi-tenant
+  service, and the scope boundary is where it would plug in.
+- **The share audit is its own table.** The first version wrote
+  `share.*` events into `presence_events`. That sent sharing data to
+  webhooks, MCP, and `/v1/events`, which belong to the owner's agents, and
+  mixed a person-to-person record into the agent event log. `share_audit`
+  keeps who saw what out of every agent path and has its own retention
+  (`SHARE_AUDIT_RETENTION_DAYS`).
+- **People see status names only.** A person view shows `home`, `work`,
+  `custom`, and so on, never a place's name or label. A label such as a
+  clinic name or a street address says more than "at a custom place".
+- **The CSP keeps `style-src 'unsafe-inline'`.** The design system adds two
+  `<style>` elements at runtime, one for overlay motion and one for code
+  highlighting. Under `style-src 'self'` the app still works, but those two
+  are blocked. `script-src 'self'` stays strict. The built page has one
+  module script and no inline code, and a test checks it.
+- **The dashboard is React with the Astryx design system.** Both are
+  devDependencies. Vite builds `web/` into `dist/web`, and the runtime image
+  ships the built files and no React. The product UI never names the design
+  system.
+- **An IP-address host never counts as local for passkeys.** WebAuthn
+  requires the caller's effective domain to be a valid domain and throws
+  `SecurityError` otherwise (WebAuthn L3, section 5.1.3). That covers
+  `127.0.0.1` and `[::1]` even though browsers treat them as secure contexts.
+  Boot warns on any IP `BASE_URL`, and the sign-in page says so on an IP
+  origin, both pointing at `http://localhost:<port>` or an https domain.
+  Phone pairing keeps its own rule, which rejects every loopback host.
+- **Webhook hooks drain independently, in a slot table.** The old dispatcher
+  ran one tick over every hook and waited for all of them, so one user's
+  hanging endpoint (5 s per event, up to 100 events) delayed every other
+  user's next delivery. Now a tick marks hooks due, and due hooks start in
+  least-recently-run order while a slot is free: 8 in all, 2 per user. A
+  drain stops after 10 s and resumes from its cursor on the next tick, so
+  delivery stays at-least-once. Shutdown aborts in-flight requests, which
+  leave their cursors in place, and waits for drains before closing the DB.
+- **MCP stays on bearer tokens.** Each token belongs to one person. OAuth 2.1
+  for MCP clients is a later step.

@@ -13,10 +13,10 @@ services:
     environment:
       DATABASE_URL: "sqlite:////data/wherectx.db"
       BASE_URL: "http://localhost:8787"
-      # Replace with strong random values (placeholders are refused at boot).
-      ADMIN_TOKEN: "change-me-admin"
-      DEVICE_TOKEN: "change-me-device"
-      AGENT_TOKEN: "change-me-agent"
+      # Optional bootstrap tokens. Leave empty and make tokens in the dashboard.
+      ADMIN_TOKEN: ""
+      DEVICE_TOKEN: ""
+      AGENT_TOKEN: ""
       DEFAULT_AGENT_PRIVACY: "coarse"
       ALLOW_PRECISE_TO_AGENT: "false"
       HIDE_HOME_EXACT_COORDINATES: "true"

@@ -8,7 +8,13 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
-import { AuthFailureLimiter, authFailureGuard } from "../api/rateLimit.js";
+import { RateLimiter, authFailureGuard } from "../api/rateLimit.js";
+import { authenticate, sessionAuth } from "../api/middleware.js";
+import type { AppEnv, SessionEnv } from "../api/types.js";
+import { authRouter, type AuthRouterLimits } from "../api/auth.js";
+import { meRouter } from "../api/me.js";
+import { workspacesRouter } from "../api/workspaces.js";
+import { peopleRouter, sharesRouter } from "../api/sharing.js";
 import { dashboardRouter } from "../dashboard/router.js";
 import { eventsRouter } from "../api/events.js";
 import { ingestRouter } from "../api/ingest.js";
@@ -16,16 +22,21 @@ import { placesRouter } from "../api/places.js";
 import { presenceRouter } from "../api/presence.js";
 import { privacyRouter } from "../api/privacy.js";
 import { tokensRouter } from "../api/tokens.js";
+import { devicesRouter } from "../api/devices.js";
 import { webhooksRouter } from "../api/webhooks.js";
 
 export interface BuildAppOptions {
   /** Shared with the MCP handler so both surfaces count auth failures together. */
-  authLimiter?: AuthFailureLimiter;
+  authLimiter?: RateLimiter;
+  /** Request and per-recovery-code limits on the sign-in routes. */
+  authRouterLimits?: AuthRouterLimits;
+  /** The built dashboard to serve; defaults to dist/web. */
+  dashboardDir?: string;
 }
 
 export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   const app = new Hono();
-  const authLimiter = options.authLimiter ?? new AuthFailureLimiter();
+  const authLimiter = options.authLimiter ?? new RateLimiter();
 
   // Security headers (defense-in-depth on the admin dashboard especially): CSP,
   // nosniff, frame-deny, no referrer leakage (review finding D3).
@@ -34,7 +45,9 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
     secureHeaders({
       contentSecurityPolicy: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"], // dashboard JS is served at /dashboard/app.js (M5)
+        scriptSrc: ["'self'"], // dashboard JS is a built file under /dashboard/assets/ (M5)
+        // The design system adds a few <style> elements at runtime (overlay
+        // motion, code highlighting), so inline styles stay allowed.
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'"],
         connectSrc: ["'self'"],
@@ -65,28 +78,48 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
     "/v1/*",
     cors({
       origin: ctx.config.baseUrl,
-      allowMethods: ["GET", "POST", "PUT", "DELETE"],
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
       allowHeaders: ["Authorization", "Content-Type"],
     }),
   );
 
   // Throttle repeated auth failures per client (review M1).
-  app.use("/v1/*", authFailureGuard(authLimiter));
+  app.use("/v1/*", authFailureGuard(authLimiter, ctx.config.trustProxy));
 
   app.get("/", (c) =>
     c.json({ name: "wherectx", version: "0.1.0", status: "ok" }),
   );
   app.get("/healthz", (c) => c.json({ status: "ok" }));
 
-  app.route("/dashboard", dashboardRouter());
+  app.route("/", dashboardRouter(options.dashboardDir));
 
-  app.route("/v1/ingest", ingestRouter(ctx));
-  app.route("/v1/presence", presenceRouter(ctx));
-  app.route("/v1/places", placesRouter(ctx));
-  app.route("/v1/events", eventsRouter(ctx));
-  app.route("/v1/privacy", privacyRouter(ctx));
-  app.route("/v1/webhooks", webhooksRouter(ctx));
-  app.route("/v1/tokens", tokensRouter(ctx));
+  // Auth is mounted here, the one REST place holding the full context; routers
+  // get only the user scope `authenticate` attaches (from a token or a session
+  // cookie). Device clients (Shortcut/OwnTracks) may pass the token via ?token=
+  // or Basic auth on ingest only.
+  const mount = (path: string, router: Hono<AppEnv>, auth = authenticate(ctx)): void => {
+    app.use(`${path}/*`, auth);
+    app.route(path, router);
+  };
+  // Account routes act for a signed-in person only, through the account scope
+  // `sessionAuth` attaches rather than raw stores.
+  const mountSession = (path: string, router: Hono<SessionEnv>): void => {
+    app.use(`${path}/*`, sessionAuth(ctx));
+    app.route(path, router);
+  };
+  app.route("/v1/auth", authRouter(ctx, ctx.auth, options.authRouterLimits));
+  mountSession("/v1/me", meRouter(ctx));
+  mountSession("/v1/workspaces", workspacesRouter());
+  mountSession("/v1/shares", sharesRouter());
+  mountSession("/v1/people", peopleRouter());
+  mount("/v1/ingest", ingestRouter(ctx), authenticate(ctx, { deviceCredentials: true }));
+  mount("/v1/presence", presenceRouter(ctx));
+  mount("/v1/places", placesRouter(ctx));
+  mount("/v1/events", eventsRouter());
+  mount("/v1/privacy", privacyRouter(ctx));
+  mount("/v1/webhooks", webhooksRouter(ctx));
+  mount("/v1/tokens", tokensRouter(ctx));
+  mount("/v1/devices", devicesRouter(ctx));
 
   app.notFound((c) => c.json({ error: "not found" }, 404));
   app.onError((err, c) => {

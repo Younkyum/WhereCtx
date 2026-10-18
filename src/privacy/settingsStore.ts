@@ -1,15 +1,16 @@
 /**
  * Privacy settings repository (plan section 9.3).
  *
- * Precedence (docs/decisions.md): environment seeds the row on first boot;
- * thereafter the persisted row is authoritative and dashboard edits stick.
+ * Precedence (docs/decisions.md): environment seeds a user's row the first time
+ * it is read; thereafter the persisted row is authoritative and dashboard edits
+ * stick.
  */
 
 import { eq } from "drizzle-orm";
 import type { WhereCtxConfig } from "../config.js";
 import type { Database } from "../db/index.js";
 import { privacySettings } from "../db/schema.js";
-import type { PrivacyMode, PrivacySettings } from "../types.js";
+import type { PrivacyMode, PrivacySettings, UserId } from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
 interface SettingsRow {
@@ -22,6 +23,7 @@ interface SettingsRow {
   protectHomePlace: boolean;
   retentionHours: number;
   storeRawHistory: boolean;
+  sharingPaused: boolean;
   updatedAt: string;
 }
 
@@ -35,16 +37,19 @@ function rowToSettings(row: SettingsRow): PrivacySettings {
     protectHomePlace: row.protectHomePlace,
     retentionHours: row.retentionHours,
     storeRawHistory: row.storeRawHistory,
+    sharingPaused: row.sharingPaused,
   };
 }
 
 export class SettingsStore {
   constructor(
     private readonly db: Database,
+    /** Env privacy values seed every user's row on first access. */
+    private readonly config: WhereCtxConfig,
     private readonly clock: Clock = systemClock,
   ) {}
 
-  async get(userId: string): Promise<PrivacySettings | null> {
+  private async find(userId: UserId): Promise<PrivacySettings | null> {
     const rows = (await this.db
       .select()
       .from(privacySettings)
@@ -53,33 +58,36 @@ export class SettingsStore {
     return rows[0] ? rowToSettings(rows[0]) : null;
   }
 
-  /** Insert the settings row from config on first boot. No-op if it exists. */
-  async seedFromConfig(userId: string, config: WhereCtxConfig): Promise<PrivacySettings> {
-    const existing = await this.get(userId);
+  /**
+   * The user's settings, seeded from config the first time they are read. Every
+   * read and write goes through here, so no caller handles a missing row. The
+   * insert ignores a conflict, so concurrent first reads converge on one row.
+   */
+  async getOrSeed(userId: UserId): Promise<PrivacySettings> {
+    const existing = await this.find(userId);
     if (existing) return existing;
-    const row: SettingsRow = {
-      userId,
-      defaultAgentAccess: config.privacy.defaultAgentAccess,
-      allowPreciseLocation: config.privacy.allowPreciseToAgent,
-      preciseRequiresReason: config.privacy.preciseRequiresReason,
-      preciseRequiresApproval: false,
-      hideHomeExactCoordinates: config.privacy.hideHomeExactCoordinates,
-      protectHomePlace: config.privacy.protectHomePlace,
-      retentionHours: config.privacy.retentionHours,
-      storeRawHistory: config.privacy.storeRawHistory,
-      updatedAt: nowIso(this.clock),
-    };
-    await this.db.insert(privacySettings).values(row);
-    return rowToSettings(row);
+    const { privacy } = this.config;
+    await this.db
+      .insert(privacySettings)
+      .values({
+        userId,
+        defaultAgentAccess: privacy.defaultAgentAccess,
+        allowPreciseLocation: privacy.allowPreciseToAgent,
+        preciseRequiresReason: privacy.preciseRequiresReason,
+        preciseRequiresApproval: false,
+        hideHomeExactCoordinates: privacy.hideHomeExactCoordinates,
+        protectHomePlace: privacy.protectHomePlace,
+        retentionHours: privacy.retentionHours,
+        storeRawHistory: privacy.storeRawHistory,
+        sharingPaused: false,
+        updatedAt: nowIso(this.clock),
+      } satisfies SettingsRow)
+      .onConflictDoNothing();
+    return (await this.find(userId))!;
   }
 
-  async update(
-    userId: string,
-    patch: Partial<PrivacySettings>,
-  ): Promise<PrivacySettings | null> {
-    const existing = await this.get(userId);
-    if (!existing) return null;
-    const merged: PrivacySettings = { ...existing, ...patch };
+  async update(userId: UserId, patch: Partial<PrivacySettings>): Promise<PrivacySettings> {
+    const merged: PrivacySettings = { ...(await this.getOrSeed(userId)), ...patch };
     await this.db
       .update(privacySettings)
       .set({ ...merged, updatedAt: nowIso(this.clock) })

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import type { WhereCtxConfig } from "../config.js";
+import { asUserId } from "../types.js";
 import { createAppContext, type AppContext } from "../app/context.js";
 import { mcpNodeHandler } from "./http.js";
 
@@ -14,7 +15,7 @@ const config: WhereCtxConfig = {
   host: "127.0.0.1",
   baseUrl: "http://localhost:8787",
   databaseUrl: ":memory:",
-  userId: "default",
+  defaultUserId: asUserId("default"),
   bootstrapTokens: { admin: ADMIN, device: DEVICE, agent: AGENT },
   privacy: {
     defaultAgentAccess: "coarse",
@@ -27,8 +28,11 @@ const config: WhereCtxConfig = {
     storeRawHistory: false,
   },
   geofence: { nearRadiusMultiplier: 3 },
+  trustProxy: "none",
+  allowMemberWorkspaces: true,
   webhooks: { allowPrivateTargets: false },
   events: { retentionHours: 720 },
+  sharing: { auditRetentionDays: 365 },
 };
 
 let ctx: AppContext;
@@ -74,6 +78,19 @@ describe("MCP /mcp auth boundary", () => {
     const r = await fetch(base, {
       method: "POST",
       headers: { authorization: AGENT, "content-type": "application/json" },
+      body: initBody,
+    });
+    expect(r.status).toBe(401);
+  });
+
+  it("rejects HTTP Basic, even carrying a valid agent token (401)", async () => {
+    const r = await fetch(base, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(`agent:${AGENT}`).toString("base64")}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
       body: initBody,
     });
     expect(r.status).toBe(401);

@@ -1,13 +1,14 @@
 /**
  * Presence events repository (plan section 9.8 / 10.3).
  * Append-only log of presence transitions, read back most-recent-first.
+ * Every read and write is scoped to its owner; only retention pruning is global.
  */
 
 import { randomBytes } from "node:crypto";
 import { and, asc, desc, eq, gt, lt, or } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { presenceEvents } from "../db/schema.js";
-import type { PresenceEvent, PresenceEventType } from "../types.js";
+import type { PresenceEvent, PresenceEventType, UserId } from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
 export interface NewPresenceEvent {
@@ -19,6 +20,7 @@ export interface NewPresenceEvent {
 
 interface EventRow {
   id: string;
+  userId: string;
   type: PresenceEventType;
   placeName: string | null;
   status: string | null;
@@ -43,8 +45,8 @@ export class EventsStore {
     private readonly clock: Clock = systemClock,
   ) {}
 
-  async append(event: NewPresenceEvent): Promise<PresenceEvent> {
-    const [stored] = await this.appendMany([event]);
+  async append(userId: UserId, event: NewPresenceEvent): Promise<PresenceEvent> {
+    const [stored] = await this.appendMany(userId, [event]);
     return stored!;
   }
 
@@ -53,11 +55,15 @@ export class EventsStore {
    * to 3 events per reading inside the per-user mutex; one round-trip instead
    * of N keeps the mutex hold time down on slow storage (review P1).
    */
-  async appendMany(events: NewPresenceEvent[]): Promise<PresenceEvent[]> {
+  async appendMany(
+    userId: UserId,
+    events: NewPresenceEvent[],
+  ): Promise<PresenceEvent[]> {
     if (events.length === 0) return [];
     const createdAt = nowIso(this.clock);
     const records: EventRow[] = events.map((event) => ({
       id: randomBytes(16).toString("hex"),
+      userId,
       type: event.type,
       placeName: event.placeName ?? null,
       status: event.status ?? null,
@@ -79,11 +85,12 @@ export class EventsStore {
     return result.rowsAffected ?? 0;
   }
 
-  async listRecent(limit = 50): Promise<PresenceEvent[]> {
+  async listRecent(userId: UserId, limit = 50): Promise<PresenceEvent[]> {
     const capped = Math.max(1, Math.min(limit, 500));
     const rows = (await this.db
       .select()
       .from(presenceEvents)
+      .where(eq(presenceEvents.userId, userId))
       .orderBy(desc(presenceEvents.createdAt), desc(presenceEvents.id))
       .limit(capped)) as EventRow[];
     return rows.map(rowToEvent);
@@ -98,22 +105,30 @@ export class EventsStore {
    * is treated as `(ts, "")`, which re-includes that ms's events (safe:
    * at-least-once).
    */
-  async listSince(cursor: string | null, limit = 100): Promise<PresenceEvent[]> {
+  async listSince(
+    userId: UserId,
+    cursor: string | null,
+    limit = 100,
+  ): Promise<PresenceEvent[]> {
     const capped = Math.max(1, Math.min(limit, 500));
-    const base = this.db.select().from(presenceEvents).$dynamic();
-    let q = base;
+    const owner = eq(presenceEvents.userId, userId);
+    let where = owner;
     if (cursor) {
       const sep = cursor.indexOf("|");
       const ts = sep === -1 ? cursor : cursor.slice(0, sep);
       const id = sep === -1 ? "" : cursor.slice(sep + 1);
-      q = base.where(
+      where = and(
+        owner,
         or(
           gt(presenceEvents.createdAt, ts),
           and(eq(presenceEvents.createdAt, ts), gt(presenceEvents.id, id)),
         ),
-      );
+      )!;
     }
-    const rows = (await q
+    const rows = (await this.db
+      .select()
+      .from(presenceEvents)
+      .where(where)
       .orderBy(asc(presenceEvents.createdAt), asc(presenceEvents.id))
       .limit(capped)) as EventRow[];
     return rows.map(rowToEvent);

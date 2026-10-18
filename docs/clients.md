@@ -8,8 +8,29 @@ using a **device** token.
 | Generic HTTP | `POST /v1/ingest` | below |
 | iOS Shortcut | `POST /v1/ingest/shortcut` | [clients/ios-shortcut](../clients/ios-shortcut/) |
 | OwnTracks | `POST /v1/ingest/owntracks` | [clients/owntracks](../clients/owntracks/) |
-| Android Tasker | `POST /v1/ingest` | use the generic shape (v0.2 template planned) |
-| Home Assistant | `POST /v1/ingest` | use a REST/webhook automation (v0.2 example planned) |
+| Android Tasker | `POST /v1/ingest` | use the generic shape below |
+| Home Assistant | `POST /v1/ingest` | use a REST command with the generic shape below |
+
+## Pairing a phone
+
+In the dashboard, open **Devices**, name the phone, pick OwnTracks or iOS
+Shortcut, and choose **Create connection**. OwnTracks shows a QR code, an open
+link, and a `.otrc` file to download. The iOS Shortcut shows the URL, the
+header, and the steps. The dashboard asks for your passkey first when you
+have not used it in the last 10 minutes.
+
+Behind it is `POST /v1/devices/pair`. With `{ "name": "...", "kind":
+"owntracks" }` it mints a device token and returns an OwnTracks config, an
+`owntracks:///config?inline=` link, and the same link as a QR code. With
+`"kind": "shortcut"` it returns the URL, token, and headers for the iOS
+Shortcut. See [api.md](api.md#devices-pairing). The manual setup below still
+works.
+
+The config points the phone at `BASE_URL`, so set it to the server's public
+https URL first. Pairing refuses (`400`, `code: "base_url_unusable"`) while
+`BASE_URL` is a loopback address (`localhost`, `127.x`, `::1`), which a phone
+cannot reach, or plain http on any other host, which would send the token in
+the clear. Nothing is minted when it refuses.
 
 ## Authentication
 
@@ -20,8 +41,9 @@ Authorization: Bearer DEVICE_TOKEN
 ```
 
 For clients that can't set headers, the ingest routes (only) also accept the
-token as a query parameter: `POST /v1/ingest?token=DEVICE_TOKEN`. Note that query
-strings can appear in proxy logs — use the header when you can.
+token as a query parameter: `POST /v1/ingest?token=DEVICE_TOKEN`, or as the
+password of HTTP Basic auth (any username). Query strings can appear in proxy
+logs, so prefer a header when you can.
 
 ## Generic payload
 

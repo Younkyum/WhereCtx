@@ -12,29 +12,34 @@ services:
   wherectx:
     image: ghcr.io/younkyum/wherectx:latest
     restart: unless-stopped
+    # Every setting comes from .env (see .env.nas.example); the value after
+    # ":-" is what the server uses when .env leaves it out. PORT and HOST stay
+    # at the image's 8787 and 0.0.0.0, the address cloudflared connects to.
     environment:
       DATABASE_URL: "sqlite:////data/wherectx.db"
       BASE_URL: "${BASE_URL}"
-      ADMIN_TOKEN: "${ADMIN_TOKEN}"
-      DEVICE_TOKEN: "${DEVICE_TOKEN}"
-      AGENT_TOKEN: "${AGENT_TOKEN}"
-      DEFAULT_AGENT_PRIVACY: "coarse"
-      PRECISE_REQUIRES_REASON: "true"
-      ALLOW_PRECISE_TO_AGENT: "false"
-      HIDE_HOME_EXACT_COORDINATES: "true"
-      RETENTION_HOURS: "24"
-      STORE_RAW_HISTORY: "false"
-      # Creating/moving the `home` place via MCP requires an admin token
-      # (toggleable live from the dashboard).
-      PROTECT_HOME_PLACE: "true"
-      NEAR_RADIUS_MULTIPLIER: "3"
-      # Set true ONLY if you want webhooks to reach a LAN service (e.g. Home
-      # Assistant on the same network). Default false blocks SSRF to private IPs.
-      WEBHOOK_ALLOW_PRIVATE_TARGETS: "false"
-      # Encrypt webhook signing secrets at rest (set in .env; empty = disabled).
+      # Every request arrives through the tunnel, so the client is the
+      # cf-connecting-ip header; without it all clients would share the
+      # cloudflared container's address in the rate limiters.
+      TRUST_PROXY: "${TRUST_PROXY:-cloudflare}"
+      USER_ID: "${USER_ID:-default}"
+      ALLOW_MEMBER_WORKSPACES: "${ALLOW_MEMBER_WORKSPACES:-true}"
+      ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
+      DEVICE_TOKEN: "${DEVICE_TOKEN:-}"
+      AGENT_TOKEN: "${AGENT_TOKEN:-}"
+      DEFAULT_AGENT_PRIVACY: "${DEFAULT_AGENT_PRIVACY:-coarse}"
+      PRECISE_REQUIRES_REASON: "${PRECISE_REQUIRES_REASON:-true}"
+      ALLOW_PRECISE_TO_AGENT: "${ALLOW_PRECISE_TO_AGENT:-false}"
+      HIDE_HOME_EXACT_COORDINATES: "${HIDE_HOME_EXACT_COORDINATES:-true}"
+      PROTECT_HOME_PLACE: "${PROTECT_HOME_PLACE:-true}"
+      STALE_AFTER_SEC: "${STALE_AFTER_SEC:-900}"
+      RETENTION_HOURS: "${RETENTION_HOURS:-24}"
+      STORE_RAW_HISTORY: "${STORE_RAW_HISTORY:-false}"
+      NEAR_RADIUS_MULTIPLIER: "${NEAR_RADIUS_MULTIPLIER:-3}"
+      WEBHOOK_ALLOW_PRIVATE_TARGETS: "${WEBHOOK_ALLOW_PRIVATE_TARGETS:-false}"
       WEBHOOK_ENCRYPTION_KEY: "${WEBHOOK_ENCRYPTION_KEY:-}"
-      # Retention for presence events + webhook dead-letters (hours).
-      EVENT_RETENTION_HOURS: "720"
+      EVENT_RETENTION_HOURS: "${EVENT_RETENTION_HOURS:-720}"
+      SHARE_AUDIT_RETENTION_DAYS: "${SHARE_AUDIT_RETENTION_DAYS:-365}"
     volumes:
       # Named volume — Docker initializes it owned by the container's non-root
       # user (uid 10001), so no manual chown is needed.

@@ -77,7 +77,12 @@ export async function assertSafeWebhookUrl(
   if (allowPrivate) return url;
 
   const host = url.hostname.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
-  const addresses = isIP(host) ? [host] : await resolver(host);
+  let addresses: string[];
+  try {
+    addresses = isIP(host) ? [host] : await resolver(host);
+  } catch {
+    addresses = [];
+  }
   if (addresses.length === 0) {
     throw new SsrfError(`could not resolve host ${host}`);
   }

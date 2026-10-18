@@ -1,5 +1,6 @@
 # WhereCtx — example Docker Compose (plan section 11).
-# Copy to docker-compose.yml, set strong tokens, then: docker compose up -d
+# Copy to docker-compose.yml, set BASE_URL, then: docker compose up -d
+# The setup code for the first passkey is in: docker compose logs wherectx
 #
 # Builds the image from this repo. To use a published image instead, replace the
 # `build: .` line with `image: ghcr.io/<owner>/wherectx:latest`.
@@ -18,14 +19,15 @@ services:
     environment:
       # Storage (mounted volume so data survives restarts).
       DATABASE_URL: "sqlite:////data/wherectx.db"
-      # Public URL used to build map links.
+      # The address people open. Passkeys work only on https or on localhost,
+      # so behind a reverse proxy set this to the public https URL.
       BASE_URL: "http://localhost:8787"
-      # Tokens — REPLACE these with long random strings. Tokens left as
-      # "change-me-*" are refused at boot (a strong admin token is auto-generated
-      # and printed once in the logs instead).
-      ADMIN_TOKEN: "change-me-admin"
-      DEVICE_TOKEN: "change-me-device"
-      AGENT_TOKEN: "change-me-agent"
+      # Optional bootstrap tokens. Leave empty and make tokens in the
+      # dashboard. Values starting with change-me or shorter than 24
+      # characters are refused.
+      ADMIN_TOKEN: ""
+      DEVICE_TOKEN: ""
+      AGENT_TOKEN: ""
       # Privacy defaults (presence-first).
       DEFAULT_AGENT_PRIVACY: "coarse"
       PRECISE_REQUIRES_REASON: "true"

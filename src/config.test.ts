@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { normalizeDatabaseUrl } from "./db/url.js";
 
@@ -46,5 +47,37 @@ describe("normalizeDatabaseUrl", () => {
     expect(normalizeDatabaseUrl(":memory:")).toBe(":memory:");
     expect(normalizeDatabaseUrl("file::memory:")).toBe(":memory:");
     expect(normalizeDatabaseUrl("sqlite::memory:")).toBe(":memory:");
+  });
+});
+
+describe("env documentation", () => {
+  const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+  const configVars = new Set(
+    [...read("./config.ts").matchAll(/env\w+\("([A-Z0-9_]+)"/g)].map((m) => m[1]!),
+  );
+  const keys = (text: string, pattern: RegExp) =>
+    new Set([...text.matchAll(pattern)].map((m) => m[1]!));
+  const documented = (text: string) => keys(text, /^#?([A-Z0-9_]+)=/gm);
+  const active = (text: string) => keys(text, /^([A-Z0-9_]+)=/gm);
+
+  it("finds the variables config.ts reads", () => {
+    expect(configVars).toContain("BASE_URL");
+    expect(configVars).toContain("SHARE_AUDIT_RETENTION_DAYS");
+  });
+
+  it.each([
+    ["../.env.example", []],
+    ["../deploy/.env.nas.example", ["CF_TUNNEL_TOKEN"]],
+  ])("%s documents every variable config.ts reads, and nothing else", (path, extra) => {
+    const text = read(path);
+    expect([...configVars].filter((v) => !documented(text).has(v))).toEqual([]);
+    expect([...active(text)].filter((v) => !configVars.has(v) && !extra.includes(v))).toEqual([]);
+  });
+
+  it("the NAS compose file passes every variable config.ts reads except the fixed listen address", () => {
+    const compose = read("../deploy/docker-compose.nas.yml");
+    const passed = keys(compose, /^ {6}([A-Z0-9_]+):/gm);
+    const fixed = ["PORT", "HOST"];
+    expect([...configVars].filter((v) => !passed.has(v) && !fixed.includes(v))).toEqual([]);
   });
 });

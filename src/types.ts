@@ -6,6 +6,18 @@
  * downstream component (privacy engine, geofence, store, MCP, REST) consumes.
  */
 
+/**
+ * Owner of every row of user data. Branded so a raw string (a place name, a
+ * token id) can never be passed where a tenant key is expected; construct one
+ * only at a boundary (config, DB row, verified credential) via `asUserId`.
+ */
+export type UserId = string & { readonly __brand: "UserId" };
+
+export function asUserId(raw: string): UserId {
+  if (raw.length === 0) throw new Error("userId must be a non-empty string");
+  return raw as UserId;
+}
+
 export type PresenceStatus =
   | "unknown"
   | "home"
@@ -72,7 +84,7 @@ export interface PresencePrivacy {
  * before it ever reaches an agent.
  */
 export interface PresenceContext {
-  userId: string;
+  userId: UserId;
   status: PresenceStatus;
   label?: string;
   precise?: PreciseLocation;
@@ -101,12 +113,27 @@ export interface Place {
   updatedAt: string;
 }
 
-export type PresenceEventType =
-  | "presence.updated"
-  | "presence.entered_place"
-  | "presence.left_place"
-  | "presence.became_stale"
-  | "presence.privacy_changed";
+/** How much of their location a person shares with another member. */
+export const SHARE_LEVELS = ["coarse", "precise"] as const;
+export type ShareLevel = (typeof SHARE_LEVELS)[number];
+
+/**
+ * The owner's record of a share's life, kept in `share_audit` and never in
+ * presence events, so agents, MCP, `/v1/events` and webhooks see none of it.
+ */
+export const SHARE_AUDIT_ACTIONS = ["granted", "changed", "revoked", "precise_viewed"] as const;
+export type ShareAuditAction = (typeof SHARE_AUDIT_ACTIONS)[number];
+/** Why a share ended other than its owner revoking it. */
+export type ShareAuditReason = "membership_ended" | "viewer_declined";
+
+export const PRESENCE_EVENT_TYPES = [
+  "presence.updated",
+  "presence.entered_place",
+  "presence.left_place",
+  "presence.became_stale",
+  "presence.privacy_changed",
+] as const;
+export type PresenceEventType = (typeof PRESENCE_EVENT_TYPES)[number];
 
 export interface PresenceEvent {
   id: string;
@@ -140,6 +167,7 @@ export type TokenScope =
 
 export interface Token {
   id: string;
+  userId: UserId;
   name: string;
   role: TokenRole;
   scopes: TokenScope[];
@@ -177,6 +205,11 @@ export interface PrivacySettings {
   protectHomePlace: boolean;
   retentionHours: number;
   storeRawHistory: boolean;
+  /**
+   * Hide this person from everyone they share their location with, without
+   * touching the shares. Agents are governed by `defaultAgentAccess` alone.
+   */
+  sharingPaused: boolean;
 }
 
 /** Coarse presence view returned to agents by default (plan section 5). */

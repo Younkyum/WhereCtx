@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
-import type { PresenceContext, PrivacySettings, TokenScope } from "../types.js";
+import {
+  asUserId,
+  type PresenceContext,
+  type PrivacySettings,
+  type TokenScope,
+} from "../types.js";
 import {
   accessAtLeast,
   agentCoarseView,
   authorizePrecise,
   buildCoarseView,
+  buildPersonView,
   buildPreciseView,
   canReadPresence,
+  isAtOrNearHome,
   shouldHideExact,
 } from "./policy.js";
 
@@ -14,7 +21,7 @@ const FIXED = new Date("2026-06-05T00:10:00.000Z");
 const clock = () => FIXED;
 
 const basePresence = (over: Partial<PresenceContext> = {}): PresenceContext => ({
-  userId: "default",
+  userId: asUserId("default"),
   status: "near_home",
   label: undefined,
   precise: { lat: 37.123456, lon: 127.123456, accuracyM: 21 },
@@ -33,8 +40,10 @@ const settings = (over: Partial<PrivacySettings> = {}): PrivacySettings => ({
   preciseRequiresReason: true,
   preciseRequiresApproval: false,
   hideHomeExactCoordinates: true,
+  protectHomePlace: true,
   retentionHours: 24,
   storeRawHistory: false,
+  sharingPaused: false,
   ...over,
 });
 
@@ -180,5 +189,49 @@ describe("buildPreciseView + shouldHideExact", () => {
     expect(
       shouldHideExact(basePresence({ status: "home" }), settings({ hideHomeExactCoordinates: false })),
     ).toBe(false);
+  });
+});
+
+describe("buildPersonView", () => {
+  const sharing = { sharingPaused: false, hasHomePlace: true };
+  const precise = { level: "precise" as const, hideHomeExact: true };
+
+  it("labels by status only and buckets the age to whole minutes", () => {
+    const labelled = basePresence({ status: "custom", label: "Dr. Kim Oncology", updatedAt: "2026-06-05T00:08:01.000Z" });
+    const view = buildPersonView(labelled, { level: "coarse", hideHomeExact: false }, sharing, clock);
+    expect(view).toEqual({
+      paused: false,
+      presence: { status: "custom", label: "custom", motion: "walking", updatedAgoMin: 1, stale: false },
+      precise: null,
+    });
+  });
+
+  it("withholds coordinates at or near home, and everywhere without a home place", () => {
+    expect(isAtOrNearHome(basePresence())).toBe(true);
+    expect(buildPersonView(basePresence(), precise, sharing, clock)).toMatchObject({
+      precise: null,
+      preciseWithheld: "at_home",
+    });
+    const away = basePresence({ status: "away" });
+    expect(buildPersonView(away, precise, sharing, clock).precise).toMatchObject({ lat: 37.123456 });
+    expect(buildPersonView(away, precise, { ...sharing, hasHomePlace: false }, clock)).toMatchObject({
+      precise: null,
+      preciseWithheld: "no_home_place",
+    });
+    expect(buildPersonView(basePresence(), { ...precise, hideHomeExact: false }, sharing, clock).precise).toEqual({
+      lat: 37.123456,
+      lon: 127.123456,
+      accuracyM: 21,
+      mapUrl: "https://maps.google.com/?q=37.123456,127.123456",
+      updatedAgoMin: 0,
+    });
+  });
+
+  it("shows nothing of a paused owner", () => {
+    expect(buildPersonView(basePresence({ status: "away" }), precise, { ...sharing, sharingPaused: true }, clock)).toEqual({
+      paused: true,
+      presence: null,
+      precise: null,
+    });
   });
 });

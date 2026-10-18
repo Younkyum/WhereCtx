@@ -1,13 +1,13 @@
 /**
  * Places / geofences repository (plan section 9.5 / 10.2).
- * All queries are scoped to a userId (single-user in v0.1; see docs/decisions.md).
+ * All queries are scoped to a userId.
  */
 
 import { randomBytes } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { places } from "../db/schema.js";
-import type { Place, PlaceType } from "../types.js";
+import type { Place, PlaceType, UserId } from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
 export interface PlaceInput {
@@ -52,7 +52,7 @@ export class PlacesStore {
     private readonly clock: Clock = systemClock,
   ) {}
 
-  async list(userId: string): Promise<Place[]> {
+  async list(userId: UserId): Promise<Place[]> {
     const rows = (await this.db
       .select()
       .from(places)
@@ -60,7 +60,7 @@ export class PlacesStore {
     return rows.map(rowToPlace);
   }
 
-  async count(userId: string): Promise<number> {
+  async count(userId: UserId): Promise<number> {
     const rows = (await this.db
       .select({ c: sql<number>`count(*)` })
       .from(places)
@@ -68,7 +68,7 @@ export class PlacesStore {
     return rows[0]?.c ?? 0;
   }
 
-  async get(userId: string, name: string): Promise<Place | null> {
+  async get(userId: UserId, name: string): Promise<Place | null> {
     const rows = (await this.db
       .select()
       .from(places)
@@ -78,7 +78,7 @@ export class PlacesStore {
   }
 
   /** Create or replace a place by name (upsert on the (userId,name) unique key). */
-  async upsert(userId: string, input: PlaceInput): Promise<Place> {
+  async upsert(userId: UserId, input: PlaceInput): Promise<Place> {
     const existing = await this.get(userId, input.name);
     const ts = nowIso(this.clock);
     if (existing) {
@@ -112,7 +112,7 @@ export class PlacesStore {
     return rowToPlace(record);
   }
 
-  async deleteByName(userId: string, name: string): Promise<boolean> {
+  async deleteByName(userId: UserId, name: string): Promise<boolean> {
     const result = await this.db
       .delete(places)
       .where(and(eq(places.userId, userId), eq(places.name, name)));

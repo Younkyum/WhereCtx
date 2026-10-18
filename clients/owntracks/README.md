@@ -3,18 +3,45 @@
 [OwnTracks](https://owntracks.org) is an open-source location app for iOS and
 Android. WhereCtx accepts its HTTP mode directly.
 
-## Configure OwnTracks (HTTP mode)
+## Pair with a QR code
+
+Ask the server for a ready configuration (from a signed-in session that has
+re-confirmed its passkey, or with an admin token). The config points the
+phone at `BASE_URL`, so the server refuses to pair (`base_url_unusable`) until
+`BASE_URL` is its public https URL:
+
+```bash
+curl -X POST https://wherectx.example.com/v1/devices/pair \
+  -H "Authorization: Bearer ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"Mina phone","kind":"owntracks"}'
+```
+
+The response holds a new device token and:
+
+- `config`: an OwnTracks remote configuration in HTTP mode (`mode: 3`) that
+  posts to `/v1/ingest/owntracks` and authenticates with HTTP Basic, the token
+  being the password. It uses `monitoring: 1` (significant location changes),
+  which the OwnTracks booklet describes as the battery-friendly mode.
+- `link`: `owntracks:///config?inline=…`. Open it on the phone, or
+- `qrSvg`: the same link as a QR code. Scan it with the phone camera.
+
+OwnTracks imports the configuration and starts reporting. The token is shown
+only in this response; to replace it, revoke it under `/v1/tokens` and pair
+again.
+
+## Configure OwnTracks by hand (HTTP mode)
 
 In the OwnTracks app: **Settings → Connection**
 
 - **Mode:** `HTTP`
 - **Host / URL:** `https://wherectx.example.com/v1/ingest/owntracks`
-- **Authentication:** the simplest path is to append the device token as a query
-  parameter on the URL:
+- **Authentication:** turn on authentication and enter any username with the
+  device token as the **password**. OwnTracks sends it as HTTP Basic, which
+  WhereCtx accepts on ingest routes only.
+  Alternatively append the token to the URL:
   `https://wherectx.example.com/v1/ingest/owntracks?token=DEVICE_TOKEN`
-  (Use TLS so the token isn't sent in clear text. The header form
-  `Authorization: Bearer DEVICE_TOKEN` also works if your OwnTracks build lets
-  you set custom headers.)
+  (query strings can end up in proxy logs, so prefer the password field).
+  Use TLS either way so the token isn't sent in clear text.
 
 OwnTracks posts several message types; WhereCtx normalizes `_type:"location"`
 messages and acknowledges the rest with an empty array `[]`, as OwnTracks
