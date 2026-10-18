@@ -1,149 +1,144 @@
-# Deploy WhereCtx on Synology NAS behind Cloudflare Tunnel
+# Deploy WhereCtx on a Synology NAS behind Cloudflare Tunnel
 
-This guide runs WhereCtx on a Synology NAS (Container Manager) and exposes it to
-the internet through a **Cloudflare Tunnel** — no router ports opened, automatic
-HTTPS — with the admin dashboard protected by **Cloudflare Access**.
+This guide runs WhereCtx on a Synology NAS (Container Manager) and reaches it
+from the internet through a **Cloudflare Tunnel**. No router ports are opened,
+and Cloudflare provides HTTPS, which passkeys require.
 
 ```
-phone / AI agent  ──https──►  Cloudflare edge  ──tunnel──►  cloudflared ─► wherectx:8787
-                                   │
-                              Access (login) gates  /dashboard only
+phone, browser, AI agent ──https──► Cloudflare edge ──tunnel──► cloudflared ─► wherectx:8787
 ```
 
 **Prerequisites:** a domain on Cloudflare, a Synology with Container Manager
-(DSM 7.2+), and ~15 minutes.
+(DSM 7.2 or later), and about 15 minutes.
 
 ---
 
-## Step 1 — Get the image building (one-time, on GitHub)
+## Step 1: Get the image built (one time, on GitHub)
 
-The repo includes a GitHub Actions workflow
-(`.github/workflows/docker-publish.yml`) that builds a multi-arch image
-(amd64 + arm64) and pushes it to GitHub Container Registry on every push to
-`main`.
+The repo's GitHub Actions workflow (`.github/workflows/docker-publish.yml`)
+builds a multi-arch image (amd64 and arm64) and pushes it to GitHub Container
+Registry on every push to `main`.
 
-1. Push the repo (already done). Open the repo's **Actions** tab and confirm the
-   "Build and publish Docker image" run is green.
+1. Open the repo's **Actions** tab and confirm that the "Build and publish
+   Docker image" run is green.
 2. Make the image public so the NAS can pull it without a login:
-   repo → **Packages** → `wherectx` → **Package settings** → **Change visibility
-   → Public**.
-   (Alternatively keep it private and `docker login ghcr.io` on the NAS with a
-   PAT that has `read:packages`.)
+   repo → **Packages** → `wherectx` → **Package settings** → **Change
+   visibility → Public**. To keep it private instead, run `docker login
+   ghcr.io` on the NAS with a PAT that has `read:packages`.
 
-The image is now at `ghcr.io/younkyum/wherectx:latest`.
-
-> No NAS-side build needed. To update later: re-pull the image and recreate the
-> container in Container Manager.
+The image is `ghcr.io/younkyum/wherectx:latest`.
 
 ---
 
-## Step 2 — Create the Cloudflare Tunnel
+## Step 2: Create the Cloudflare Tunnel
 
-1. Go to **Cloudflare dashboard → Zero Trust → Networks → Tunnels → Create a
-   tunnel**. Choose **Cloudflared**. Name it `wherectx`.
-2. On the install screen, pick the **Docker** tab and copy the **tunnel token**
-   (the long `eyJ...` string after `--token`). You only need the token.
+1. In the Cloudflare dashboard, open **Zero Trust → Networks → Tunnels →
+   Create a tunnel**. Choose **Cloudflared** and name it `wherectx`.
+2. On the install screen, open the **Docker** tab and copy the **tunnel
+   token**, the long `eyJ...` string after `--token`.
 3. Add a **Public Hostname**:
-   - **Subdomain:** `wherectx` · **Domain:** your domain → public URL becomes
-     `https://wherectx.yourdomain.com`
-   - **Service:** `HTTP` · **URL:** `wherectx:8787`
-     (this is the Docker service name + port — cloudflared reaches it over the
-     internal compose network)
-4. Save. (The tunnel will show "down" until Step 4 starts cloudflared.)
+   - **Subdomain:** `wherectx`, **Domain:** your domain. The public URL is
+     `https://wherectx.yourdomain.com`.
+   - **Service:** `HTTP`, **URL:** `wherectx:8787`. This is the compose
+     service name and port. cloudflared reaches it over the internal network.
+4. Save. The tunnel shows "down" until Step 3 starts cloudflared.
 
 ---
 
-## Step 3 — Protect the dashboard with Cloudflare Access
+## Step 3: Run it on the NAS (Container Manager)
 
-So `/dashboard` requires *your* login, while the API and MCP stay token-only.
-
-1. **Zero Trust → Access → Applications → Add an application → Self-hosted.**
-2. **Application domain:** `wherectx.yourdomain.com` · **Path:** `dashboard`
-   (add a second one for `dashboard/*` if your Access version needs the wildcard
-   separately).
-3. **Policy:** Action *Allow*, rule *Emails* → your email. Save.
-4. Leave MCP (`/mcp`) and ingest (`/v1/ingest*`) **outside** Access — agents and
-   your phone authenticate with WhereCtx tokens, not an interactive login.
-
-> Optional hardening: **Zero Trust → ... → WAF / Rate limiting** on the zone to
-> throttle abusive clients. This covers the rate-limit gap noted in the docs.
-
----
-
-## Step 4 — Run it on the NAS (Container Manager)
-
-1. In **File Station**, create a folder, e.g. `docker/wherectx`.
+1. In **File Station**, create a folder such as `docker/wherectx`.
 2. Put two files in it:
-   - `docker-compose.yml` ← copy from
-     [`deploy/docker-compose.nas.yml`](docker-compose.nas.yml)
-   - `.env` ← copy from [`.env.nas.example`](.env.nas.example) and fill in:
-     - `BASE_URL=https://wherectx.yourdomain.com`
-     - strong `ADMIN_TOKEN` / `DEVICE_TOKEN` / `AGENT_TOKEN`
-       (e.g. run `openssl rand -base64 24 | tr -d '/+='` three times)
-     - `CF_TUNNEL_TOKEN=` the token from Step 2
-3. **Container Manager → Project → Create:**
-   - **Path:** the `docker/wherectx` folder
-   - It detects `docker-compose.yml` → **Next → Done**. Container Manager reads
-     the `.env` automatically.
-4. Watch the build/up logs. When `wherectx` logs
-   `WhereCtx listening on http://0.0.0.0:8787`, it's up. The Cloudflare tunnel
-   page (Step 2) should flip to **Healthy**.
-
-> **First-boot token note:** if you left any token as `change-me-*`, WhereCtx
-> refuses it and generates a strong admin token printed **once** in the
-> `wherectx` container log — grab it from Container Manager → Container →
-> wherectx → **Logs**. (If you set real tokens in `.env`, ignore this.)
+   - `docker-compose.yml`, copied from
+     [`docker-compose.nas.yml`](docker-compose.nas.yml).
+   - `.env`, copied from [`.env.nas.example`](.env.nas.example). Set
+     `BASE_URL=https://wherectx.yourdomain.com` and `CF_TUNNEL_TOKEN` to the
+     token from Step 2. Every other line can stay as it is. The compose file
+     passes each setting in `.env` to the server.
+3. In **Container Manager → Project → Create**, set **Path** to the folder.
+   It finds `docker-compose.yml` and reads `.env`. Choose **Next → Done**.
+4. When the `wherectx` log shows `WhereCtx listening on http://0.0.0.0:8787`,
+   the server is up. The tunnel page from Step 2 turns **Healthy**.
 
 ---
 
-## Step 5 — Verify
+## Step 4: Create the owner's passkey
+
+1. In **Container Manager → Container → wherectx → Logs**, find the box that
+   says "No passkey is registered yet" and copy the setup code.
+2. Open `https://wherectx.yourdomain.com/dashboard`, choose **First-time
+   setup**, enter the code and your name, and create a passkey.
+3. Save the recovery codes it shows. They are shown once.
+
+The setup code works until the first passkey exists. A restart prints a new
+one. Open the dashboard at the `BASE_URL` address. A passkey made there does
+not work at the NAS's LAN address.
+
+---
+
+## Step 5: Connect phones, agents, and people
+
+- **Phone:** **Devices** in the dashboard. OwnTracks gets a QR code. The iOS
+  Shortcut gets the URL and header. See [`../docs/clients.md`](../docs/clients.md).
+- **AI agent:** **Agents** in the dashboard. It shows the token once, with a
+  Claude Desktop config for `https://wherectx.yourdomain.com/mcp`. See
+  [`../docs/mcp.md`](../docs/mcp.md).
+- **Other people:** **Workspace → Create invite link**. Send the link. They create their
+  own passkey.
+
+To check from a shell:
 
 ```bash
-# Health (public)
-curl https://wherectx.yourdomain.com/healthz          # {"status":"ok"}
-
-# Dashboard → opens the Cloudflare Access login first, then the WhereCtx page
-open https://wherectx.yourdomain.com/dashboard
-
-# Register home + send a test location (admin/device tokens)
-curl -X POST https://wherectx.yourdomain.com/v1/places \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"name":"home","lat":37.5665,"lon":126.9780,"radiusM":150,"type":"home"}'
-
-curl -X POST https://wherectx.yourdomain.com/v1/ingest \
-  -H "Authorization: Bearer $DEVICE_TOKEN" -H "Content-Type: application/json" \
-  -d '{"lat":37.5665,"lon":126.9780,"battery":72}'
-
+curl https://wherectx.yourdomain.com/healthz             # {"status":"ok"}
 curl https://wherectx.yourdomain.com/v1/presence \
-  -H "Authorization: Bearer $AGENT_TOKEN"            # {"status":"home",...}
+	-H "Authorization: Bearer $AGENT_TOKEN"              # your status, once a phone has reported
 ```
-
-## Step 6 — Connect clients
-
-- **Phone (iOS Shortcut / OwnTracks):** point them at
-  `https://wherectx.yourdomain.com/v1/ingest/shortcut` (or `/owntracks`) with the
-  **device** token. See [`../clients/`](../clients/).
-- **AI agent (Claude Desktop / Hermes):** MCP URL
-  `https://wherectx.yourdomain.com/mcp` with the **agent** token. See
-  [`../docs/mcp.md`](../docs/mcp.md).
 
 ---
 
-## Notes & security
+## Optional: Cloudflare Access in front of the dashboard
 
-- **No inbound ports** are opened on the NAS or router — the tunnel is
-  outbound-only. This is the biggest security win over port-forwarding.
-- **TLS is automatic** at the Cloudflare edge, so tokens are never sent in clear
-  text.
-- The dashboard's admin token lives in your browser's `localStorage`; Cloudflare
-  Access in front of `/dashboard` is the meaningful second layer.
-- **Updating WhereCtx:** in Container Manager, stop the project → in the Registry
-  re-pull `ghcr.io/younkyum/wherectx:latest` → recreate. Data persists in the
-  `wherectx-data` named volume.
-- **Backups:** the volume holds `wherectx.db` (SQLite). Back it up via Container
-  Manager or `docker cp` if you want history of places/tokens/settings.
-- **LAN-only access too:** uncomment the `ports:` block in the compose to also
-  reach `http://<nas-ip>:8787` from your local network.
+Passkeys protect the dashboard, so Access is not required. If you want a
+second gate in front of `/dashboard`:
+
+1. Open **Zero Trust → Access → Applications → Add an application →
+   Self-hosted**.
+2. Set **Application domain** to `wherectx.yourdomain.com` and **Path** to
+   `dashboard`.
+3. Add an *Allow* policy for the email address of **every person you invite**.
+   An invite link opens `/dashboard`, so anyone the policy leaves out cannot
+   accept it.
+
+Leave `/mcp`, `/v1/*`, and `/v1/ingest*` outside Access. Agents, phones, and
+the dashboard's own API calls authenticate with WhereCtx tokens and sessions,
+not an interactive login.
+
+---
+
+## Notes and security
+
+- **No inbound ports.** The tunnel is outbound only, so nothing on the NAS or
+  router is exposed.
+- **TLS** ends at the Cloudflare edge, so tokens and cookies never cross the
+  internet in clear text.
+- **`TRUST_PROXY=cloudflare`** is the default here. Every request comes from
+  the cloudflared container, so the rate limiters read the client from
+  `cf-connecting-ip`. If you also publish the LAN port, LAN clients could set
+  that header themselves.
+- **Locked out:** run `node dist/cli.js reset-access <userId>` in the
+  `wherectx` container (Container Manager → Container → wherectx → Terminal)
+  for a one-hour access code. See the
+  [README](../README.md#recover-access).
+- **Updating:** stop the project, re-pull `ghcr.io/younkyum/wherectx:latest`
+  in **Registry**, and start it again. Migrations run at boot. Data stays in
+  the `wherectx-data` named volume.
+- **Backups:** the volume holds `wherectx.db` (SQLite). Back it up with
+  Container Manager or `docker cp`.
+- **LAN access:** uncomment the `ports:` block in the compose file to reach
+  `http://<nas-ip>:8787`. The API works there. Passkey sign-in does not,
+  because it is plain http on an IP address.
 - **Webhooks to Home Assistant on the LAN:** set
-  `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` (otherwise private-IP targets are blocked
-  by the SSRF guard).
+  `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` in `.env`. Otherwise the SSRF guard
+  blocks private addresses.
+- **Rate limiting at the edge** (optional): add a Cloudflare WAF rate-limiting
+  rule on the zone to throttle abusive clients before they reach the NAS.

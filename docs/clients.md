@@ -8,15 +8,21 @@ using a **device** token.
 | Generic HTTP | `POST /v1/ingest` | below |
 | iOS Shortcut | `POST /v1/ingest/shortcut` | [clients/ios-shortcut](../clients/ios-shortcut/) |
 | OwnTracks | `POST /v1/ingest/owntracks` | [clients/owntracks](../clients/owntracks/) |
-| Android Tasker | `POST /v1/ingest` | use the generic shape (v0.2 template planned) |
-| Home Assistant | `POST /v1/ingest` | use a REST/webhook automation (v0.2 example planned) |
+| Android Tasker | `POST /v1/ingest` | use the generic shape below |
+| Home Assistant | `POST /v1/ingest` | use a REST command with the generic shape below |
 
 ## Pairing a phone
 
-`POST /v1/devices/pair` with `{ "name": "...", "kind": "owntracks" }` mints a
-device token and returns an OwnTracks config, an `owntracks:///config?inline=`
-link and the same link as a QR code: scan it on the phone and OwnTracks is set
-up. `"kind": "shortcut"` returns the URL, token and headers for the iOS
+In the dashboard, open **Devices**, name the phone, pick OwnTracks or iOS
+Shortcut, and choose **Create connection**. OwnTracks shows a QR code, an open
+link, and a `.otrc` file to download. The iOS Shortcut shows the URL, the
+header, and the steps. The dashboard asks for your passkey first when you
+have not used it in the last 10 minutes.
+
+Behind it is `POST /v1/devices/pair`. With `{ "name": "...", "kind":
+"owntracks" }` it mints a device token and returns an OwnTracks config, an
+`owntracks:///config?inline=` link, and the same link as a QR code. With
+`"kind": "shortcut"` it returns the URL, token, and headers for the iOS
 Shortcut. See [api.md](api.md#devices-pairing). The manual setup below still
 works.
 

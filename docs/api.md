@@ -1,18 +1,32 @@
 # REST API
 
 Base URL: `http://localhost:8787` (set `BASE_URL` for the public URL).
-All authenticated routes use `Authorization: Bearer <token>`.
+
+A request authenticates in one of two ways:
+
+- `Authorization: Bearer <token>` for devices, agents, and automation.
+- The session cookie of a person signed in with a passkey (see
+  [Accounts](#accounts-signed-in-people)). Writes with the cookie must send
+  this server's `Origin`.
+
+Either way, the request acts only on the data of the user who owns the
+credential. A Bearer header wins over a cookie.
 
 ## Auth & scopes
 
-| Scope | Roles |
-|-------|-------|
-| `write_location` | device, (admin not by default) |
+| Scope | Token roles |
+|-------|-------------|
+| `write_location` | device |
 | `read_presence`, `read_precise_location` | agent, admin |
 | `manage_places`, `manage_tokens`, `manage_privacy` | admin |
 
-Responses: `401` (no/invalid token), `403` (missing scope), `400` (validation),
-`404` (not found), `413` (body > 64 KB), `500`.
+A session has every scope above over its own data. The account, workspace,
+sharing, and people routes take a session only and answer `403` to a token.
+
+Responses: `401` (no or invalid credential), `403` (missing scope, or
+`reauth_required`), `400` (validation), `404` (not found), `409` (a cap is reached,
+the last owner or the last passkey), `410` (an expired or used invite),
+`413` (body > 64 KB), `500`.
 
 ## Ingest (device)
 
@@ -268,8 +282,10 @@ POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "se
 GET    /v1/webhooks/dead-letters    # undeliverable events
 DELETE /v1/webhooks/:id
 ```
-URLs that resolve to private/reserved IPs are rejected (SSRF guard) unless
-`WEBHOOK_ALLOW_PRIVATE_TARGETS=true`. Secrets are encrypted at rest when
+`POST` answers `400` when the URL's host does not resolve, or resolves to a
+private or reserved IP (SSRF guard) unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`.
+The delivery re-checks the address each time. Each user may have 20 webhooks
+(`409` beyond that). Secrets are encrypted at rest when
 `WEBHOOK_ENCRYPTION_KEY` is set.
 
 ### Delivery signature

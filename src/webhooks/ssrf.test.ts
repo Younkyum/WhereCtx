@@ -46,6 +46,15 @@ describe("assertSafeWebhookUrl", () => {
     expect(url.hostname).toBe("example.test");
   });
 
+  it("rejects a host that does not resolve", async () => {
+    const notFound = async (): Promise<string[]> => {
+      throw Object.assign(new Error("getaddrinfo ENOTFOUND nowhere.test"), { code: "ENOTFOUND" });
+    };
+    const rejected = assertSafeWebhookUrl("https://nowhere.test/hook", false, notFound);
+    await expect(rejected).rejects.toBeInstanceOf(SsrfError);
+    await expect(rejected).rejects.toThrow("could not resolve host nowhere.test");
+  });
+
   it("bypasses the check when private targets are allowed", async () => {
     const url = await assertSafeWebhookUrl("http://192.168.1.50/ha", true);
     expect(url.hostname).toBe("192.168.1.50");

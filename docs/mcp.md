@@ -6,7 +6,13 @@ WhereCtx exposes presence to AI agents over the Model Context Protocol using the
 ## Connecting
 
 The `/mcp` endpoint authenticates with a Bearer token that has the
-`read_presence` scope (an `agent` or `admin` token). Device tokens are rejected.
+`read_presence` scope (an `agent` or `admin` token). Device tokens and session
+cookies are rejected.
+
+Create an agent token under **Agents** in the dashboard. It is shown once,
+together with a Claude Desktop entry for `<BASE_URL>/mcp`. A token belongs to
+the person who made it, and every tool reads and writes only that person's
+presence, places, events, and reminders.
 
 ### Claude Desktop
 
@@ -45,7 +51,7 @@ mcp_servers:
 | `create_place` | `name, type, lat, lon, radiusM?` | `{name, type, radiusM}`; registers/replaces a geofence |
 | `remember_current_place` | `name, type?, radiusM?` | `{name, type, radiusM}`; saves the **current** location as a place (coordinates are never returned) |
 
-All tools re-apply the same privacy rules as the REST API: hidden mode withholds,
+All tools apply the same privacy rules as the REST API: hidden mode withholds,
 precise is policy-gated, home coordinates are protected, and coarse tools never
 return raw coordinates or geohash.
 

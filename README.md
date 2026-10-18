@@ -1,175 +1,225 @@
 # WhereCtx
 
-**Self-hosted real-world presence context for AI agents.**
+**Self-hosted real-world presence for people and their AI agents.**
 
-WhereCtx lets Hermes, Claude, OpenClaw, OpenCode, and other MCP-compatible agents
-understand whether you're home, away, commuting, nearby, or exactly where you
-are — privately, on your own server.
+WhereCtx runs on your own server and knows whether each person in your
+household or team is home, away, nearby, or on the move. Agents such as
+Claude, Hermes, OpenClaw, and OpenCode read it over MCP. People sign in to a
+passkey dashboard and share their location with each other, like Find My.
 
-> Agents see your presence, not your raw GPS — unless you explicitly allow it.
+> Agents see your presence, not your raw GPS, unless you allow it.
 
-## Why?
+## What it does
 
-AI agents know your files, calendar, terminal, browser, and memory. But they
-usually don't know your real-world context. WhereCtx adds a privacy-first
-presence layer:
+- Computes a status from your phone's location and your places: `home`,
+  `near_home`, `work`, `custom`, `transit`, `away`, plus motion and staleness.
+- Gives agents a coarse view over MCP and REST. Precise coordinates sit behind
+  a policy gate and are refused at or near home.
+- Hosts several people. Each person's data belongs to them. Workspaces group
+  people, with owner, admin, and member roles and single-use invite links.
+- Lets workspace members share their location with each other, as status only
+  or exact. Sharing is off until you turn it on, and an audit shows who looked.
+- Signs people in with passkeys. No passwords, no email.
+- Connects a phone by QR code (OwnTracks) or with ready-made steps (iOS
+  Shortcut), and an agent with a generated MCP config.
+- Fires geofence events to signed webhooks.
 
-- home / away / near home / work / transit
-- walking / driving / stationary (motion)
-- stale-location detection
-- optional precise GPS, policy-gated
-- geofence enter/leave events + webhooks
-- MCP tools for agents
-- iOS Shortcut, OwnTracks, and generic HTTP ingest
-
-WhereCtx is **not** a location-tracking app. It is infrastructure for giving
-personal AI agents safe, user-controlled awareness of real-world context.
-
-## Quick start (Docker)
+## Quick start with Docker
 
 ```bash
-cp .env.example .env            # set strong ADMIN/DEVICE/AGENT tokens
 cp docker-compose.example.yml docker-compose.yml
+mkdir -p data && sudo chown 10001 data     # the container runs as uid 10001
 docker compose up -d
+docker compose logs wherectx               # find the setup code
 ```
 
-Open the dashboard at <http://localhost:8787/dashboard>, choose "First-time
-setup" and enter the setup code from the logs (`docker compose logs wherectx`)
-to create the owner's passkey. (If you left the tokens as `change-me-*`, a
-strong admin token is auto-generated and printed there once too.)
+Open <http://localhost:8787/dashboard>, choose **First-time setup**, enter the
+setup code from the log and your name, and create the owner's passkey. Save
+the recovery codes it shows. They are shown once.
 
-## Quick start (local / Node ≥ 20)
+The migrations in `drizzle/` run at every boot. There is no separate migrate
+step.
+
+## Quick start with Node
+
+Node 20 or later.
 
 ```bash
 npm install
 cp .env.example .env
-npm run db:migrate     # apply the SQLite schema
-npm run build:web      # the dashboard, built into dist/web
-npm run dev            # or: npm run build && npm start
+npm run build:web      # builds the dashboard into dist/web
+npm run dev            # server on :8787, restarts on change
 ```
 
-Working on the dashboard (`web/`, React)? `npm run dev:web` serves it with hot
-reload at <http://localhost:5173/dashboard/> and forwards `/v1` to the server on
-port 8787. Passkeys there are checked against the server's `BASE_URL` origin,
-so sign in through the server's own address.
+The setup code is in the terminal output. Open
+<http://localhost:8787/dashboard> and continue as above. `npm run build` and
+`npm start` run the compiled server instead.
 
-## Send your location
+## Passkeys need HTTPS or localhost
 
-From a phone, post location updates with the **device** token:
+Browsers allow passkeys only in a secure context. WhereCtx binds each passkey
+to the host name in `BASE_URL`. So:
+
+- Open the dashboard at exactly the `BASE_URL` origin.
+- On one machine, `http://localhost:8787` works.
+- From other devices, serve WhereCtx over https on a domain name, for example
+  behind Caddy, nginx, or a Cloudflare Tunnel
+  ([deploy/README.md](deploy/README.md)), and set `BASE_URL` to that https
+  URL.
+- `http://192.168.1.20:8787` from a phone on your LAN does not work. Plain
+  http on a LAN address is not a secure context, and a passkey cannot belong
+  to an IP address. The sign-in page says so when it detects it.
+
+Boot logs a warning when `BASE_URL` cannot carry passkeys. Phone pairing also
+refuses (`base_url_unusable`) until `BASE_URL` is a public https URL.
+
+## Add people
+
+Owners and admins open **Workspace** and create an invite link with a role.
+The invitee opens the link, enters a name, and creates a passkey. Every
+person gets their own presence, places, privacy settings, devices, and agent
+tokens. Nobody sees anyone else's location unless that person shares it.
+
+`ALLOW_MEMBER_WORKSPACES=false` stops plain members from creating workspaces
+of their own.
+
+## Share your location
+
+Under **Sharing**, choose not sharing, status only, or exact location for each
+person in your workspaces, and whether to hide your exact location at home. **Home** shows the people who share with you. **Share my location now**
+sends this device's position once.
+
+Sharing more needs a fresh passkey check. Sharing ends when the two of you no
+longer have a workspace in common. The sharing log lists every grant, change,
+revoke, and exact-location view. Agents never see any of it. See
+[docs/privacy.md](docs/privacy.md#sharing-with-people).
+
+## Connect a phone
+
+Under **Devices**, choose OwnTracks or iOS Shortcut and create a connection.
+OwnTracks gets a QR code and an open link that configure the app. The iOS
+Shortcut gets the URL, header, and steps. Each connection is a `device`
+token, which can write a location and read nothing.
+
+Any HTTP client can post too:
 
 ```bash
-curl -X POST http://localhost:8787/v1/ingest \
-  -H "Authorization: Bearer $DEVICE_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"source":"ios_shortcut","lat":37.123,"lon":127.123,"accuracyM":21,"battery":64}'
+curl -X POST https://wherectx.example.com/v1/ingest \
+	-H "Authorization: Bearer $DEVICE_TOKEN" -H "Content-Type: application/json" \
+	-d '{"lat":37.123,"lon":127.123,"accuracyM":21,"battery":64}'
 ```
 
-See [clients/](clients/) for iOS Shortcut and OwnTracks setup.
+See [docs/clients.md](docs/clients.md) and [clients/](clients/).
 
-## Register a home geofence
+## Connect an agent
 
-```bash
-curl -X POST http://localhost:8787/v1/places \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
-  -d '{"name":"home","lat":37.123,"lon":127.123,"radiusM":150,"type":"home"}'
-```
+Under **Agents**, create a token. The dashboard shows it once, with a Claude
+Desktop entry ready to paste:
 
-## Connect an agent (MCP)
-
-```jsonc
-// Claude Desktop
+```json
 {
-  "mcpServers": {
-    "wherectx": {
-      "url": "http://localhost:8787/mcp",
-      "headers": { "Authorization": "Bearer AGENT_TOKEN" }
-    }
-  }
+	"mcpServers": {
+		"wherectx": {
+			"url": "https://wherectx.example.com/mcp",
+			"headers": { "Authorization": "Bearer AGENT_TOKEN" }
+		}
+	}
 }
 ```
 
-Your agent can now call:
-
-- `get_presence()` — coarse status (no raw GPS)
-- `is_near_place("home")`
-- `get_precise_location(reason)` — only when policy allows
-- `get_location_age()`, `list_places()`, `list_recent_presence_events()`
-- `create_location_reminder(place, message)`
-- `create_place(...)`, `remember_current_place(name)` — saving the `home` place
-  requires an admin token while home place protection is on (dashboard toggle)
-
-See [examples/](examples/) for Hermes and Claude Desktop configs and a
-recommended agent system prompt.
-
-## Accounts and passkeys
-
-People sign in with passkeys; tokens stay for devices and agents. On first
-boot the server log prints a one-time setup code that registers the owner's
-passkey (`POST /v1/auth/setup/options|verify`, or "First-time setup" in the
-dashboard). Owners and admins invite others to a workspace with
-single-use links. See [docs/api.md](docs/api.md#accounts-signed-in-people).
-
-Locked out (no passkey, no recovery code), or claiming an account migrated
-from before accounts? On the server:
-
-```bash
-node dist/cli.js reset-access <userId>     # Docker: docker compose exec wherectx node dist/cli.js reset-access <userId>
-npm run reset-access -- <userId>           # from a source checkout
-```
-
-It prints a one-hour code for `POST /v1/auth/access-code/options|verify`.
+An agent token reads only the presence of the person who made it. The tools
+are `get_presence`, `get_precise_location`, `is_near_place`, `list_places`,
+`get_location_age`, `list_recent_presence_events`,
+`create_location_reminder`, `create_place`, and `remember_current_place`. See
+[docs/mcp.md](docs/mcp.md) and [examples/](examples/) for Hermes and a
+recommended system prompt.
 
 ## Token roles
 
-| Role     | Can…                                                            |
-|----------|-----------------------------------------------------------------|
-| `device` | write location (`write_location`) — **never reads** presence     |
-| `agent`  | read coarse presence, read precise (if policy allows)            |
-| `admin`  | manage places, tokens, privacy, webhooks                         |
+| Role     | Scopes | For |
+|----------|--------|-----|
+| `device` | `write_location` | a phone. It never reads presence. |
+| `agent`  | `read_presence`, `read_precise_location` | an AI agent. Precise reads still pass the policy gate. |
+| `admin`  | the agent scopes, `manage_places`, `manage_tokens`, `manage_privacy` | automation acting for one person |
 
-## Privacy model
+A signed-in person has every scope over their own data. Tokens never reach
+account, workspace, or sharing routes.
 
-- **Presence by default, precise location when needed.** Agents get a coarse
-  summary (status/label/motion/age) with no raw coordinates or geohash.
-- **`hidden` mode** withholds presence entirely from agents.
-- **Home protection**: precise location is *denied* (not blurred) while you're at
-  or near a `home` place, unless you disable `HIDE_HOME_EXACT_COORDINATES`.
-- **Home place protection**: agents may remember places via MCP, but creating or
-  moving the `home` geofence requires an admin token (`PROTECT_HOME_PLACE`,
-  toggleable live from the dashboard).
-- **Stale detection**: device timestamps far in the future are distrusted so
-  presence can't be spoofed "fresh".
-- **Webhook SSRF guard**: delivery to private/reserved IPs is blocked by default.
-- **Signed webhooks**: deliveries are HMAC-signed over `timestamp.body` (replay
-  protection); secrets are encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set.
-- **Auth-failure rate limiting** on both the REST API and the MCP endpoint.
+## Upgrade from v0.1
 
-Full details in [docs/privacy.md](docs/privacy.md).
+Back up `wherectx.db`, then start the new version with the same `USER_ID` and
+`DATABASE_URL`. The boot migrations:
+
+- give every row a `user_id` and assign the existing data to `USER_ID`,
+- create a user for `USER_ID`, a workspace named "Default", and an owner
+  membership,
+- leave every existing token working, owned by `USER_ID`.
+
+Because no passkey exists yet, boot prints a setup code. Use it in
+**First-time setup** to register the owner's passkey. It attaches to
+`USER_ID` and its data. The old dashboard's pasted admin token is gone, so
+sign in with the passkey instead.
+
+`ADMIN_TOKEN`, `DEVICE_TOKEN`, and `AGENT_TOKEN` are now optional. Tokens
+already in the database keep working when you remove them from the
+environment.
+
+## Recover access
+
+A person who lost every passkey can sign in with a recovery code. If they
+have none left, or a user migrated from v0.1 other than `USER_ID` needs to
+claim an account, run this on the server:
+
+```bash
+docker compose exec wherectx node dist/cli.js reset-access <userId>
+npm run reset-access -- <userId>     # from a source checkout
+```
+
+It prints a code that is valid for one hour. The person opens the dashboard,
+chooses **Use an access code**, and creates a new passkey. Their other
+sessions end and they get new recovery codes. Member ids are in
+`GET /v1/workspaces/:id/members`.
+
+## Run behind a proxy
+
+Failed sign-ins and bad tokens are rate-limited per client. By default the
+client is the TCP peer. Behind a proxy, every request comes from the proxy,
+so set `TRUST_PROXY`:
+
+- `cloudflare` when every request arrives through Cloudflare. It reads
+  `cf-connecting-ip`.
+- `xff` behind a proxy that sets `X-Forwarded-For`. It reads the first hop.
+- `none` (default) otherwise. Trusting a header that clients can reach
+  directly lets them pick their own address.
+
+Every configuration variable is in [.env.example](.env.example).
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
-- [Privacy & policy](docs/privacy.md)
+- [Privacy and policy](docs/privacy.md)
 - [REST API](docs/api.md)
 - [MCP tools](docs/mcp.md)
-- [Clients](docs/clients.md) · [iOS Shortcut](clients/ios-shortcut/) · [OwnTracks](clients/owntracks/)
+- [Clients](docs/clients.md): [iOS Shortcut](clients/ios-shortcut/), [OwnTracks](clients/owntracks/)
 - [Design decisions](docs/decisions.md)
-
-## Tech stack
-
-TypeScript · [Hono](https://hono.dev) · SQLite (libsql) · [Drizzle ORM](https://orm.drizzle.team) ·
-[`@modelcontextprotocol/sdk`](https://modelcontextprotocol.io) · Docker.
+- [Deploy on a Synology NAS with Cloudflare Tunnel](deploy/README.md)
 
 ## Development
 
 ```bash
-npm run typecheck     # tsc --noEmit
-npm test              # vitest (unit + integration)
-npm run db:generate   # regenerate migrations after a schema change
+npm run dev           # server with reload (tsx watch), reads .env
+npm run dev:web       # dashboard with hot reload on :5173, proxies /v1 to :8787
+npm run build         # tsc for the server, then the web typecheck and Vite build into dist/web
+npm test              # vitest: server, dashboard, and migration tests
+npm run typecheck     # server and web/
+npm run db:generate   # write a migration after changing src/db/schema.ts
 ```
 
-The codebase ships with an independent multi-pass code-review trail under
-[`reviews/`](reviews/).
+The dashboard is a React app in `web/`. The dev server on :5173 is for
+layout work. Passkeys there are checked against the `BASE_URL` origin, so
+sign in through the server's own address.
+
+The review trail for each phase is in [reviews/](reviews/).
 
 ## License
 

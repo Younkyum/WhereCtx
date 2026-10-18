@@ -11,6 +11,7 @@ import { Center } from "@astryxdesign/core/Center";
 import { Heading } from "@astryxdesign/core/Heading";
 import { Icon } from "@astryxdesign/core/Icon";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
+import { Link } from "@astryxdesign/core/Link";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { MapPin } from "lucide-react";
@@ -219,6 +220,8 @@ function Head({ title, description }: { title: string; description?: string }) {
   );
 }
 
+const PASSKEY_HTTPS_HELP = "https://github.com/Younkyum/WhereCtx#passkeys-need-https-or-localhost";
+
 /** Says up front when this page cannot use passkeys at all (plain http, old browser). */
 function PasskeyProblem() {
   const { t } = useApp();
@@ -228,7 +231,18 @@ function PasskeyProblem() {
     <Banner
       status="warning"
       title={t(problem === "insecure" ? "gate.insecure.title" : "gate.unsupported.title")}
-      description={problem === "insecure" ? t("gate.insecure", { origin: location.origin }) : t("gate.unsupported")}
+      description={
+        problem === "insecure" ? (
+          <>
+            {t("gate.insecure", { origin: location.origin })}{" "}
+            <Link href={PASSKEY_HTTPS_HELP} isExternalLink>
+              {t("gate.insecure.help")}
+            </Link>
+          </>
+        ) : (
+          t("gate.unsupported")
+        )
+      }
     />
   );
 }

@@ -1,8 +1,8 @@
-# WhereCtx — Design Decisions (v0.1)
+# WhereCtx design decisions
 
-This document records cross-cutting decisions so later phases (and reviewers)
-have a single, authoritative reference. It resolves the plan's "Open Questions"
-(section 22) and the ambiguities surfaced during Phase 1 review.
+This document records cross-cutting decisions so later phases and reviewers
+have one reference. It started by resolving the plan's "Open Questions"
+(section 22) for v0.1. Later entries are dated.
 
 ## Open Questions (plan §22) — resolved
 
@@ -13,7 +13,7 @@ have a single, authoritative reference. It resolves the plan's "Open Questions"
 | 3 | Precise approval interactive vs static? | **Static policy only** in v0.1 (`ALLOW_PRECISE_TO_AGENT`, `PRECISE_REQUIRES_REASON`). Interactive approval is v0.2. |
 | 4 | Store raw history by default? | **No.** `STORE_RAW_HISTORY=false`. Presence-first philosophy. |
 | 5 | Reverse geocoding in v0.1? | **No.** Coarse location uses geohash only. Reverse geocoding is an optional v0.2 integration. |
-| 6 | Single or multi-user in v0.1? | **Single-user** in v0.1; data is now owned per user, with the token's owner deciding whose data a request sees. See "Single-user scope" below. |
+| 6 | Single or multi-user in v0.1? | **Single-user** in v0.1. Since then every row is owned by a user and several people share one install. See "Single-user scope" and the 2026-10-18 entry below. |
 | 7 | `near_home`/`home` separate or distance metadata? | **Separate statuses** (the plan enumerates both). `near_*` is derived from `radiusM * NEAR_RADIUS_MULTIPLIER`. |
 
 ## Config vs DB precedence (privacy / retention / stale)
@@ -154,9 +154,9 @@ mapping layer derives a fallback label from `status` (e.g. `near_home` →
 
 ## Token hardening (implemented in Phase 2 bootstrap)
 
-The `.env.example` ships placeholder tokens (`change-me-*`). The Phase 2 token
-bootstrap **refuses to seed** any token that still matches `/^change-me/` or is
-shorter than 24 characters, emitting a loud warning. Operators are directed to
+Bootstrap tokens are optional, and `.env.example` leaves them empty. The token
+bootstrap **refuses to seed** any token that matches `/^change-me/` or is
+shorter than 24 characters, and logs a warning. Operators are directed to
 generate strong random tokens. The default `HOST=0.0.0.0` bind is required for
 Docker; docs instruct operators to keep WhereCtx behind a reverse proxy and never
 expose it raw with placeholder tokens.
@@ -193,3 +193,37 @@ Enforcement lives in `src/privacy/policy.ts` and is exercised end-to-end by test
 All timestamp columns store app-generated **ISO-8601** strings
 (`new Date().toISOString()`). SQL `CURRENT_TIMESTAMP` defaults are intentionally
 avoided (different format → broken `updatedAgoSec` math and lexical sorting).
+
+## 2026-10-18: multi-user accounts, sharing, and the new dashboard
+
+- **Passkeys and sessions are in-house, on SimpleWebAuthn.** Better Auth was
+  the alternative. WhereCtx needs passkeys only, with no passwords, email, or
+  OAuth. A framework would bring its own user and session tables beside ours
+  and its own idea of who a request acts as. Owning the account routes keeps
+  the `Principal` and the per-user scopes in one model.
+- **Isolation is per row now. A database per user waits for hosting.** Every
+  table carries `user_id`, and handlers get only a `UserScope`, so a
+  cross-user read is a type error. A separate SQLite file per person would
+  give a harder wall, but it multiplies migrations and backups for a
+  household-sized install. It becomes worth it with a hosted, multi-tenant
+  service, and the scope boundary is where it would plug in.
+- **The share audit is its own table.** The first version wrote
+  `share.*` events into `presence_events`. That sent sharing data to
+  webhooks, MCP, and `/v1/events`, which belong to the owner's agents, and
+  mixed a person-to-person record into the agent event log. `share_audit`
+  keeps who saw what out of every agent path and has its own retention
+  (`SHARE_AUDIT_RETENTION_DAYS`).
+- **People see status names only.** A person view shows `home`, `work`,
+  `custom`, and so on, never a place's name or label. A label such as a
+  clinic name or a street address says more than "at a custom place".
+- **The CSP keeps `style-src 'unsafe-inline'`.** The design system adds two
+  `<style>` elements at runtime, one for overlay motion and one for code
+  highlighting. Under `style-src 'self'` the app still works, but those two
+  are blocked. `script-src 'self'` stays strict. The built page has one
+  module script and no inline code, and a test checks it.
+- **The dashboard is React with the Astryx design system.** Both are
+  devDependencies. Vite builds `web/` into `dist/web`, and the runtime image
+  ships the built files and no React. The product UI never names the design
+  system.
+- **MCP stays on bearer tokens.** Each token belongs to one person. OAuth 2.1
+  for MCP clients is a later step.

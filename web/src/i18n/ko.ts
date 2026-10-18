@@ -125,6 +125,7 @@ export const KO: Record<I18nKey, string> = {
   "gate.err.access": "접근 코드가 맞지 않아요. 관리자에게 새 코드를 요청하세요.",
   "gate.insecure.title": "패스키는 보안 연결에서만 쓸 수 있어요",
   "gate.insecure": "지금 이 페이지는 {origin}에 일반 http로 열려 있어요. 브라우저는 HTTPS나 localhost에서만 패스키를 허용해요. 서버의 https 주소(BASE_URL)로 대시보드를 여세요.",
+  "gate.insecure.help": "WhereCtx를 HTTPS로 여는 방법",
   "gate.unsupported.title": "패스키를 쓸 수 없어요",
   "gate.unsupported": "이 브라우저에서는 패스키를 쓸 수 없어요. 최신 Safari, Chrome, Edge, Firefox로 열어 보세요.",
 

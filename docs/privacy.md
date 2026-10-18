@@ -26,6 +26,10 @@ The default agent-facing view (`GET /v1/presence`, MCP `get_presence`) is:
 No latitude, longitude, geohash, accuracy, or place coordinates. Place lists
 returned to agents contain only `name` + `type`.
 
+Each person has their own presence, places, and privacy settings. A token
+belongs to the person who made it and reads only that person's data. The
+rules below apply per person.
+
 ## Privacy modes (`defaultAgentAccess`)
 
 | Mode      | Agents get…                                              |
@@ -44,7 +48,8 @@ when **all** hold:
 1. mode is not `hidden`,
 2. the token carries `read_precise_location`,
 3. `allowPreciseLocation` (env `ALLOW_PRECISE_TO_AGENT`) is true,
-4. `preciseRequiresApproval` is false (no interactive approval channel in v0.1),
+4. `preciseRequiresApproval` is false (WhereCtx has no interactive approval
+   channel yet, so `true` always denies),
 5. a non-empty `reason` is supplied when `preciseRequiresReason` is true,
 6. **home protection** does not apply.
 
@@ -141,9 +146,20 @@ delivery time, and uses `redirect: "manual"`. Set
 docs/api.md for verification) when the subscription has a secret, and signing
 secrets are encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set.
 
+## Accounts and sessions
+
+People sign in with passkeys that require user verification (biometric or
+PIN). The server stores only SHA-256 hashes of session cookies, recovery
+codes, setup codes, and access codes. Adding or deleting a passkey, replacing
+recovery codes, minting a token, and sharing more all need a passkey proof
+from the last 10 minutes. See [decisions.md](decisions.md#accounts-workspaces-passkeys).
+
 ## Deployment posture
 
 The default bind is `0.0.0.0` (required for Docker). Run WhereCtx behind a
-reverse proxy with TLS; do not expose it raw with placeholder tokens. Prefer the
-`Authorization: Bearer` header over the `?token=` query parameter (which is only
-accepted on ingest routes and can leak into proxy logs).
+reverse proxy with TLS. Passkeys work only on https or on localhost, so a
+server reached by people on other devices needs TLS anyway (see the
+[README](../README.md#passkeys-need-https-or-localhost)). Behind a proxy, set
+`TRUST_PROXY` so rate limits see real clients. Prefer the
+`Authorization: Bearer` header over the `?token=` query parameter, which only
+ingest routes accept and which can leak into proxy logs.

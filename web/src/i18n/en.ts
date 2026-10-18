@@ -123,6 +123,7 @@ export const EN = {
   "gate.err.access": "That access code didn't work. Ask your admin for a new one.",
   "gate.insecure.title": "Passkeys need a secure connection",
   "gate.insecure": "This page was opened over plain http at {origin}. Browsers only allow passkeys on HTTPS or on localhost. Open the dashboard at the server's https address (its BASE_URL).",
+  "gate.insecure.help": "How to serve WhereCtx over HTTPS",
   "gate.unsupported.title": "Passkeys aren't available",
   "gate.unsupported": "This browser can't use passkeys. Try a current version of Safari, Chrome, Edge or Firefox.",
 

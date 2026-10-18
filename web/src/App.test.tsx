@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -144,5 +145,16 @@ describe("dashboard app", () => {
     });
     await settle();
     expect(host.textContent).toContain("Sign in to WhereCtx");
+  });
+
+  it("on plain http, links the passkey warning to the README section that explains it", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    route("GET /v1/me", () => ({ status: 401, body: { error: "unauthorized" } }));
+    await act(async () => root.render(<App />));
+    await settle();
+    const link = [...host.querySelectorAll("a")].find((a) => a.textContent?.includes("How to serve WhereCtx over HTTPS"));
+    expect(link?.getAttribute("href")).toBe("https://github.com/Younkyum/WhereCtx#passkeys-need-https-or-localhost");
+    const readme = readFileSync(`${process.cwd()}/README.md`, "utf8");
+    expect(readme).toContain("\n## Passkeys need HTTPS or localhost\n");
   });
 });
