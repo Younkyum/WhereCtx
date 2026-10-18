@@ -46,7 +46,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", async (path: string, init: RequestInit) => {
     const key = `${init.method ?? "GET"} ${path}`;
     calls.push(key);
-    const handler = routes.get(key);
+    const handler = routes.get(key) ?? routes.get(key.split("?")[0]!);
     const out = handler ? handler(init.body ? JSON.parse(String(init.body)) : undefined) : { status: 404, body: { error: "not found" } };
     return new Response(out.body === undefined ? "" : JSON.stringify(out.body), { status: out.status });
   });
@@ -185,21 +185,36 @@ describe("log views", () => {
 
   it("History draws the track and lists each point with a map link", async () => {
     const points = [
-      { recordedAt: "2026-10-18T01:00:00.000Z", lat: 37.5, lon: 127, place: "home", mapUrl: "https://maps.google.com/?q=37.5,127" },
-      { recordedAt: "2026-10-18T02:00:00.000Z", lat: 37.52, lon: 127.03, accuracyM: 12, mapUrl: "https://maps.google.com/?q=37.52,127.03" },
+      { id: "p1", recordedAt: "2026-10-18T01:00:00.000Z", lat: 37.5, lon: 127, place: "home" },
+      { id: "p2", recordedAt: "2026-10-18T01:00:00.000Z", lat: 37.52, lon: 127.03, accuracyM: 12 },
     ];
     route("GET /v1/presence/history", () => ({
       status: 200,
-      body: { enabled: true, retentionHours: 24, from: "", to: "", truncated: false, points },
+      body: { enabled: true, retentionHours: 24, from: "", to: "", truncated: true, points },
     }));
     route("GET /v1/places", () => ({ status: 200, body: { places: [{ name: "home", type: "home", lat: 37.5, lon: 127, radiusM: 100 }] } }));
+    const consoleError = vi.spyOn(console, "error");
     await open("#history");
+    expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(/same key/);
     const path = host.querySelector('svg[role="img"] path');
     expect(path?.getAttribute("d")).toMatch(/^M[\d.]+ [\d.]+ L[\d.]+ [\d.]+$/);
     expect(host.textContent).toContain("At home");
     expect(host.textContent).toContain("37.52000, 127.03000");
     const links = [...host.querySelectorAll("a")].filter((a) => a.textContent?.includes("Map"));
-    expect(links.map((a) => a.getAttribute("href"))).toEqual(points.map((p) => p.mapUrl).reverse());
+    expect(links.map((a) => a.getAttribute("href"))).toEqual([
+      "https://maps.google.com/?q=37.52,127.03",
+      "https://maps.google.com/?q=37.5,127",
+    ]);
+    expect(host.textContent).toContain("Showing the newest 2");
+    const asked = () => calls.filter((c) => c.startsWith("GET /v1/presence/history?")).map((c) => new URLSearchParams(c.split("?")[1]));
+    expect(asked().at(-1)!.get("limit")).toBe("5000");
+    expect(asked().at(-1)!.has("to")).toBe(false);
+
+    await act(async () => button("1 h").click());
+    await settle();
+    const hour = asked().at(-1)!;
+    expect(Date.now() - Date.parse(hour.get("from")!)).toBeGreaterThanOrEqual(3_600_000 - 5_000);
+    expect(Date.now() - Date.parse(hour.get("from")!)).toBeLessThan(3_600_000 + 5_000);
   });
 
   it("Agent access lists each read with its token, outcome and reason, and pages back", async () => {

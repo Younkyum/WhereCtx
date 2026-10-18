@@ -185,6 +185,7 @@ export interface CeremonyStart<O> {
 }
 
 export interface HistoryPoint {
+  id: string;
   recordedAt: string;
   lat: number;
   lon: number;
@@ -192,7 +193,6 @@ export interface HistoryPoint {
   source?: string;
   /** The place whose geofence held the point, by today's places. */
   place?: string;
-  mapUrl: string;
 }
 
 export interface History {
@@ -214,3 +214,4 @@ export interface LogPage<T> {
 }
 
 export { LOG_LEVELS, type LogEntry, type LogLevel } from "../../src/util/logEntry";
+export { HISTORY_MAX_POINTS } from "../../src/types";

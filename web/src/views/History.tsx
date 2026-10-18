@@ -1,8 +1,8 @@
 /**
- * My own location history, when I keep it: a day (or the last 24 hours) as a
- * track drawn from the points alone, with my places as circles, and the same
- * points as a timeline. No map tiles are loaded; each point links out to a map.
- * Only the signed-in person's own history is ever shown here.
+ * My own location history, when I keep it: the last hour, 6 or 24 hours, or a
+ * day, as a track drawn from the points alone, with my places as circles, and
+ * the same points as a timeline. No map tiles are loaded; each point links out
+ * to a map. Only the signed-in person's own history is ever shown here.
  */
 
 import { Banner } from "@astryxdesign/core/Banner";
@@ -16,31 +16,29 @@ import { Text } from "@astryxdesign/core/Text";
 import { useState } from "react";
 import { api } from "../api";
 import { useApp } from "../context";
-import { dayRange, drawTrack, groupByDay, localDay, safeHttpUrl, shiftDay } from "../lib";
-import type { History, HistoryPoint, Place } from "../model";
+import { drawTrack, groupByDay, historyQuery, localDay, mapLink, shiftDay, type HistoryRange } from "../lib";
+import { HISTORY_MAX_POINTS, type History, type HistoryPoint, type Place } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useFormat, useLoad } from "../ui";
 
-type Range = { kind: "recent" } | { kind: "day"; day: string };
 type IsoDay = NonNullable<DateInputProps["value"]>;
 
-function query(range: Range): string {
-  if (range.kind === "recent") return "";
-  const { from, to } = dayRange(range.day);
-  return `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-}
+const CHOICES = ["1", "6", "24", "day"] as const;
+type Choice = (typeof CHOICES)[number];
+const choiceOf = (range: HistoryRange): Choice => (range.kind === "day" ? "day" : (String(range.hours) as Choice));
+const rangeKey = (range: HistoryRange): string => (range.kind === "day" ? range.day : `${range.hours}h`);
 
 export function HistoryView() {
   const { t } = useApp();
-  const [range, setRange] = useState<Range>({ kind: "recent" });
+  const [range, setRange] = useState<HistoryRange>({ kind: "recent", hours: 24 });
   const [state] = useLoad(
     async () => {
       const [history, places] = await Promise.all([
-        api<History>(`/v1/presence/history${query(range)}`),
+        api<History>(`/v1/presence/history${historyQuery(range, new Date(), HISTORY_MAX_POINTS)}`),
         api<{ places: Place[] }>("/v1/places").then((r) => r.places ?? []),
       ]);
       return { history, places };
     },
-    [range.kind === "day" ? range.day : "recent"],
+    [rangeKey(range)],
   );
   const today = localDay(new Date());
   const day = range.kind === "day" ? range.day : today;
@@ -54,10 +52,15 @@ export function HistoryView() {
                 <VStack gap={3}>
                   <SegmentedControl
                     label={t("history.range")}
-                    value={range.kind}
-                    onChange={(v) => setRange(v === "day" ? { kind: "day", day } : { kind: "recent" })}
+                    value={choiceOf(range)}
+                    onChange={(v) => {
+                      if (v === "day") setRange({ kind: "day", day });
+                      else if (v === "1" || v === "6" || v === "24") setRange({ kind: "recent", hours: Number(v) as 1 | 6 | 24 });
+                    }}
                   >
-                    <SegmentedControlItem value="recent" label={t("history.last24")} />
+                    <SegmentedControlItem value="1" label={t("history.last1")} />
+                    <SegmentedControlItem value="6" label={t("history.last6")} />
+                    <SegmentedControlItem value="24" label={t("history.last24")} />
                     <SegmentedControlItem value="day" label={t("history.day")} />
                   </SegmentedControl>
                   {range.kind === "day" ? (
@@ -166,7 +169,7 @@ function Timeline({ points }: { points: HistoryPoint[] }) {
       {groupByDay(newestFirst, (p) => p.recordedAt).map((group) => (
         <VStack key={group.day} gap={1}>
           <Heading level={3}>{format.date(group.items[0]!.recordedAt)}</Heading>
-          <Rows items={group.items} keyOf={(p) => p.recordedAt}>
+          <Rows items={group.items} keyOf={(p) => p.id}>
             {(p) => (
               <Row
                 title={
@@ -177,11 +180,9 @@ function Timeline({ points }: { points: HistoryPoint[] }) {
                 }
                 subtitle={[p.accuracyM != null ? t("history.accuracy", { n: Math.round(p.accuracyM) }) : null, p.source].filter(Boolean).join(" · ")}
               >
-                {safeHttpUrl(p.mapUrl) ? (
-                  <Link href={safeHttpUrl(p.mapUrl)} isExternalLink>
-                    {t("history.openMap")}
-                  </Link>
-                ) : null}
+                <Link href={mapLink(p.lat, p.lon)} isExternalLink>
+                  {t("history.openMap")}
+                </Link>
               </Row>
             )}
           </Rows>

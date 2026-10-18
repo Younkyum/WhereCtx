@@ -4,7 +4,9 @@
  *   GET /v1/presence/precise    -> precise location, policy-gated (read_precise_location)
  *   GET /v1/presence/history?from=&to=&limit=
  *                               -> raw history in [from, to] (default: the last
- *                                  24 hours), oldest first, manage_privacy, no-store
+ *                                  24 hours, and 5 minutes ahead for clock skew),
+ *                                  the newest `limit` points, oldest first,
+ *                                  manage_privacy, no-store
  *
  * Reads lazily run a stale check so `presence.became_stale` fires without a
  * separate scheduler (it is also swept periodically in Phase 4).
@@ -16,7 +18,6 @@ import {
   agentCoarseView,
   authorizePrecise,
   buildPreciseView,
-  mapUrl,
 } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
 import { haversineMeters } from "../geofence/distance.js";
@@ -24,15 +25,19 @@ import type { Place } from "../types.js";
 import { decide, refuse } from "./accessAudit.js";
 import { noStore, requireScope } from "./middleware.js";
 import { parseLimit } from "./validation.js";
+import { z } from "zod";
+import { HISTORY_DEFAULT_POINTS, HISTORY_MAX_POINTS } from "../types.js";
 import type { AppEnv } from "./types.js";
 
 const DAY_MS = 86_400_000;
-const HISTORY_MAX_POINTS = 5000;
+/** A phone whose clock runs a little fast still has its newest points in the default range. */
+const FUTURE_SKEW_MS = 5 * 60_000;
 
-/** undefined when absent; an invalid date when present but unreadable. */
-function parseInstant(raw: string | undefined): Date | undefined {
-  return raw ? new Date(raw) : undefined;
-}
+/** ISO 8601 with a time and an offset (Z or ±hh:mm), nothing looser. */
+const HistoryRange = z.object({
+  from: z.iso.datetime({ offset: true }).optional(),
+  to: z.iso.datetime({ offset: true }).optional(),
+});
 
 /** The name of the nearest place whose geofence holds the point, if any. */
 export function placeContaining(point: { lat: number; lon: number }, places: readonly Place[]): string | undefined {
@@ -103,15 +108,17 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
     await next();
   };
   app.get("/history", historyRequest, requireScope("manage_privacy"), noStore, async (c) => {
-    const to = parseInstant(c.req.query("to")) ?? ctx.clock();
-    const from = parseInstant(c.req.query("from")) ?? new Date(to.getTime() - DAY_MS);
-    if (Number.isNaN(to.getTime()) || Number.isNaN(from.getTime())) {
-      return c.json({ error: "from and to must be ISO 8601 timestamps" }, 400);
+    const range = HistoryRange.safeParse({ from: c.req.query("from"), to: c.req.query("to") });
+    if (!range.success) {
+      return c.json({ error: "from and to must be ISO 8601 date-times with an offset, like 2026-10-18T09:00:00Z" }, 400);
     }
+    const now = ctx.clock().getTime();
+    const to = range.data.to ? new Date(range.data.to) : new Date(now + FUTURE_SKEW_MS);
+    const from = range.data.from ? new Date(range.data.from) : new Date(now - DAY_MS);
     if (from > to) return c.json({ error: "from must not be after to" }, 400);
-    const limit = parseLimit(c.req.query("limit"), 1000, HISTORY_MAX_POINTS);
+    const limit = parseLimit(c.req.query("limit"), HISTORY_DEFAULT_POINTS, HISTORY_MAX_POINTS);
     const scope = c.get("scope");
-    const [range, places, settings] = await Promise.all([
+    const [stored, places, settings] = await Promise.all([
       scope.history.listRange({ from: from.toISOString(), to: to.toISOString(), limit }),
       scope.places.list(),
       scope.settings.getOrSeed(),
@@ -121,10 +128,10 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
       retentionHours: settings.retentionHours,
       from: from.toISOString(),
       to: to.toISOString(),
-      truncated: range.truncated,
-      points: range.points.map((p) => {
+      truncated: stored.truncated,
+      points: stored.points.map((p) => {
         const place = placeContaining(p, places);
-        return { ...p, ...(place ? { place } : {}), mapUrl: mapUrl(p.lat, p.lon) };
+        return place ? { ...p, place } : p;
       }),
     });
   });

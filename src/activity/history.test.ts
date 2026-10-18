@@ -69,7 +69,8 @@ describe("GET /v1/presence/history", () => {
       [times[2], HOME.lat, "home"],
     ]);
     expect(body.points[0]).toMatchObject({ lon: HOME.lon, source: "manual" });
-    expect(body.points[0].mapUrl).toMatch(/^https:\/\//);
+    expect(new Set(body.points.map((p: any) => p.id)).size).toBe(3);
+    expect(body.points[0]).not.toHaveProperty("mapUrl");
 
     const middle = await owner.browser.json(
       `/v1/presence/history?from=${encodeURIComponent(times[1]!)}&to=${encodeURIComponent(times[1]!)}`,
@@ -77,7 +78,7 @@ describe("GET /v1/presence/history", () => {
     expect(middle.points.map((p: any) => p.recordedAt)).toEqual([times[1]]);
 
     const capped = await owner.browser.json("/v1/presence/history?limit=2");
-    expect(capped.points).toHaveLength(2);
+    expect(capped.points.map((p: any) => p.recordedAt)).toEqual([times[1], times[2]]);
     expect(capped.truncated).toBe(true);
   });
 
@@ -88,6 +89,28 @@ describe("GET /v1/presence/history", () => {
     await walk(owner.browser, [HOME]);
     expect((await owner.browser.json("/v1/presence/history")).points).toHaveLength(1);
   });
+
+  it("includes a point a few minutes ahead of the server's clock in the default range", async () => {
+    await enableHistory(owner.browser);
+    const ahead = (ms: number) => new Date(clock.now + ms).toISOString();
+    await ctx.system.history.append(ctx.config.defaultUserId, { lat: 1, lon: 1, recordedAt: ahead(3 * MINUTE) });
+    await ctx.system.history.append(ctx.config.defaultUserId, { lat: 2, lon: 2, recordedAt: ahead(10 * MINUTE) });
+    expect((await owner.browser.json("/v1/presence/history")).points.map((p: any) => p.lat)).toEqual([1]);
+  });
+
+  it.each(["yesterday", "2026-10-18", "2026-10-18T09:00:00", "1760000000000", "2026-10-18T09:00:00 +09:00"])(
+    "refuses from=%s, which is not a date-time with an offset",
+    async (from) => {
+      expect((await owner.browser.send(`/v1/presence/history?from=${encodeURIComponent(from)}`)).status).toBe(400);
+    },
+  );
+
+  it.each(["2026-10-17T09:00:00Z", "2026-10-17T18:00:00+09:00", "2026-10-17T09:00:00.123-07:00"])(
+    "accepts from=%s",
+    async (from) => {
+      expect((await owner.browser.send(`/v1/presence/history?from=${encodeURIComponent(from)}`)).status).toBe(200);
+    },
+  );
 
   it("refuses unreadable or reversed ranges", async () => {
     expect((await owner.browser.send("/v1/presence/history?from=yesterday")).status).toBe(400);

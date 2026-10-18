@@ -187,3 +187,24 @@ describe("bearer header", () => {
     expect(lib.bearerHeader("Bearer wctx_abc").value).toBe("Bearer wctx_abc");
   });
 });
+
+describe("history ranges", () => {
+  const now = new Date("2026-10-18T12:00:00.000Z");
+
+  it("asks for the last hours from now, leaves the end to the server, and asks for the most points", () => {
+    const q = new URLSearchParams(lib.historyQuery({ kind: "recent", hours: 6 }, now, 5000).slice(1));
+    expect(q.get("from")).toBe("2026-10-18T06:00:00.000Z");
+    expect(q.has("to")).toBe(false);
+    expect(q.get("limit")).toBe("5000");
+  });
+
+  it("asks for a whole local day", () => {
+    const q = new URLSearchParams(lib.historyQuery({ kind: "day", day: "2026-10-17" }, now, 5000).slice(1));
+    expect(q.get("from")).toBe(lib.dayRange("2026-10-17").from);
+    expect(q.get("to")).toBe(lib.dayRange("2026-10-17").to);
+  });
+
+  it("links a point to a map", () => {
+    expect(lib.mapLink(37.5, -122.25)).toBe("https://maps.google.com/?q=37.5,-122.25");
+  });
+});

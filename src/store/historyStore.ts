@@ -5,7 +5,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, asc, eq, gte, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { locationHistory, privacySettings } from "../db/schema.js";
 import type { IngestSource, UserId } from "../types.js";
@@ -29,8 +29,14 @@ interface HistoryRow {
   recordedAt: string;
 }
 
-function rowToPoint(row: HistoryRow): HistoryPoint {
+/** A stored point, with its row id. */
+export interface HistoryEntry extends HistoryPoint {
+  id: string;
+}
+
+function rowToEntry(row: HistoryRow): HistoryEntry {
   return {
+    id: row.id,
     lat: row.lat,
     lon: row.lon,
     accuracyM: row.accuracyM ?? undefined,
@@ -58,13 +64,14 @@ export class HistoryStore {
   }
 
   /**
-   * Points recorded in [from, to], oldest first, at most `limit`. `truncated`
-   * says the range held more, so a caller can narrow it.
+   * The newest `limit` points recorded in [from, to], oldest first. `truncated`
+   * says the range held more (older ones were left out), so a caller can
+   * narrow it.
    */
   async listRange(
     userId: UserId,
     range: { from: string; to: string; limit: number },
-  ): Promise<{ points: HistoryPoint[]; truncated: boolean }> {
+  ): Promise<{ points: HistoryEntry[]; truncated: boolean }> {
     const rows = (await this.db
       .select()
       .from(locationHistory)
@@ -75,9 +82,9 @@ export class HistoryStore {
           lte(locationHistory.recordedAt, range.to),
         ),
       )
-      .orderBy(asc(locationHistory.recordedAt), asc(locationHistory.id))
+      .orderBy(desc(locationHistory.recordedAt), desc(locationHistory.id))
       .limit(range.limit + 1)) as HistoryRow[];
-    return { points: rows.slice(0, range.limit).map(rowToPoint), truncated: rows.length > range.limit };
+    return { points: rows.slice(0, range.limit).reverse().map(rowToEntry), truncated: rows.length > range.limit };
   }
 
   /**

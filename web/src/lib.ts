@@ -376,6 +376,28 @@ export function dayRange(day: string): { from: string; to: string } {
   return { from: start.toISOString(), to: new Date(end.getTime() - 1).toISOString() };
 }
 
+/** A link that opens a map at a point; built here so the history API carries no URLs. */
+export function mapLink(lat: number, lon: number): string {
+  return `https://maps.google.com/?q=${lat},${lon}`;
+}
+
+/** The last 1, 6 or 24 hours, or one local day. */
+export type HistoryRange = { kind: "recent"; hours: 1 | 6 | 24 } | { kind: "day"; day: string };
+
+/**
+ * The history API query for a range, asking for as many points as the server
+ * gives. A recent range leaves `to` to the server, which reaches a few
+ * minutes ahead for a phone whose clock runs fast.
+ */
+export function historyQuery(range: HistoryRange, now: Date, maxPoints: number): string {
+  const { from, to } =
+    range.kind === "day"
+      ? dayRange(range.day)
+      : { from: new Date(now.getTime() - range.hours * 3_600_000).toISOString(), to: undefined };
+  const params = new URLSearchParams({ from, ...(to ? { to } : {}), limit: String(maxPoints) });
+  return `?${params.toString()}`;
+}
+
 /** The day before or after a YYYY-MM-DD day. */
 export function shiftDay(day: string, by: number): string {
   const [y, m, d] = day.split("-").map(Number) as [number, number, number];
