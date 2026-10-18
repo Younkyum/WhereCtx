@@ -108,6 +108,10 @@ export interface Config {
     /** Retention window for presence_events + webhook dead-letters (hours). */
     retentionHours: number;
   };
+  sharing: {
+    /** How long the share audit (grants, revokes, precise views) is kept (days). */
+    auditRetentionDays: number;
+  };
   geofence: {
     nearRadiusMultiplier: number;
   };
@@ -159,6 +163,9 @@ export function loadConfig(): Config {
       // 30 days by default. Floor of 1h so a misconfiguration cannot wipe the
       // event log out from under undelivered webhook cursors.
       retentionHours: Math.max(1, envInt("EVENT_RETENTION_HOURS", 720)),
+    },
+    sharing: {
+      auditRetentionDays: Math.max(1, envInt("SHARE_AUDIT_RETENTION_DAYS", 365)),
     },
     geofence: {
       nearRadiusMultiplier,

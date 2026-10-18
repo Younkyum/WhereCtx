@@ -41,6 +41,7 @@ function config(defaultUserId: string): WhereCtxConfig {
     allowMemberWorkspaces: true,
     webhooks: { allowPrivateTargets: true },
     events: { retentionHours: 720 },
+    sharing: { auditRetentionDays: 365 },
   };
 }
 

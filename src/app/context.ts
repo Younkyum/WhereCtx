@@ -144,7 +144,7 @@ function accountScopeFor({ self, workspaces, sharing }: AccountServices, actor: 
       "revokeInvite",
       "acceptInvite",
     ]),
-    sharing: bindFirst(sharing, actor.userId, ["list", "put", "revoke", "people"]),
+    sharing: bindFirst(sharing, actor, ["list", "put", "revoke", "decline", "people", "person", "audit"]),
   };
 }
 
@@ -214,13 +214,12 @@ export async function createAppContext(
     { allowMemberWorkspaces: config.allowMemberWorkspaces, ownerId: config.defaultUserId },
     clock,
   );
-  const events = new EventsStore(db, clock);
   const stores = {
     tokens: new TokenStore(db, clock),
     settings: new SettingsStore(db, config, clock),
     presence: new PresenceStore(db),
     places: new PlacesStore(db, clock),
-    events,
+    events: new EventsStore(db, clock),
     history: new HistoryStore(db, clock),
     reminders: new RemindersStore(db, clock),
     webhooks: new WebhooksStore(db, clock, secretBox),
@@ -233,7 +232,7 @@ export async function createAppContext(
     accessCodes: new AccessCodesStore(db, passkeys, clock),
     serverSecrets: new ServerSecretsStore(db, clock),
     nonces: new NoncesStore(db, clock),
-    shares: new SharesStore(db, events, clock),
+    shares: new SharesStore(db, clock),
   };
   const system: SystemStores = {
     ...stores,
@@ -270,7 +269,7 @@ export async function createAppContext(
   const services: AccountServices = {
     self,
     workspaces: new WorkspaceService(pick(system, ["workspaces", "invites"]), config),
-    sharing: new SharingService(pick(system, ["shares", "presence"]), clock),
+    sharing: new SharingService(pick(system, ["shares", "settings"]), clock),
   };
 
   const ctx: AppContext = {

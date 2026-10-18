@@ -7,17 +7,23 @@
  *                   and that link as an SVG QR code
  *        shortcut:  the ingest URL, the token, and the headers to set
  *
- * The secret appears only in this response; the token counts toward the
- * per-user token cap.
+ * The secret appears only in this response (never cached); the token counts
+ * toward the per-user token cap. A BASE_URL a phone cannot use (loopback, or
+ * not https) is refused before anything is minted: 400 base_url_unusable.
  */
 
 import { Hono } from "hono";
 import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
-import { DEVICE_KINDS, ownTracksPairing, shortcutPairing } from "../devices/pairing.js";
+import {
+  DEVICE_KINDS,
+  ownTracksPairing,
+  pairingBaseUrlProblem,
+  shortcutPairing,
+} from "../devices/pairing.js";
 import { parseBody } from "./accountHttp.js";
-import { requireFreshSession, requireScope } from "./middleware.js";
-import { mintToken } from "./tokens.js";
+import { noStore, requireFreshSession, requireScope } from "./middleware.js";
+import { tokenLimitReached } from "./tokens.js";
 import type { AppEnv } from "./types.js";
 
 const PairSchema = z.object({
@@ -29,13 +35,15 @@ export function devicesRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   app.use("*", requireScope("manage_tokens"));
 
-  app.post("/pair", requireFreshSession(ctx), async (c) => {
+  app.post("/pair", noStore, requireFreshSession(ctx), async (c) => {
     const body = await parseBody(c, PairSchema);
     if (body instanceof Response) return body;
-    const minted = await mintToken(c, c.get("scope"), body.name, "device");
-    if (minted instanceof Response) return minted;
-    const { token, secret } = minted;
     const { baseUrl } = ctx.config;
+    const problem = pairingBaseUrlProblem(baseUrl);
+    if (problem) return c.json({ error: problem, code: "base_url_unusable" }, 400);
+    const minted = await c.get("scope").tokens.create(body.name, "device");
+    if (minted === "limit") return tokenLimitReached(c);
+    const { token, secret } = minted;
     const pairing =
       body.kind === "owntracks"
         ? await ownTracksPairing(baseUrl, body.name, secret)

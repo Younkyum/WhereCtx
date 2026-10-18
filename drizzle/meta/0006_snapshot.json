@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "11cdb04a-830a-432f-9509-c981e9a82bc4",
+  "id": "104d7c43-2532-47a5-9bf1-059f21e69a55",
   "prevId": "6b625ee0-8243-4e01-86f0-2243cb20ce04",
   "tables": {
     "access_codes": {
@@ -724,20 +724,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "viewer_user_id": {
-          "name": "viewer_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "share_level": {
-          "name": "share_level",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "text",
@@ -836,6 +822,14 @@
         },
         "store_raw_history": {
           "name": "store_raw_history",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
+        "sharing_paused": {
+          "name": "sharing_paused",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
@@ -1081,6 +1075,95 @@
           "name": "sessions_expires_idx",
           "columns": [
             "expires_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "share_audit": {
+      "name": "share_audit",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "viewer_user_id": {
+          "name": "viewer_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "before_level": {
+          "name": "before_level",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "after_level": {
+          "name": "after_level",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "before_hide_home": {
+          "name": "before_hide_home",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "after_hide_home": {
+          "name": "after_hide_home",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "share_audit_owner_created_idx": {
+          "name": "share_audit_owner_created_idx",
+          "columns": [
+            "owner_user_id",
+            "created_at"
           ],
           "isUnique": false
         }

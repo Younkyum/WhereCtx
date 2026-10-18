@@ -1,21 +1,25 @@
 /**
  * Location sharing between people (session only: agent and device tokens
  * never see other people, and never grant access to their owner).
- *   GET    /v1/shares                -> { outgoing, incoming }
- *   PUT    /v1/shares/:viewerUserId  -> share with a co-member {level, hideHomeExact?}
- *   DELETE /v1/shares/:viewerUserId  -> stop sharing
- *   GET    /v1/people                -> everyone sharing with me, with what each allows
+ *   GET    /v1/shares                        -> { outgoing, incoming }
+ *   GET    /v1/shares/audit?limit=           -> my shares' audit, newest first
+ *   PUT    /v1/shares/:viewerUserId          -> share with a co-member {level, hideHomeExact?}
+ *                                               (step-up to create or widen)
+ *   DELETE /v1/shares/:viewerUserId          -> stop sharing
+ *   DELETE /v1/shares/incoming/:ownerUserId  -> stop seeing someone who shares with me
+ *   GET    /v1/people                        -> everyone sharing with me, no coordinates
+ *   GET    /v1/people/:ownerUserId           -> one of them, coordinates when allowed
  *
  * Someone who shares no workspace with me answers 404, like a missing
  * member, so the routes do not reveal who exists. Grants, changes, revokes
- * and precise views are written to the owner's presence events.
+ * and precise views go to the owner's share audit, never to presence events.
  */
 
 import { Hono } from "hono";
 import { z } from "zod";
-import type { RouteContext } from "../app/context.js";
 import { asUserId, SHARE_LEVELS } from "../types.js";
 import { parseBody, respond } from "./accountHttp.js";
+import { parseLimit } from "./validation.js";
 import type { SessionEnv } from "./types.js";
 
 const PutShare = z.object({
@@ -23,39 +27,44 @@ const PutShare = z.object({
   hideHomeExact: z.boolean().optional(),
 });
 
-export function sharesRouter(ctx: RouteContext): Hono<SessionEnv> {
+export function sharesRouter(): Hono<SessionEnv> {
   const app = new Hono<SessionEnv>();
 
   app.get("/", async (c) => c.json(await c.get("account").sharing.list()));
+
+  app.get("/audit", async (c) => {
+    const limit = parseLimit(c.req.query("limit"), 50, 500);
+    return c.json({ audit: await c.get("account").sharing.audit(limit) });
+  });
 
   app.put("/:viewerUserId", async (c) => {
     const body = await parseBody(c, PutShare);
     if (body instanceof Response) return body;
     const result = await c.get("account").sharing.put(asUserId(c.req.param("viewerUserId")), body);
-    return respond(c, result, async ({ value, events }) => {
-      if (events.length > 0) await ctx.onEvents?.(events);
-      return c.json({ share: value });
-    });
+    return respond(c, result, (share) => c.json({ share }));
+  });
+
+  app.delete("/incoming/:ownerUserId", async (c) => {
+    const result = await c.get("account").sharing.decline(asUserId(c.req.param("ownerUserId")));
+    return respond(c, result, () => c.json({ ok: true }));
   });
 
   app.delete("/:viewerUserId", async (c) => {
     const result = await c.get("account").sharing.revoke(asUserId(c.req.param("viewerUserId")));
-    return respond(c, result, async ({ events }) => {
-      await ctx.onEvents?.(events);
-      return c.json({ ok: true });
-    });
+    return respond(c, result, () => c.json({ ok: true }));
   });
 
   return app;
 }
 
-export function peopleRouter(ctx: RouteContext): Hono<SessionEnv> {
+export function peopleRouter(): Hono<SessionEnv> {
   const app = new Hono<SessionEnv>();
 
-  app.get("/", async (c) => {
-    const { value, events } = await c.get("account").sharing.people();
-    if (events.length > 0) await ctx.onEvents?.(events);
-    return c.json({ people: value });
+  app.get("/", async (c) => c.json({ people: await c.get("account").sharing.people() }));
+
+  app.get("/:ownerUserId", async (c) => {
+    const result = await c.get("account").sharing.person(asUserId(c.req.param("ownerUserId")));
+    return respond(c, result, (person) => c.json({ person }));
   });
 
   return app;

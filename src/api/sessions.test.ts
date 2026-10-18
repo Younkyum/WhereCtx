@@ -4,12 +4,14 @@ import type { AppContext } from "../app/context.js";
 import {
   Browser,
   OWNER_ADMIN,
+  PUBLIC_BASE_URL,
   TestClock,
   authenticator,
   bootApp,
   login,
   reauth,
   setupOwner,
+  signUpByInvite,
   type Enrolled,
 } from "../testing/accounts.js";
 import { RateLimiter } from "./rateLimit.js";
@@ -37,21 +39,67 @@ async function sessionCount(): Promise<number> {
 }
 
 describe("step-up re-authentication", () => {
-  const sensitive = [
-    ["add a passkey", "/v1/me/passkeys/options", {}],
-    ["replace recovery codes", "/v1/me/recovery-codes", {}],
-    ["mint a token", "/v1/tokens", { name: "agent", role: "agent" }],
-    ["pair a device", "/v1/devices/pair", { name: "phone", kind: "owntracks" }],
-  ] as const;
+  let minaId: string;
 
-  it.each(sensitive)("is required to %s more than 10 minutes after sign-in", async (_, path, body) => {
+  /** Mina joins the owner's workspace; with `level`, the owner already shares with her. */
+  async function withMina(level?: "coarse" | "precise", hideHomeExact?: boolean): Promise<void> {
+    const ws = (await owner.browser.json("/v1/workspaces")).workspaces[0].id;
+    const { url } = await owner.browser.json(`/v1/workspaces/${ws}/invites`, { body: { role: "member" } });
+    const { res } = await signUpByInvite(app, url, "Mina", PUBLIC_BASE_URL);
+    minaId = ((await res.json()) as any).userId;
+    if (level) await owner.browser.json(`/v1/shares/${minaId}`, { method: "PUT", body: { level, hideHomeExact } });
+  }
+
+  beforeEach(async () => {
+    // Device pairing needs a BASE_URL a phone can reach.
+    ctx.handle.client.close();
+    const booted = await bootApp(clock, { baseUrl: PUBLIC_BASE_URL });
+    ({ ctx, app } = booted);
+    owner = await setupOwner(app, booted.setupCode, PUBLIC_BASE_URL);
+  });
+
+  const sensitive: ReadonlyArray<
+    readonly [string, () => Promise<unknown>, string, () => string, unknown]
+  > = [
+    ["add a passkey", async () => {}, "POST", () => "/v1/me/passkeys/options", {}],
+    ["replace recovery codes", async () => {}, "POST", () => "/v1/me/recovery-codes", {}],
+    ["mint a token", async () => {}, "POST", () => "/v1/tokens", { name: "agent", role: "agent" }],
+    ["pair a device", async () => {}, "POST", () => "/v1/devices/pair", { name: "phone", kind: "owntracks" }],
+    ["share my location", () => withMina(), "PUT", () => `/v1/shares/${minaId}`, { level: "coarse" }],
+    ["raise a share to precise", () => withMina("coarse"), "PUT", () => `/v1/shares/${minaId}`, { level: "precise" }],
+    [
+      "unhide home on a share",
+      () => withMina("precise", true),
+      "PUT",
+      () => `/v1/shares/${minaId}`,
+      { level: "precise", hideHomeExact: false },
+    ],
+  ];
+
+  it.each(sensitive)("is required to %s more than 10 minutes after sign-in", async (_, arrange, method, path, body) => {
+    await arrange();
     clock.advance(11 * MINUTE);
-    const stale = await owner.browser.send(path, { body });
+    const stale = await owner.browser.send(path(), { method, body });
     expect(stale.status).toBe(403);
     expect(await stale.json()).toMatchObject({ code: "reauth_required" });
 
     await reauth(owner.browser, owner.credentialId);
-    expect((await owner.browser.send(path, { body })).ok).toBe(true);
+    expect((await owner.browser.send(path(), { method, body })).ok).toBe(true);
+  });
+
+  it("is not required to keep, lower or revoke a share", async () => {
+    await withMina("precise", false);
+    clock.advance(11 * MINUTE);
+    const put = (body: unknown) => owner.browser.send(`/v1/shares/${minaId}`, { method: "PUT", body });
+    expect((await put({ level: "precise" })).status).toBe(200);
+    expect((await put({ level: "precise", hideHomeExact: true })).status).toBe(200);
+    expect((await put({ level: "coarse" })).status).toBe(200);
+    expect((await put({ level: "coarse", hideHomeExact: true })).status).toBe(200);
+    expect((await owner.browser.json("/v1/shares")).outgoing).toEqual([
+      expect.objectContaining({ level: "coarse", hideHomeExact: true }),
+    ]);
+    expect((await put({ level: "precise" })).status).toBe(403);
+    expect((await owner.browser.send(`/v1/shares/${minaId}`, { method: "DELETE" })).status).toBe(200);
   });
 
   it("is required to delete a passkey", async () => {
@@ -81,7 +129,7 @@ describe("step-up re-authentication", () => {
       body: { role: "member" },
     });
     const token = /#invite=(.+)$/.exec(url)![1]!;
-    const mina = new Browser(app);
+    const mina = new Browser(app, PUBLIC_BASE_URL);
     const start = await mina.json("/v1/auth/invite/options", { body: { token, displayName: "Mina" } });
     const minaKey = authenticator.create(start.options);
     await mina.json("/v1/auth/invite/verify", { body: { token, ceremony: start.ceremony, response: minaKey } });

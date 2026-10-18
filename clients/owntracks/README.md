@@ -6,7 +6,9 @@ Android. WhereCtx accepts its HTTP mode directly.
 ## Pair with a QR code
 
 Ask the server for a ready configuration (from a signed-in session that has
-re-confirmed its passkey, or with an admin token):
+re-confirmed its passkey, or with an admin token). The config points the
+phone at `BASE_URL`, so the server refuses to pair (`base_url_unusable`) until
+`BASE_URL` is its public https URL:
 
 ```bash
 curl -X POST https://wherectx.example.com/v1/devices/pair \

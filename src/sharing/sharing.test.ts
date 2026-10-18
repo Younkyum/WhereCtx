@@ -11,14 +11,20 @@ import {
   Browser,
   TestClock,
   bootApp,
+  inviteToken,
+  reauth,
   setupOwner,
   signUpByInvite,
   type Enrolled,
 } from "../testing/accounts.js";
+import { PRECISE_VIEW_AUDIT_INTERVAL_MS } from "./sharesStore.js";
 
 const HOME = { lat: 37.5, lon: 127.0 };
 const AWAY = { lat: 37.6, lon: 127.1 };
+const CLINIC = { lat: 37.55, lon: 126.95 };
 const MINUTE = 60_000;
+/** Words from the owner's place names and labels that no viewer may ever see. */
+const PLACE_WORDS = ["Oak", "Kim", "Oncology", "clinic"];
 
 interface Member {
   browser: Browser;
@@ -44,12 +50,28 @@ async function join(browser: Browser, workspaceId: string, name: string): Promis
 const share = (from: Browser, viewer: string, body: unknown) =>
   from.send(`/v1/shares/${viewer}`, { method: "PUT", body });
 
-async function people(viewer: Member): Promise<any[]> {
+const ingest = (who: Browser, at: { lat: number; lon: number }) =>
+  who.json("/v1/ingest", { body: { source: "manual", ...at } });
+
+async function people(viewer: Member | Enrolled): Promise<any[]> {
   return (await viewer.browser.json("/v1/people")).people;
 }
 
-async function ownerEvents(): Promise<any[]> {
-  return (await owner.browser.json("/v1/events?limit=500")).events;
+async function person(viewer: Member | Enrolled, ownerId: string): Promise<Response> {
+  return viewer.browser.send(`/v1/people/${ownerId}`);
+}
+
+async function personOf(viewer: Member | Enrolled, ownerId: string): Promise<any> {
+  return (await viewer.browser.json(`/v1/people/${ownerId}`)).person;
+}
+
+async function auditOf(who: Member | Enrolled): Promise<any[]> {
+  return (await who.browser.json("/v1/shares/audit?limit=500")).audit;
+}
+
+async function preciseViews(viewerId: string): Promise<number> {
+  return (await auditOf(owner)).filter((a) => a.action === "precise_viewed" && a.viewer.id === viewerId)
+    .length;
 }
 
 async function shareRows(): Promise<number> {
@@ -68,8 +90,13 @@ beforeEach(async () => {
   const other = (await owner.browser.json("/v1/workspaces", { body: { name: "Other" } })).workspace.id;
   outsider = await join(owner.browser, other, "Olli");
 
-  await owner.browser.json("/v1/places", { body: { name: "home", type: "home", ...HOME, radiusM: 150 } });
-  await owner.browser.json("/v1/ingest", { body: { source: "manual", ...AWAY } });
+  await owner.browser.json("/v1/places", {
+    body: { name: "home", label: "12 Oak St", type: "home", ...HOME, radiusM: 150 },
+  });
+  await owner.browser.json("/v1/places", {
+    body: { name: "Dr. Kim Oncology", label: "Kim clinic, 3rd floor", type: "custom", ...CLINIC, radiusM: 100 },
+  });
+  await ingest(owner.browser, AWAY);
 });
 
 afterEach(() => ctx.handle.client.close());
@@ -81,31 +108,47 @@ describe("granting a share", () => {
     expect((await share(mina.browser, "no-such-user", { level: "coarse" })).status).toBe(404);
     expect(await shareRows()).toBe(0);
     expect(await people(outsider)).toEqual([]);
+    expect(await auditOf(mina)).toEqual([]);
   });
 
   it("refuses sharing with myself", async () => {
     expect((await share(owner.browser, owner.userId, { level: "coarse" })).status).toBe(400);
     const me = asUserId(owner.userId);
-    expect(await ctx.system.shares.put(me, me, { level: "coarse" })).toBeNull();
+    const options = { mayWiden: true, defaultHideHomeExact: true };
+    expect(await ctx.system.shares.put(me, me, { level: "coarse" }, options)).toBe("not_found");
     expect(await shareRows()).toBe(0);
   });
 
-  it("is listed for both people", async () => {
+  it("is listed for both people, with the terms the viewer is held to", async () => {
     const res = await share(owner.browser, mina.userId, { level: "coarse" });
     expect(res.status).toBe(200);
-    expect(((await res.json()) as any).share).toEqual({
-      viewer: { id: mina.userId, displayName: "Mina" },
-      level: "coarse",
-      hideHomeExact: false,
-    });
-    expect(await owner.browser.json("/v1/shares")).toEqual({
-      outgoing: [{ viewer: { id: mina.userId, displayName: "Mina" }, level: "coarse", hideHomeExact: false }],
-      incoming: [],
-    });
+    const shared = { viewer: { id: mina.userId, displayName: "Mina" }, level: "coarse", hideHomeExact: true };
+    expect(((await res.json()) as any).share).toEqual(shared);
+    expect(await owner.browser.json("/v1/shares")).toEqual({ outgoing: [shared], incoming: [] });
     expect(await mina.browser.json("/v1/shares")).toEqual({
       outgoing: [],
-      incoming: [{ owner: { id: owner.userId, displayName: "owner" }, level: "coarse" }],
+      incoming: [{ owner: { id: owner.userId, displayName: "owner" }, level: "coarse", hideHomeExact: true }],
     });
+  });
+
+  it("defaults hideHomeExact to the owner's hideHomeExactCoordinates; an explicit value wins", async () => {
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { hideHomeExactCoordinates: false } });
+    let res = await share(owner.browser, mina.userId, { level: "precise" });
+    expect(((await res.json()) as any).share.hideHomeExact).toBe(false);
+
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { hideHomeExactCoordinates: true } });
+    res = await share(owner.browser, outsider.userId, { level: "precise" });
+    expect(((await res.json()) as any).share.hideHomeExact).toBe(true);
+
+    await owner.browser.send(`/v1/shares/${outsider.userId}`, { method: "DELETE" });
+    res = await share(owner.browser, outsider.userId, { level: "precise", hideHomeExact: false });
+    expect(((await res.json()) as any).share.hideHomeExact).toBe(false);
+  });
+
+  it("keeps hideHomeExact when an update omits it", async () => {
+    await share(owner.browser, mina.userId, { level: "coarse", hideHomeExact: true });
+    const res = await share(owner.browser, mina.userId, { level: "precise" });
+    expect(((await res.json()) as any).share).toMatchObject({ level: "precise", hideHomeExact: true });
   });
 
   it("is session-only", async () => {
@@ -121,50 +164,121 @@ describe("granting a share", () => {
 });
 
 describe("what a viewer sees", () => {
-  it("shows a coarse share's status and never coordinates", async () => {
+  it("shows a coarse share's status name and minute-bucketed age, never coordinates", async () => {
     await share(owner.browser, mina.userId, { level: "coarse" });
+    clock.advance(119_000);
     const body = await mina.browser.json("/v1/people");
     expect(body.people).toEqual([
       {
         user: { id: owner.userId, displayName: "owner" },
         level: "coarse",
-        presence: { status: "away", label: expect.any(String), motion: "unknown", updatedAgoSec: 0, stale: false },
+        paused: false,
+        presence: { status: "away", label: "away", motion: "unknown", updatedAgoMin: 1, stale: false },
         precise: null,
       },
     ]);
-    const text = JSON.stringify(body);
+    const detail = await personOf(mina, owner.userId);
+    expect(detail).toEqual({ ...body.people[0], precise: null });
+    const text = JSON.stringify([body, detail]);
     expect(text).not.toContain(String(AWAY.lat));
-    expect(text).not.toContain(String(AWAY.lon));
-    expect(text).not.toMatch(/"lat"|"lon"|geohash/);
+    expect(text).not.toMatch(/"lat"|"lon"|geohash|Sec"/);
   });
 
-  it("shows a precise share's coordinates", async () => {
-    await share(owner.browser, mina.userId, { level: "precise" });
-    const [person] = await people(mina);
-    expect(person.precise).toMatchObject({ lat: AWAY.lat, lon: AWAY.lon, mapUrl: expect.stringContaining("37.6") });
+  it("lists a precise share as available and gives coordinates only on the person read", async () => {
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
+    const [listed] = await people(mina);
+    expect(listed.precise).toBe("available");
+    expect(JSON.stringify(listed)).not.toContain(String(AWAY.lat));
+    const detail = await personOf(mina, owner.userId);
+    expect(detail.precise).toEqual({
+      lat: AWAY.lat,
+      lon: AWAY.lon,
+      mapUrl: `https://maps.google.com/?q=${AWAY.lat},${AWAY.lon}`,
+      updatedAgoMin: 0,
+    });
   });
 
-  it("withholds coordinates at home when hideHomeExact is on, and only then", async () => {
-    await owner.browser.json("/v1/ingest", { body: { source: "manual", ...HOME } });
+  it("never carries the owner's place names or labels", async () => {
+    const reads: string[] = [];
+    const readAll = async () => {
+      reads.push(JSON.stringify(await mina.browser.json("/v1/people")));
+      reads.push(JSON.stringify(await mina.browser.json(`/v1/people/${owner.userId}`)));
+    };
+    for (const terms of [
+      { level: "coarse" },
+      { level: "precise", hideHomeExact: true },
+      { level: "precise", hideHomeExact: false },
+    ]) {
+      await share(owner.browser, mina.userId, terms);
+      await ingest(owner.browser, HOME);
+      await readAll();
+      await ingest(owner.browser, CLINIC);
+      await readAll();
+    }
+    const seen = reads.join("\n");
+    expect(seen).toContain('"status":"home"');
+    expect(seen).toContain('"status":"custom"');
+    for (const word of PLACE_WORDS) expect(seen).not.toContain(word);
+  });
+
+  it("withholds coordinates at home when hideHomeExact is on, and says why", async () => {
+    await ingest(owner.browser, HOME);
     await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: true });
-    let [person] = await people(mina);
-    expect(person.presence.status).toBe("home");
-    expect(person.precise).toBeNull();
+    let detail = await personOf(mina, owner.userId);
+    expect(detail).toMatchObject({ presence: { status: "home" }, precise: null, preciseWithheld: "at_home" });
+    expect((await people(mina))[0]).toMatchObject({ precise: null, preciseWithheld: "at_home" });
+
+    await ingest(owner.browser, AWAY);
+    detail = await personOf(mina, owner.userId);
+    expect(detail.precise).toMatchObject(AWAY);
+    expect(detail.preciseWithheld).toBeUndefined();
 
     await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
-    [person] = await people(mina);
-    expect(person.precise).toMatchObject(HOME);
-
-    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: true });
-    await owner.browser.json("/v1/ingest", { body: { source: "manual", ...AWAY } });
-    [person] = await people(mina);
-    expect(person.precise).toMatchObject(AWAY);
+    await ingest(owner.browser, HOME);
+    expect((await personOf(mina, owner.userId)).precise).toMatchObject(HOME);
   });
 
-  it("keeps hideHomeExact when an update omits it", async () => {
-    await share(owner.browser, mina.userId, { level: "coarse", hideHomeExact: true });
-    const res = await share(owner.browser, mina.userId, { level: "precise" });
-    expect(((await res.json()) as any).share).toMatchObject({ level: "precise", hideHomeExact: true });
+  it("fails closed when hideHomeExact is on but the owner has no home place", async () => {
+    // Mina has no places, so the server cannot tell when she is home.
+    await ingest(mina.browser, AWAY);
+    await share(mina.browser, owner.userId, { level: "precise" });
+    const detail = await personOf(owner, mina.userId);
+    expect(detail).toMatchObject({ presence: { status: "unknown" }, precise: null, preciseWithheld: "no_home_place" });
+    expect(await auditOf(mina)).not.toContainEqual(expect.objectContaining({ action: "precise_viewed" }));
+
+    await share(mina.browser, owner.userId, { level: "precise", hideHomeExact: false });
+    expect((await personOf(owner, mina.userId)).precise).toMatchObject(AWAY);
+  });
+
+  it("hides a paused owner from every viewer, without touching the shares", async () => {
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
+    await share(owner.browser, outsider.userId, { level: "coarse" });
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { sharingPaused: true } });
+
+    const paused = { user: { id: owner.userId, displayName: "owner" }, paused: true, presence: null, precise: null };
+    expect(await people(mina)).toEqual([{ ...paused, level: "precise" }]);
+    expect(await personOf(mina, owner.userId)).toEqual({ ...paused, level: "precise" });
+    expect(await people(outsider)).toEqual([{ ...paused, level: "coarse" }]);
+    expect(await preciseViews(mina.userId)).toBe(0);
+    expect((await owner.browser.json("/v1/shares")).outgoing).toHaveLength(2);
+
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { sharingPaused: false } });
+    expect((await personOf(mina, owner.userId)).precise).toMatchObject(AWAY);
+  });
+
+  it("does not follow the owner's agent policy", async () => {
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
+    await owner.browser.json("/v1/privacy", {
+      method: "PUT",
+      body: { defaultAgentAccess: "hidden", allowPreciseLocation: false },
+    });
+    const { secret } = await owner.browser.json("/v1/tokens", { body: { name: "claude", role: "agent" } });
+    const agentView = await app.request("/v1/presence", { headers: { authorization: `Bearer ${secret}` } });
+    expect(agentView.status).toBe(403);
+    expect(((await agentView.json()) as any).privacy).toBe("hidden");
+
+    const detail = await personOf(mina, owner.userId);
+    expect(detail).toMatchObject({ paused: false, presence: { status: "away" }, precise: AWAY });
   });
 
   it("ends at once when revoked", async () => {
@@ -172,28 +286,96 @@ describe("what a viewer sees", () => {
     expect(await people(mina)).toHaveLength(1);
     expect((await owner.browser.send(`/v1/shares/${mina.userId}`, { method: "DELETE" })).status).toBe(200);
     expect(await people(mina)).toEqual([]);
+    expect((await person(mina, owner.userId)).status).toBe(404);
     expect((await owner.browser.send(`/v1/shares/${mina.userId}`, { method: "DELETE" })).status).toBe(404);
   });
 
-  it("ends when the two leave their last common workspace, and the share is deleted", async () => {
-    await share(owner.browser, mina.userId, { level: "precise" });
-    await share(mina.browser, owner.userId, { level: "coarse" });
-    expect(await shareRows()).toBe(2);
-    await mina.browser.json(`/v1/workspaces/${defaultWs}/members/${mina.userId}`, { method: "DELETE" });
-    expect(await people(mina)).toEqual([]);
-    expect(await people(owner)).toEqual([]);
-    expect(await shareRows()).toBe(0);
+  it("answers 404 for a person who does not share with me", async () => {
+    expect((await person(mina, owner.userId)).status).toBe(404);
+    expect((await person(mina, outsider.userId)).status).toBe(404);
+    expect((await person(mina, "no-such-user")).status).toBe(404);
   });
 
-  it("checks the common workspace at read time too", async () => {
+  it("leaves the owner's own data untouched", async () => {
     await share(owner.browser, mina.userId, { level: "precise" });
-    await ctx.handle.client.execute({
-      sql: "DELETE FROM memberships WHERE user_id = ?",
-      args: [mina.userId],
-    });
-    expect(await shareRows()).toBe(1);
+    const ownerScope = ctx.forUser(asUserId(owner.userId));
+    const before = { presence: await ownerScope.presence.getCurrent(), places: await ownerScope.places.list() };
+    await people(mina);
+    await personOf(mina, owner.userId);
+    expect((await mina.browser.send(`/v1/shares/${owner.userId}`, { method: "DELETE" })).status).toBe(404);
+    await ingest(mina.browser, HOME);
+    expect({ presence: await ownerScope.presence.getCurrent(), places: await ownerScope.places.list() }).toEqual(before);
+    expect((await owner.browser.json("/v1/shares")).outgoing).toHaveLength(1);
+  });
+});
+
+describe("a viewer declining", () => {
+  it("ends the share and tells the owner why", async () => {
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
+    clock.advance(1000);
+    const decline = () => mina.browser.send(`/v1/shares/incoming/${owner.userId}`, { method: "DELETE" });
+    expect((await decline()).status).toBe(200);
     expect(await people(mina)).toEqual([]);
     expect((await owner.browser.json("/v1/shares")).outgoing).toEqual([]);
+    expect((await auditOf(owner))[0]).toMatchObject({
+      action: "revoked",
+      reason: "viewer_declined",
+      viewer: { id: mina.userId, displayName: "Mina" },
+      before: { level: "precise", hideHomeExact: false },
+      after: null,
+    });
+    expect((await decline()).status).toBe(404);
+    expect((await outsider.browser.send(`/v1/shares/incoming/${mina.userId}`, { method: "DELETE" })).status).toBe(404);
+  });
+});
+
+describe("when a membership ends", () => {
+  async function secondWorkspaceWithMina(): Promise<string> {
+    const team = (await owner.browser.json("/v1/workspaces", { body: { name: "Team" } })).workspace.id;
+    const { url } = await owner.browser.json(`/v1/workspaces/${team}/invites`, { body: { role: "member" } });
+    await mina.browser.json("/v1/workspaces/invites/accept", { body: { token: inviteToken(url) } });
+    return team;
+  }
+
+  const leave = (who: Member, ws: string) =>
+    who.browser.json(`/v1/workspaces/${ws}/members/${who.userId}`, { method: "DELETE" });
+
+  const ended = (viewerId: string) =>
+    expect.objectContaining({ action: "revoked", reason: "membership_ended", viewer: expect.objectContaining({ id: viewerId }) });
+
+  it("keeps the share while another workspace is common, and ends it with the last", async () => {
+    const team = await secondWorkspaceWithMina();
+    await share(owner.browser, mina.userId, { level: "precise" });
+    await share(mina.browser, owner.userId, { level: "coarse" });
+
+    await leave(mina, team);
+    expect(await shareRows()).toBe(2);
+    expect(await people(mina)).toHaveLength(1);
+    expect(await people(owner)).toHaveLength(1);
+    expect(await auditOf(owner)).not.toContainEqual(ended(mina.userId));
+
+    await leave(mina, defaultWs);
+    expect(await shareRows()).toBe(0);
+    expect(await people(mina)).toEqual([]);
+    expect(await people(owner)).toEqual([]);
+    expect((await auditOf(owner))[0]).toEqual(ended(mina.userId));
+    expect((await auditOf(owner))[0].before).toEqual({ level: "precise", hideHomeExact: true });
+    expect((await auditOf(mina))[0]).toEqual(ended(owner.userId));
+  });
+
+  it("ends the share when an admin removes the member", async () => {
+    await share(owner.browser, mina.userId, { level: "coarse" });
+    await owner.browser.json(`/v1/workspaces/${defaultWs}/members/${mina.userId}`, { method: "DELETE" });
+    expect(await shareRows()).toBe(0);
+    expect((await auditOf(owner))[0]).toEqual(ended(mina.userId));
+  });
+
+  it("ends the share whatever deletes the membership", async () => {
+    await share(owner.browser, mina.userId, { level: "precise" });
+    await ctx.handle.client.execute({ sql: "DELETE FROM memberships WHERE user_id = ?", args: [mina.userId] });
+    expect(await shareRows()).toBe(0);
+    expect(await people(mina)).toEqual([]);
+    expect((await auditOf(owner))[0]).toEqual(ended(mina.userId));
   });
 
   it("keeps the shares of people who still have a workspace in common", async () => {
@@ -203,20 +385,9 @@ describe("what a viewer sees", () => {
     expect(await people(outsider)).toHaveLength(1);
     expect(await shareRows()).toBe(1);
   });
-
-  it("leaves the owner's own data untouched", async () => {
-    await share(owner.browser, mina.userId, { level: "precise" });
-    const ownerScope = ctx.forUser(asUserId(owner.userId));
-    const before = { presence: await ownerScope.presence.getCurrent(), places: await ownerScope.places.list() };
-    await people(mina);
-    expect((await mina.browser.send(`/v1/shares/${owner.userId}`, { method: "DELETE" })).status).toBe(404);
-    await mina.browser.json("/v1/ingest", { body: { source: "manual", ...HOME } });
-    expect({ presence: await ownerScope.presence.getCurrent(), places: await ownerScope.places.list() }).toEqual(before);
-    expect((await owner.browser.json("/v1/shares")).outgoing).toHaveLength(1);
-  });
 });
 
-describe("agents of the viewer", () => {
+describe("agents", () => {
   async function connectAs(secret: string): Promise<Client> {
     const principal = (await resolveTokenPrincipal(ctx, secret))!;
     const server = buildMcpServer(ctx.forUser(principal.userId), principal, ctx);
@@ -227,16 +398,7 @@ describe("agents of the viewer", () => {
     return client;
   }
 
-  it("see nothing of a person who shares with their owner, over REST or MCP", async () => {
-    await share(owner.browser, mina.userId, { level: "precise" });
-    const { secret } = await mina.browser.json("/v1/tokens", { body: { name: "claude", role: "agent" } });
-    const bearer = { authorization: `Bearer ${secret}` };
-
-    expect((await app.request("/v1/people", { headers: bearer })).status).toBe(403);
-    expect((await app.request("/v1/shares", { headers: bearer })).status).toBe(403);
-    expect((await app.request("/v1/presence", { headers: bearer })).status).toBe(404);
-
-    const client = await connectAs(secret);
+  async function everyToolOutput(client: Client): Promise<string[]> {
     const { tools } = await client.listTools();
     const outputs: string[] = [];
     for (const tool of tools) {
@@ -248,83 +410,37 @@ describe("agents of the viewer", () => {
       const res = (await client.callTool({ name: tool.name, arguments: args })) as any;
       outputs.push(res.content[0].text);
     }
+    return outputs;
+  }
+
+  it("of the viewer see nothing of a person who shares with their owner, over REST or MCP", async () => {
+    await share(owner.browser, mina.userId, { level: "precise" });
+    const { secret } = await mina.browser.json("/v1/tokens", { body: { name: "claude", role: "agent" } });
+    const bearer = { authorization: `Bearer ${secret}` };
+
+    expect((await app.request("/v1/people", { headers: bearer })).status).toBe(403);
+    expect((await app.request(`/v1/people/${owner.userId}`, { headers: bearer })).status).toBe(403);
+    expect((await app.request("/v1/shares", { headers: bearer })).status).toBe(403);
+    expect((await app.request("/v1/presence", { headers: bearer })).status).toBe(404);
+
+    const outputs = await everyToolOutput(await connectAs(secret));
     const seen = outputs.join("\n");
     expect(outputs.length).toBeGreaterThanOrEqual(5);
     expect(seen).not.toContain(String(AWAY.lat));
     expect(seen).not.toContain('"away"');
-    expect(seen).not.toContain("share.");
-  });
-});
-
-describe("audit", () => {
-  it("logs grants, changes and revokes in the owner's events", async () => {
-    await share(owner.browser, mina.userId, { level: "coarse" });
-    clock.advance(1000);
-    await share(owner.browser, mina.userId, { level: "coarse" });
-    clock.advance(1000);
-    await share(owner.browser, mina.userId, { level: "precise" });
-    clock.advance(1000);
-    await owner.browser.send(`/v1/shares/${mina.userId}`, { method: "DELETE" });
-    const shareEvents = (await ownerEvents()).filter((e) => e.type.startsWith("share."));
-    expect(shareEvents.map((e) => [e.type, e.viewerUserId, e.level]).reverse()).toEqual([
-      ["share.granted", mina.userId, "coarse"],
-      ["share.changed", mina.userId, "precise"],
-      ["share.revoked", mina.userId, undefined],
-    ]);
-    expect((await mina.browser.json("/v1/events")).events.some((e: any) => e.type.startsWith("share."))).toBe(false);
+    expect(seen).not.toContain("share");
   });
 
-  it("logs precise views at most once an hour per viewer", async () => {
-    await share(owner.browser, mina.userId, { level: "precise" });
-    const viewed = async () =>
-      (await ownerEvents()).filter((e) => e.type === "share.precise_viewed" && e.viewerUserId === mina.userId);
-
-    await people(mina);
-    await people(mina);
-    expect(await viewed()).toHaveLength(1);
-    clock.advance(59 * MINUTE);
-    await people(mina);
-    expect(await viewed()).toHaveLength(1);
-    clock.advance(2 * MINUTE);
-    await people(mina);
-    expect(await viewed()).toHaveLength(2);
-  });
-
-  it("does not log coarse views or home-withheld precise views", async () => {
-    await share(owner.browser, mina.userId, { level: "coarse" });
-    await people(mina);
-    await owner.browser.json("/v1/ingest", { body: { source: "manual", ...HOME } });
-    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: true });
-    await people(mina);
-    expect((await ownerEvents()).some((e) => e.type === "share.precise_viewed")).toBe(false);
-  });
-
-  it("shows the owner's agents that sharing happened, not with whom", async () => {
-    await share(owner.browser, mina.userId, { level: "precise" });
-    await people(mina);
-    const { secret } = await owner.browser.json("/v1/tokens", { body: { name: "claude", role: "agent" } });
-    const res = await app.request("/v1/events", { headers: { authorization: `Bearer ${secret}` } });
-    const events = ((await res.json()) as any).events.filter((e: any) => e.type.startsWith("share."));
-    expect(events.map((e: any) => e.type).sort()).toEqual(["share.granted", "share.precise_viewed"]);
-    expect(JSON.stringify(events)).not.toContain(mina.userId);
-
-    const principal = (await resolveTokenPrincipal(ctx, secret))!;
-    const server = buildMcpServer(ctx.forUser(principal.userId), principal, ctx);
-    const client = new Client({ name: "test", version: "0.0.0" }, { capabilities: {} });
-    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
-    await server.connect(serverT);
-    await client.connect(clientT);
-    const out = (await client.callTool({ name: "list_recent_presence_events", arguments: { limit: 50 } })) as any;
-    const text = out.content[0].text as string;
-    expect(text).toContain("share.precise_viewed");
-    expect(text).not.toContain(mina.userId);
-  });
-
-  it("delivers share events to the owner's webhooks with the viewer", async () => {
+  it("of the owner, their events and their webhooks see no share data", async () => {
     const delivered: any[] = [];
-    await ctx.forUser(asUserId(owner.userId)).webhooks.create({ url: "http://127.0.0.1:9/hook", events: ["share.granted"] });
+    await ctx.forUser(asUserId(owner.userId)).webhooks.create({ url: "http://127.0.0.1:9/hook", events: ["*"] });
     clock.advance(1000);
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
+    await personOf(mina, owner.userId);
     await share(owner.browser, mina.userId, { level: "coarse" });
+    await owner.browser.send(`/v1/shares/${mina.userId}`, { method: "DELETE" });
+    expect(await auditOf(owner)).toHaveLength(4);
+
     const dispatcher = new WebhookDispatcher({
       webhooksStore: ctx.system.webhooks,
       eventsStore: ctx.system.events,
@@ -336,8 +452,109 @@ describe("audit", () => {
       }) as unknown as typeof fetch,
     });
     await dispatcher.tick();
-    expect(delivered).toEqual([
-      expect.objectContaining({ event: "share.granted", viewer: mina.userId, level: "coarse" }),
+    expect(delivered).toEqual([]);
+
+    const { secret } = await owner.browser.json("/v1/tokens", { body: { name: "claude", role: "agent" } });
+    const events = await owner.browser.json("/v1/events?limit=500");
+    const agentEvents = await app.request("/v1/events", { headers: { authorization: `Bearer ${secret}` } });
+    const mcp = await everyToolOutput(await connectAs(secret));
+    const seen = [JSON.stringify(events), await agentEvents.text(), ...mcp].join("\n");
+    expect(seen).not.toContain("share");
+    expect(seen).not.toContain(mina.userId);
+
+    const hook = await owner.browser.send("/v1/webhooks", {
+      body: { url: "https://hooks.example.com/x", events: ["share.granted"] },
+    });
+    expect(hook.status).toBe(400);
+  });
+});
+
+describe("the share audit", () => {
+  it("records grants, changes and revokes with what changed, newest first", async () => {
+    await share(owner.browser, mina.userId, { level: "coarse" });
+    clock.advance(1000);
+    await share(owner.browser, mina.userId, { level: "coarse" });
+    clock.advance(1000);
+    await share(owner.browser, mina.userId, { level: "precise" });
+    clock.advance(1000);
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
+    clock.advance(1000);
+    await owner.browser.send(`/v1/shares/${mina.userId}`, { method: "DELETE" });
+
+    const audit = await auditOf(owner);
+    expect(audit.map(({ action, reason, before, after }) => ({ action, reason, before, after }))).toEqual([
+      { action: "revoked", reason: null, before: { level: "precise", hideHomeExact: false }, after: null },
+      {
+        action: "changed",
+        reason: null,
+        before: { level: "precise", hideHomeExact: true },
+        after: { level: "precise", hideHomeExact: false },
+      },
+      {
+        action: "changed",
+        reason: null,
+        before: { level: "coarse", hideHomeExact: true },
+        after: { level: "precise", hideHomeExact: true },
+      },
+      { action: "granted", reason: null, before: null, after: { level: "coarse", hideHomeExact: true } },
     ]);
+    expect(audit.every((a) => a.viewer.id === mina.userId && a.viewer.displayName === "Mina")).toBe(true);
+    expect(await auditOf(mina)).toEqual([]);
+    expect((await owner.browser.json("/v1/shares/audit?limit=2")).audit).toHaveLength(2);
+  });
+
+  it("is session-only", async () => {
+    const { secret } = await owner.browser.json("/v1/tokens", { body: { name: "admin", role: "admin" } });
+    const res = await app.request("/v1/shares/audit", { headers: { authorization: `Bearer ${secret}` } });
+    expect(res.status).toBe(403);
+  });
+
+  it("records a precise view at most once an hour per viewer, from exactly 60 minutes", async () => {
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
+    await share(owner.browser, outsider.userId, { level: "precise", hideHomeExact: false });
+
+    await personOf(mina, owner.userId);
+    await personOf(mina, owner.userId);
+    expect(await preciseViews(mina.userId)).toBe(1);
+    await personOf(outsider, owner.userId);
+    expect(await preciseViews(outsider.userId)).toBe(1);
+
+    clock.advance(PRECISE_VIEW_AUDIT_INTERVAL_MS - 1);
+    await personOf(mina, owner.userId);
+    expect(await preciseViews(mina.userId)).toBe(1);
+    clock.advance(1);
+    await personOf(mina, owner.userId);
+    expect(await preciseViews(mina.userId)).toBe(2);
+    expect(await preciseViews(outsider.userId)).toBe(1);
+  });
+
+  it("records nothing for list reads, coarse reads, withheld coordinates or a revoked viewer", async () => {
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
+    await people(mina);
+    await people(mina);
+
+    await share(owner.browser, outsider.userId, { level: "coarse" });
+    await personOf(outsider, owner.userId);
+
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: true });
+    await ingest(owner.browser, HOME);
+    expect((await personOf(mina, owner.userId)).precise).toBeNull();
+
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
+    await owner.browser.send(`/v1/shares/${mina.userId}`, { method: "DELETE" });
+    expect((await person(mina, owner.userId)).status).toBe(404);
+
+    expect((await auditOf(owner)).filter((a) => a.action === "precise_viewed")).toEqual([]);
+  });
+
+  it("is pruned after its retention", async () => {
+    await share(owner.browser, mina.userId, { level: "coarse" });
+    clock.advance(24 * 3600_000);
+    await reauth(owner.browser, owner.credentialId);
+    expect((await share(owner.browser, mina.userId, { level: "precise" })).status).toBe(200);
+    expect(await ctx.system.shares.pruneAudit(1)).toBe(0);
+    clock.advance(MINUTE);
+    expect(await ctx.system.shares.pruneAudit(1)).toBe(1);
+    expect((await auditOf(owner)).map((a) => a.action)).toEqual(["changed"]);
   });
 });

@@ -22,6 +22,32 @@ import QRCode from "qrcode";
 export const DEVICE_KINDS = ["owntracks", "shortcut"] as const;
 export type DeviceKind = (typeof DEVICE_KINDS)[number];
 
+function isLoopback(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "::1" ||
+    /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+  );
+}
+
+/**
+ * Why a phone could not use a config built on `baseUrl`, or null. A loopback
+ * host is the phone itself, and plain http would carry the device token in
+ * the clear; either way the pairing would mint a token that never works.
+ */
+export function pairingBaseUrlProblem(baseUrl: string): string | null {
+  const url = new URL(baseUrl);
+  if (isLoopback(url.hostname)) {
+    return `BASE_URL (${baseUrl}) points at this server's own machine, which a phone cannot reach. Set BASE_URL to the server's public https URL.`;
+  }
+  if (url.protocol !== "https:") {
+    return `BASE_URL (${baseUrl}) is not https, so the phone would send its token in the clear. Set BASE_URL to the server's public https URL.`;
+  }
+  return null;
+}
+
 /** Claude Desktop's remote-server entry, as in examples/claude-desktop/config.json. */
 export function mcpClientConfig(baseUrl: string, secret: string) {
   return {

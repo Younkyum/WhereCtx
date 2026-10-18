@@ -106,8 +106,8 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   app.route("/v1/auth", authRouter(ctx, ctx.auth, options.authRouterLimits));
   mountSession("/v1/me", meRouter(ctx));
   mountSession("/v1/workspaces", workspacesRouter());
-  mountSession("/v1/shares", sharesRouter(ctx));
-  mountSession("/v1/people", peopleRouter(ctx));
+  mountSession("/v1/shares", sharesRouter());
+  mountSession("/v1/people", peopleRouter());
   mount("/v1/ingest", ingestRouter(ctx), authenticate(ctx, { deviceCredentials: true }));
   mount("/v1/presence", presenceRouter(ctx));
   mount("/v1/places", placesRouter(ctx));

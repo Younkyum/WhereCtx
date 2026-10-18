@@ -117,17 +117,21 @@ export interface Place {
 export const SHARE_LEVELS = ["coarse", "precise"] as const;
 export type ShareLevel = (typeof SHARE_LEVELS)[number];
 
+/**
+ * The owner's record of a share's life, kept in `share_audit` and never in
+ * presence events, so agents, MCP, `/v1/events` and webhooks see none of it.
+ */
+export const SHARE_AUDIT_ACTIONS = ["granted", "changed", "revoked", "precise_viewed"] as const;
+export type ShareAuditAction = (typeof SHARE_AUDIT_ACTIONS)[number];
+/** Why a share ended other than its owner revoking it. */
+export type ShareAuditReason = "membership_ended" | "viewer_declined";
+
 export const PRESENCE_EVENT_TYPES = [
   "presence.updated",
   "presence.entered_place",
   "presence.left_place",
   "presence.became_stale",
   "presence.privacy_changed",
-  // Location sharing audit, written to the owner's log so they see who looks.
-  "share.granted",
-  "share.changed",
-  "share.revoked",
-  "share.precise_viewed",
 ] as const;
 export type PresenceEventType = (typeof PRESENCE_EVENT_TYPES)[number];
 
@@ -137,10 +141,6 @@ export interface PresenceEvent {
   placeName?: string;
   status?: string;
   source?: string;
-  /** share.* events: the person the owner shares with. */
-  viewerUserId?: UserId;
-  /** share.granted / share.changed: the level granted. */
-  level?: ShareLevel;
   createdAt: string;
 }
 
@@ -205,6 +205,11 @@ export interface PrivacySettings {
   protectHomePlace: boolean;
   retentionHours: number;
   storeRawHistory: boolean;
+  /**
+   * Hide this person from everyone they share their location with, without
+   * touching the shares. Agents are governed by `defaultAgentAccess` alone.
+   */
+  sharingPaused: boolean;
 }
 
 /** Coarse presence view returned to agents by default (plan section 5). */

@@ -78,7 +78,7 @@ DELETE /v1/places/:name      # manage_places
 ## Events
 
 ```
-GET /v1/events?limit=50      # read_presence; placeName and viewerUserId stripped for agents; 403 in hidden mode
+GET /v1/events?limit=50      # read_presence; placeName stripped for agents; 403 in hidden mode
 ```
 
 ## Privacy (admin)
@@ -89,7 +89,10 @@ PUT /v1/privacy              # manage_privacy — partial update; emits privacy_
 ```
 Body keys: `defaultAgentAccess`, `allowPreciseLocation`, `preciseRequiresReason`,
 `preciseRequiresApproval`, `hideHomeExactCoordinates`, `protectHomePlace`,
-`retentionHours`, `storeRawHistory` (all optional).
+`retentionHours`, `storeRawHistory`, `sharingPaused` (all optional).
+`sharingPaused` hides you from everyone you share your location with (see
+[Location sharing](#location-sharing-signed-in-people)); it has no effect on
+agents.
 
 ## Accounts (signed-in people)
 
@@ -139,18 +142,28 @@ Find My. Session only: tokens get `403`, so neither the owner's nor the
 viewer's agents ever reach these routes.
 
 ```
-GET    /v1/shares                  # { outgoing: [{ viewer:{id,displayName}, level, hideHomeExact }],
-                                   #   incoming: [{ owner:{id,displayName}, level }] }
-PUT    /v1/shares/:viewerUserId    # { "level":"coarse"|"precise", "hideHomeExact":false } -> { share }
-DELETE /v1/shares/:viewerUserId    # stop sharing
-GET    /v1/people                  # everyone sharing with me
+GET    /v1/shares                        # { outgoing: [{ viewer:{id,displayName}, level, hideHomeExact }],
+                                         #   incoming: [{ owner:{id,displayName}, level, hideHomeExact }] }
+PUT    /v1/shares/:viewerUserId          # { "level":"coarse"|"precise", "hideHomeExact"?:bool } -> { share }
+DELETE /v1/shares/:viewerUserId          # stop sharing
+DELETE /v1/shares/incoming/:ownerUserId  # stop seeing someone who shares with me
+GET    /v1/shares/audit?limit=50         # my shares' audit, newest first (max 500)
+GET    /v1/people                        # everyone sharing with me, no coordinates
+GET    /v1/people/:ownerUserId           # one of them, with coordinates when allowed
 ```
 
-A viewer who shares no workspace with you answers `404`, as does an unknown
-id; sharing with yourself is `400`. `hideHomeExact` defaults to `false` and an
+A person who shares no workspace with you answers `404`, as does an unknown
+id; sharing with yourself is `400`. A new share's `hideHomeExact` defaults to
+your `hideHomeExactCoordinates` privacy setting; an explicit value wins, and an
 update that omits it keeps the current value. A share counts only while the
 two people still have a workspace in common: it stops showing as soon as that
-ends, and leaving or being removed from the last common workspace deletes it.
+ends, and when the last common membership goes (leaving, removal, any other
+path) the database deletes it and audits it as `membership_ended`.
+
+Creating a share, raising it from `coarse` to `precise`, or turning
+`hideHomeExact` off needs a passkey proof from the last 10 minutes (`403`
+`code: "reauth_required"`, then `POST /v1/me/reauth`). Keeping, lowering and
+revoking a share do not.
 
 `GET /v1/people`:
 
@@ -158,19 +171,54 @@ ends, and leaving or being removed from the last common workspace deletes it.
 { "people": [ {
   "user": { "id":"…", "displayName":"Mina" },
   "level": "precise",
-  "presence": { "status":"away", "label":"away", "motion":"walking", "updatedAgoSec":42, "stale":false },
-  "precise": { "lat":37.6, "lon":127.1, "accuracyM":12, "mapUrl":"https://maps.google.com/?q=37.6,127.1", "updatedAgoSec":42 }
+  "paused": false,
+  "presence": { "status":"away", "label":"away", "motion":"walking", "updatedAgoMin":3, "stale":false },
+  "precise": "available"
 } ] }
 ```
 
-`presence` is `null` before the owner's first reading. `precise` is `null`
-unless the level is `precise`, and also while the owner is at or near home
-with `hideHomeExact` on.
+`GET /v1/people/:ownerUserId` returns the same entry as `person`, except that
+`precise` holds the coordinates:
 
-Each grant, change and revoke is written to the owner's events
-(`share.granted`, `share.changed`, `share.revoked`, with `viewerUserId` and
-`level`). So is each precise view (`share.precise_viewed`), at most once an
-hour per viewer.
+```json
+{ "person": { "…": "…",
+  "precise": { "lat":37.6, "lon":127.1, "accuracyM":12, "mapUrl":"https://maps.google.com/?q=37.6,127.1", "updatedAgoMin":3 }
+} }
+```
+
+- `label` is the status name (`home`, `near home`, `work`, `custom`, …), never
+  the name or label of the owner's place. Ages are whole minutes.
+- `presence` is `null` before the owner's first reading.
+- `precise` is `null` unless the level is `precise`. With `hideHomeExact` on it
+  is also `null`, with `preciseWithheld` saying why: `"at_home"` while the
+  owner is at or near home, `"no_home_place"` when the owner has no `home`
+  place (the server cannot tell when they are home, so it withholds
+  coordinates everywhere). In the list, `"available"` means the person read
+  would return coordinates now.
+- `paused: true` (with `presence` and `precise` `null`) while the owner has
+  `sharingPaused` on.
+
+Only the person read with coordinates is audited (`precise_viewed`), at most
+once per owner and viewer per hour: a view exactly one hour after the last
+audited one is audited again. The list is never audited.
+
+`GET /v1/shares/audit`:
+
+```json
+{ "audit": [ {
+  "id":"…", "viewer": { "id":"…", "displayName":"Mina" },
+  "action": "granted" | "changed" | "revoked" | "precise_viewed",
+  "reason": null | "membership_ended" | "viewer_declined",
+  "before": { "level":"coarse", "hideHomeExact":true } | null,
+  "after":  { "level":"precise", "hideHomeExact":true } | null,
+  "createdAt": "2026-10-18T10:00:00.000Z"
+} ] }
+```
+
+`before` is `null` for a grant and a precise view, `after` for a revoke and a
+precise view. The audit is kept for `SHARE_AUDIT_RETENTION_DAYS` (365 by
+default). It is not part of presence events: `/v1/events`, MCP and webhooks
+carry no sharing data.
 
 ## Tokens (admin)
 
@@ -192,7 +240,14 @@ POST /v1/devices/pair        # manage_tokens (step-up from a session)
 ```
 
 Mints a `device` token (counts toward the 50-token cap) and returns it with
-what the phone needs. The secret appears only in this response.
+what the phone needs. The secret appears only in this response, which is sent
+with `Cache-Control: no-store` (as are token creation and every response
+carrying recovery codes).
+
+Before minting, the server checks that a phone could use `BASE_URL`: a
+loopback host (`localhost`, `127.0.0.0/8`, `::1`) or plain http on any other
+host answers `400` `{ error, code: "base_url_unusable" }`. Set `BASE_URL` to
+the server's public https URL.
 
 - `owntracks`: `{ token, kind, config, link, qrSvg }`. `config` is an OwnTracks
   remote configuration (`_type:"configuration"`, `mode:3` HTTP, `url` =
@@ -250,10 +305,8 @@ ok = fresh && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.head
 ```
 
 Events: `presence.updated`, `presence.entered_place`, `presence.left_place`,
-`presence.became_stale`, `presence.privacy_changed`, and the sharing audit
-events `share.granted`, `share.changed`, `share.revoked`,
-`share.precise_viewed`. Share events carry `viewer` (the person's user id)
-and, for grants and changes, `level`.
+`presence.became_stale`, `presence.privacy_changed`. Location sharing is not
+delivered by webhook; its audit is at `GET /v1/shares/audit`.
 
 ## Misc
 

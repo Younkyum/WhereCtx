@@ -32,6 +32,7 @@ import {
   parseBody,
   respond,
 } from "./accountHttp.js";
+import { noStore } from "./middleware.js";
 import { RateLimiter, requestGuard } from "./rateLimit.js";
 import {
   clearSessionCookie,
@@ -106,7 +107,7 @@ export function authRouter(
     return respond(c, await auth.setupOptions(body.code), (start) => c.json(start));
   });
 
-  app.post("/setup/verify", async (c) => {
+  app.post("/setup/verify", noStore, async (c) => {
     const body = await parseBody(c, CodeVerify);
     if (body instanceof Response) return body;
     const result = await auth.setupVerify(
@@ -143,7 +144,7 @@ export function authRouter(
     return respond(c, result, (start) => c.json(start));
   });
 
-  app.post("/invite/verify", async (c) => {
+  app.post("/invite/verify", noStore, async (c) => {
     const body = await parseBody(c, InviteVerify);
     if (body instanceof Response) return body;
     const result = await auth.inviteVerify(
@@ -187,7 +188,7 @@ export function authRouter(
     return respond(c, await auth.accessCodeOptions(body.code), (start) => c.json(start));
   });
 
-  app.post("/access-code/verify", async (c) => {
+  app.post("/access-code/verify", noStore, async (c) => {
     const body = await parseBody(c, CodeVerify);
     if (body instanceof Response) return body;
     const result = await auth.accessCodeVerify(

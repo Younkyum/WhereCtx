@@ -29,6 +29,8 @@ import type {
   PresenceEventType,
   PresenceStatus,
   PrivacyMode,
+  ShareAuditAction,
+  ShareAuditReason,
   ShareLevel,
   TokenRole,
   TokenScope,
@@ -123,8 +125,6 @@ export const presenceEvents = sqliteTable(
     placeName: text("place_name"),
     status: text("status"),
     source: text("source"),
-    viewerUserId: text("viewer_user_id"),
-    shareLevel: text("share_level").$type<ShareLevel>(),
     createdAt: text("created_at").notNull(),
   },
   (t) => ({
@@ -186,6 +186,7 @@ export const privacySettings = sqliteTable("privacy_settings", {
   storeRawHistory: integer("store_raw_history", { mode: "boolean" })
     .notNull()
     .default(false),
+  sharingPaused: integer("sharing_paused", { mode: "boolean" }).notNull().default(false),
   updatedAt: text("updated_at").notNull(),
 });
 
@@ -285,7 +286,8 @@ export const memberships = sqliteTable(
 /**
  * Find-My style location sharing between two people: `owner` lets `viewer`
  * see their presence at `level`. A share only counts while the two still
- * belong to a common workspace (checked on every write and read).
+ * belong to a common workspace: reads join on it, and a trigger in migration
+ * 0006 deletes the share when the last common membership goes.
  */
 export const locationShares = sqliteTable(
   "location_shares",
@@ -301,6 +303,31 @@ export const locationShares = sqliteTable(
   (t) => ({
     pk: primaryKey({ columns: [t.ownerUserId, t.viewerUserId] }),
     viewerIdx: index("location_shares_viewer_idx").on(t.viewerUserId),
+  }),
+);
+
+/**
+ * The owner's audit of their shares: grants, changes, revokes (with why, when
+ * not the owner's own doing) and precise views. `before_*` is null for a
+ * grant, `after_*` for a revoke, both for a precise view. Append-only, pruned
+ * after SHARE_AUDIT_RETENTION_DAYS.
+ */
+export const shareAudit = sqliteTable(
+  "share_audit",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id").notNull(),
+    viewerUserId: text("viewer_user_id").notNull(),
+    action: text("action").$type<ShareAuditAction>().notNull(),
+    reason: text("reason").$type<ShareAuditReason>(),
+    beforeLevel: text("before_level").$type<ShareLevel>(),
+    afterLevel: text("after_level").$type<ShareLevel>(),
+    beforeHideHome: integer("before_hide_home", { mode: "boolean" }),
+    afterHideHome: integer("after_hide_home", { mode: "boolean" }),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    ownerCreatedIdx: index("share_audit_owner_created_idx").on(t.ownerUserId, t.createdAt),
   }),
 );
 
@@ -428,6 +455,7 @@ export const schema = {
   workspaces,
   memberships,
   locationShares,
+  shareAudit,
   passkeys,
   sessions,
   invites,

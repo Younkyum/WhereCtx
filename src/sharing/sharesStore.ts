@@ -1,24 +1,43 @@
 /**
- * Location shares between people. The rules live in the SQL of each
- * statement, not in a prior read, so a membership change racing a request
- * cannot slip past them:
+ * Location shares between people, and the owner's audit of them. The rules
+ * live in the SQL of each statement, not in a prior read, so a membership or
+ * share change racing a request cannot slip past them:
  *   - a share may be written only to someone who currently belongs to a
  *     common workspace with the owner, and never to oneself;
- *   - a share is read only while that is still true, so leaving the last
- *     common workspace ends visibility at once (the leave also deletes it,
- *     via `deleteOrphanedShares` in the membership batch);
- *   - each grant, change and revoke appends its audit event to the owner's
- *     log in the same batch as the write.
+ *   - without a fresh passkey proof, a write may only keep or lower what the
+ *     viewer sees (no new share, no coarse -> precise, no unhiding home);
+ *   - a share is read only while the two still have a workspace in common,
+ *     in the same query that reads the owner's presence and settings. When
+ *     the last common membership goes, a trigger (migration 0006) audits and
+ *     deletes the share, whichever path removed the membership;
+ *   - each grant, change and revoke appends its audit row in the same batch
+ *     as the write, copying the share's state before the write changes it.
  */
 
-import { and, eq, exists, ne, not, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, exists, gt, lt, ne, not, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
+import { randomBytes } from "node:crypto";
 import type { Database } from "../db/index.js";
 import { insertWhen } from "../db/insertWhen.js";
-import { locationShares, users } from "../db/schema.js";
-import type { EventsStore } from "../store/eventsStore.js";
+import {
+  locationShares,
+  places,
+  presence,
+  privacySettings,
+  shareAudit,
+  users,
+} from "../db/schema.js";
 import { shareAWorkspace } from "../accounts/roleSql.js";
-import { asUserId, type PresenceEvent, type ShareLevel, type UserId } from "../types.js";
+import type { ShareTerms, SharingOwnerContext } from "../privacy/policy.js";
+import { presenceFromRow } from "../store/presenceStore.js";
+import {
+  asUserId,
+  type PresenceContext,
+  type ShareAuditAction,
+  type ShareAuditReason,
+  type ShareLevel,
+  type UserId,
+} from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
 export interface ShareGrant {
@@ -27,81 +46,131 @@ export interface ShareGrant {
   hideHomeExact?: boolean;
 }
 
+export interface PutOptions {
+  /** The owner proved their passkey recently, so the write may widen access. */
+  mayWiden: boolean;
+  /** hideHomeExact for a new share whose grant omits it. */
+  defaultHideHomeExact: boolean;
+}
+
+export type PutOutcome = "ok" | "not_found" | "reauth_required";
+
 export interface Person {
   id: UserId;
   displayName: string;
 }
 
-export interface OutgoingShare {
+export interface OutgoingShare extends ShareTerms {
   viewer: Person;
-  level: ShareLevel;
-  hideHomeExact: boolean;
 }
 
-export interface IncomingShare {
+export interface IncomingShare extends ShareTerms {
   owner: Person;
-  level: ShareLevel;
-  hideHomeExact: boolean;
 }
 
-/** A person's own precise-view audit is written at most this often per viewer. */
+/** One share with everything a person view of its owner depends on. */
+export interface VisibleShare {
+  owner: Person;
+  share: ShareTerms;
+  ownerContext: SharingOwnerContext;
+  presence: PresenceContext | null;
+}
+
+export interface ShareAuditEntry {
+  id: string;
+  viewer: { id: UserId; displayName: string | null };
+  action: ShareAuditAction;
+  reason: ShareAuditReason | null;
+  before: ShareTerms | null;
+  after: ShareTerms | null;
+  createdAt: string;
+}
+
+/**
+ * A precise view is audited at most this often per owner and viewer: the
+ * audit says who looked and roughly when, not every refresh. A view exactly
+ * one interval after the last audited one is audited again.
+ */
 export const PRECISE_VIEW_AUDIT_INTERVAL_MS = 3600_000;
 
 const counterpart = alias(users, "counterpart");
+const auditedViewer = alias(users, "audited_viewer");
 
 /** True for a share row whose two people still have a workspace in common. */
 function stillCoMembers(): SQL {
   return shareAWorkspace(locationShares.ownerUserId, locationShares.viewerUserId);
 }
 
-/**
- * Delete every share of `userId`'s (either side) whose two people no longer
- * have a workspace in common. Placed after a membership removal in its batch.
- */
-export function deleteOrphanedShares(db: Database, userId: UserId) {
-  return db
-    .delete(locationShares)
-    .where(
-      and(
-        or(eq(locationShares.ownerUserId, userId), eq(locationShares.viewerUserId, userId)),
-        not(stillCoMembers()),
-      ),
-    );
+function auditId(): string {
+  return randomBytes(16).toString("hex");
+}
+
+function terms(level: ShareLevel | null, hideHomeExact: boolean | null): ShareTerms | null {
+  return level === null || hideHomeExact === null ? null : { level, hideHomeExact };
 }
 
 export class SharesStore {
   constructor(
     private readonly db: Database,
-    private readonly events: EventsStore,
     private readonly clock: Clock = systemClock,
   ) {}
 
-  /**
-   * Create or update `owner`'s share with `viewer`. Returns the audit events
-   * written (none when nothing changed), or null when `viewer` is not a
-   * current co-member (or is `owner`).
-   */
-  async put(owner: UserId, viewer: UserId, grant: ShareGrant): Promise<PresenceEvent[] | null> {
+  /** Create or update `owner`'s share with `viewer`. */
+  async put(owner: UserId, viewer: UserId, grant: ShareGrant, options: PutOptions): Promise<PutOutcome> {
     const now = nowIso(this.clock);
-    const eligible = and(
-      eq(users.id, viewer),
-      ne(users.id, owner),
-      shareAWorkspace(owner, viewer),
-    )!;
-    const existing = this.existing(owner, viewer);
-    const same = and(
-      eq(locationShares.level, grant.level),
-      grant.hideHomeExact === undefined ? undefined : eq(locationShares.hideHomeExact, grant.hideHomeExact),
-    )!;
-    const audit = { viewerUserId: viewer, level: grant.level };
-    const granted = this.events.appendWhen(owner, { type: "share.granted", ...audit }, {
-      from: users,
-      where: and(eligible, not(existing))!,
-    });
-    const changed = this.events.appendWhen(owner, { type: "share.changed", ...audit }, {
-      from: users,
-      where: and(eligible, this.existing(owner, viewer, not(same)))!,
-    });
+    const eligible = and(eq(users.id, viewer), ne(users.id, owner), shareAWorkspace(owner, viewer))!;
+    const thisShare = and(eq(locationShares.ownerUserId, owner), eq(locationShares.viewerUserId, viewer))!;
+    const nextHide = grant.hideHomeExact ?? locationShares.hideHomeExact;
+    // Evaluated against the current row: does this write show the viewer more?
+    const widens = or(
+      grant.level === "precise" ? eq(locationShares.level, "coarse") : undefined,
+      grant.hideHomeExact === false ? eq(locationShares.hideHomeExact, true) : undefined,
+    );
+    const allowed = options.mayWiden || !widens ? undefined : not(widens);
+    const createHide = grant.hideHomeExact ?? options.defaultHideHomeExact;
+
+    const granted = insertWhen(
+      this.db,
+      shareAudit,
+      {
+        id: auditId(),
+        ownerUserId: owner,
+        viewerUserId: viewer,
+        action: "granted",
+        reason: null,
+        beforeLevel: null,
+        afterLevel: grant.level,
+        beforeHideHome: null,
+        afterHideHome: createHide,
+        createdAt: now,
+      },
+      { from: users, where: and(eligible, not(this.exists(thisShare)))! },
+    );
+    const changed = insertWhen(
+      this.db,
+      shareAudit,
+      {
+        id: auditId(),
+        ownerUserId: owner,
+        viewerUserId: viewer,
+        action: "changed",
+        reason: null,
+        beforeLevel: locationShares.level,
+        afterLevel: grant.level,
+        beforeHideHome: locationShares.hideHomeExact,
+        afterHideHome: grant.hideHomeExact ?? locationShares.hideHomeExact,
+        createdAt: now,
+      },
+      {
+        from: locationShares,
+        where: and(
+          thisShare,
+          shareAWorkspace(owner, viewer),
+          or(ne(locationShares.level, grant.level), ne(locationShares.hideHomeExact, nextHide)),
+          allowed,
+        )!,
+      },
+    );
     const upsert = insertWhen(
       this.db,
       locationShares,
@@ -109,11 +178,12 @@ export class SharesStore {
         ownerUserId: owner,
         viewerUserId: viewer,
         level: grant.level,
-        hideHomeExact: grant.hideHomeExact ?? false,
+        hideHomeExact: createHide,
         createdAt: now,
         updatedAt: now,
       },
-      { from: users, where: eligible },
+      // Without step-up the insert only reaches an existing row's update.
+      { from: users, where: and(eligible, options.mayWiden ? undefined : this.exists(thisShare))! },
     ).onConflictDoUpdate({
       target: [locationShares.ownerUserId, locationShares.viewerUserId],
       set: {
@@ -121,33 +191,42 @@ export class SharesStore {
         ...(grant.hideHomeExact === undefined ? {} : { hideHomeExact: grant.hideHomeExact }),
         updatedAt: now,
       },
+      setWhere: allowed,
     });
     // The audit inserts read the share's state before the upsert changes it.
-    const [grantedResult, changedResult, upserted] = await this.db.batch([
-      granted.statement,
-      changed.statement,
-      upsert,
-    ]);
-    if (upserted.rowsAffected === 0) return null;
-    return [
-      ...(grantedResult.rowsAffected > 0 ? [granted.event] : []),
-      ...(changedResult.rowsAffected > 0 ? [changed.event] : []),
-    ];
+    const results = options.mayWiden
+      ? await this.db.batch([granted, changed, upsert])
+      : await this.db.batch([changed, upsert]);
+    if (results[results.length - 1]!.rowsAffected > 0) return "ok";
+    const stillEligible = await this.db.select({ id: users.id }).from(users).where(eligible).limit(1);
+    return stillEligible.length > 0 ? "reauth_required" : "not_found";
   }
 
-  /** Delete `owner`'s share with `viewer`; the revoke event, or null if there was none. */
-  async revoke(owner: UserId, viewer: UserId): Promise<PresenceEvent | null> {
-    const revoked = this.events.appendWhen(owner, { type: "share.revoked", viewerUserId: viewer }, {
-      from: users,
-      where: and(eq(users.id, owner), this.existing(owner, viewer))!,
-    });
-    const [, deleted] = await this.db.batch([
-      revoked.statement,
-      this.db
-        .delete(locationShares)
-        .where(and(eq(locationShares.ownerUserId, owner), eq(locationShares.viewerUserId, viewer))),
-    ]);
-    return deleted.rowsAffected > 0 ? revoked.event : null;
+  /**
+   * Delete `owner`'s share with `viewer`, auditing why (null: the owner
+   * revoked it). False when there was no such share.
+   */
+  async revoke(owner: UserId, viewer: UserId, reason: ShareAuditReason | null): Promise<boolean> {
+    const thisShare = and(eq(locationShares.ownerUserId, owner), eq(locationShares.viewerUserId, viewer))!;
+    const audit = insertWhen(
+      this.db,
+      shareAudit,
+      {
+        id: auditId(),
+        ownerUserId: owner,
+        viewerUserId: viewer,
+        action: "revoked",
+        reason,
+        beforeLevel: locationShares.level,
+        afterLevel: null,
+        beforeHideHome: locationShares.hideHomeExact,
+        afterHideHome: null,
+        createdAt: nowIso(this.clock),
+      },
+      { from: locationShares, where: thisShare },
+    );
+    const [, deleted] = await this.db.batch([audit, this.db.delete(locationShares).where(thisShare)]);
+    return deleted.rowsAffected > 0;
   }
 
   /** Whom `owner` currently shares with. */
@@ -169,7 +248,7 @@ export class SharesStore {
     }));
   }
 
-  /** Who currently shares with `viewer`. */
+  /** Who currently shares with `viewer`, and on what terms. */
   async listIncoming(viewer: UserId): Promise<IncomingShare[]> {
     const rows = await this.db
       .select({
@@ -189,39 +268,114 @@ export class SharesStore {
   }
 
   /**
-   * Note in `owner`'s log that `viewer` saw their precise location, unless
-   * such a note is less than an hour old. Returns the event when written.
+   * The shares `viewer` may see now (one owner's, when given), each with the
+   * owner's current presence and sharing settings, in one query: the share
+   * check and the presence read see the same database state.
    */
-  async recordPreciseView(owner: UserId, viewer: UserId): Promise<PresenceEvent | null> {
-    const since = new Date(this.clock().getTime() - PRECISE_VIEW_AUDIT_INTERVAL_MS).toISOString();
-    const viewed = this.events.appendWhen(
-      owner,
-      { type: "share.precise_viewed", viewerUserId: viewer },
-      {
-        from: users,
-        where: and(
-          eq(users.id, owner),
-          not(this.events.recordedSince(owner, "share.precise_viewed", viewer, since)),
-        )!,
-      },
-    );
-    const result = await viewed.statement;
-    return result.rowsAffected > 0 ? viewed.event : null;
+  async visibleTo(viewer: UserId, owner?: UserId): Promise<VisibleShare[]> {
+    const rows = await this.db
+      .select({
+        id: counterpart.id,
+        displayName: counterpart.displayName,
+        level: locationShares.level,
+        hideHomeExact: locationShares.hideHomeExact,
+        sharingPaused: privacySettings.sharingPaused,
+        hasHomePlace: sql<number>`${exists(
+          this.db
+            .select({ one: sql`1` })
+            .from(places)
+            .where(and(eq(places.userId, locationShares.ownerUserId), eq(places.type, "home"))),
+        )}`,
+        presence,
+      })
+      .from(locationShares)
+      .innerJoin(counterpart, eq(counterpart.id, locationShares.ownerUserId))
+      .leftJoin(presence, eq(presence.userId, locationShares.ownerUserId))
+      .leftJoin(privacySettings, eq(privacySettings.userId, locationShares.ownerUserId))
+      .where(
+        and(
+          eq(locationShares.viewerUserId, viewer),
+          owner === undefined ? undefined : eq(locationShares.ownerUserId, owner),
+          stillCoMembers(),
+        ),
+      )
+      .orderBy(counterpart.displayName);
+    return rows.map((row) => ({
+      owner: { id: asUserId(row.id), displayName: row.displayName },
+      share: { level: row.level, hideHomeExact: row.hideHomeExact },
+      // An owner who never opened their settings has the seeded default: not paused.
+      ownerContext: { sharingPaused: row.sharingPaused ?? false, hasHomePlace: Boolean(row.hasHomePlace) },
+      presence: row.presence ? presenceFromRow(row.presence) : null,
+    }));
   }
 
-  /** True while `owner` has a share row for `viewer` (matching `extra`, if given). */
-  private existing(owner: UserId, viewer: UserId, extra?: SQL): SQL {
-    return exists(
-      this.db
-        .select({ one: sql`1` })
-        .from(locationShares)
-        .where(
-          and(
-            eq(locationShares.ownerUserId, owner),
-            eq(locationShares.viewerUserId, viewer),
-            extra,
-          ),
+  /**
+   * Audit that `viewer` saw `owner`'s coordinates, unless a view of theirs was
+   * audited less than PRECISE_VIEW_AUDIT_INTERVAL_MS ago. The throttle check
+   * is part of the insert, so concurrent views write one row.
+   */
+  async recordPreciseView(owner: UserId, viewer: UserId): Promise<boolean> {
+    const now = this.clock();
+    const since = new Date(now.getTime() - PRECISE_VIEW_AUDIT_INTERVAL_MS).toISOString();
+    const recent = this.db
+      .select({ id: shareAudit.id })
+      .from(shareAudit)
+      .where(
+        and(
+          eq(shareAudit.ownerUserId, owner),
+          eq(shareAudit.viewerUserId, viewer),
+          eq(shareAudit.action, "precise_viewed"),
+          gt(shareAudit.createdAt, since),
         ),
+      );
+    const result = await insertWhen(
+      this.db,
+      shareAudit,
+      {
+        id: auditId(),
+        ownerUserId: owner,
+        viewerUserId: viewer,
+        action: "precise_viewed",
+        reason: null,
+        beforeLevel: null,
+        afterLevel: null,
+        beforeHideHome: null,
+        afterHideHome: null,
+        createdAt: now.toISOString(),
+      },
+      { from: users, where: and(eq(users.id, owner), not(exists(recent)))! },
     );
+    return result.rowsAffected > 0;
+  }
+
+  /** `owner`'s audit, newest first, with each viewer's current display name. */
+  async listAudit(owner: UserId, limit: number): Promise<ShareAuditEntry[]> {
+    const rows = await this.db
+      .select({ audit: shareAudit, viewerName: auditedViewer.displayName })
+      .from(shareAudit)
+      .leftJoin(auditedViewer, eq(auditedViewer.id, shareAudit.viewerUserId))
+      .where(eq(shareAudit.ownerUserId, owner))
+      .orderBy(desc(shareAudit.createdAt), desc(shareAudit.id))
+      .limit(limit);
+    return rows.map(({ audit, viewerName }) => ({
+      id: audit.id,
+      viewer: { id: asUserId(audit.viewerUserId), displayName: viewerName },
+      action: audit.action,
+      reason: audit.reason,
+      before: terms(audit.beforeLevel, audit.beforeHideHome),
+      after: terms(audit.afterLevel, audit.afterHideHome),
+      createdAt: audit.createdAt,
+    }));
+  }
+
+  /** Delete audit rows older than `retentionDays`. Returns rows removed. */
+  async pruneAudit(retentionDays: number): Promise<number> {
+    const cutoff = new Date(this.clock().getTime() - retentionDays * 86_400_000).toISOString();
+    const result = await this.db.delete(shareAudit).where(lt(shareAudit.createdAt, cutoff));
+    return result.rowsAffected;
+  }
+
+  private exists(where: SQL): SQL {
+    return exists(this.db.select({ one: sql`1` }).from(locationShares).where(where));
   }
 }

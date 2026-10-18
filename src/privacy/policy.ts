@@ -21,11 +21,14 @@
 import { labelForStatus } from "../geofence/engine.js";
 import type {
   CoarsePresenceView,
+  Motion,
   PrecisePresenceView,
   PresenceEvent,
   PresenceContext,
+  PresenceStatus,
   PrivacyMode,
   PrivacySettings,
+  ShareLevel,
   TokenScope,
 } from "../types.js";
 import { hasScope } from "../auth/scopes.js";
@@ -83,11 +86,10 @@ export function agentCoarseView(
 
 /**
  * A presence event as a non-admin agent sees it. Place names would make the
- * feed a movement log of named places (review P4/P5); the people the user
- * shares with are the user's business, not their agents'.
+ * feed a movement log of named places (review P4/P5).
  */
 export function agentEventView(event: PresenceEvent): PresenceEvent {
-  const { placeName: _p, viewerUserId: _v, ...rest } = event;
+  const { placeName: _p, ...rest } = event;
   return rest;
 }
 
@@ -117,15 +119,118 @@ export function buildPreciseView(
   };
 }
 
+/** Whether the person is at or near a `home` place right now. */
+export function isAtOrNearHome(presence: PresenceContext): boolean {
+  return presence.status === "home" || presence.status === "near_home";
+}
+
 /** Whether home-coordinate protection applies to the current presence. */
-export function shouldHideExact(
-  presence: PresenceContext,
-  settings: Pick<PrivacySettings, "hideHomeExactCoordinates">,
-): boolean {
-  return (
-    settings.hideHomeExactCoordinates &&
-    (presence.status === "home" || presence.status === "near_home")
-  );
+export function shouldHideExact(presence: PresenceContext, settings: PrivacySettings): boolean {
+  return settings.hideHomeExactCoordinates && isAtOrNearHome(presence);
+}
+
+// ---- people (location sharing between members) ----
+
+/** What an owner granted one viewer. */
+export interface ShareTerms {
+  level: ShareLevel;
+  /** Withhold coordinates while the owner is at or near home. */
+  hideHomeExact: boolean;
+}
+
+/** The owner-side facts a person view depends on, beyond the presence row. */
+export interface SharingOwnerContext {
+  sharingPaused: boolean;
+  hasHomePlace: boolean;
+}
+
+/**
+ * Why a precise share shows no coordinates right now. `no_home_place`: home
+ * protection is on but the owner has no home place, so the server cannot tell
+ * when they are home and withholds coordinates everywhere.
+ */
+export type PreciseWithheld = "no_home_place" | "at_home";
+
+/**
+ * A person's presence as another member sees it. The label is the status
+ * name only: a place's name or label (a street address, a clinic) is the
+ * owner's, and the age is in whole minutes so a viewer cannot time arrivals.
+ */
+export interface PersonPresence {
+  status: PresenceStatus;
+  label: string;
+  motion: Motion;
+  updatedAgoMin: number;
+  stale: boolean;
+}
+
+export interface PersonPrecise {
+  lat: number;
+  lon: number;
+  accuracyM?: number;
+  mapUrl: string;
+  updatedAgoMin: number;
+}
+
+export type PersonView =
+  | { paused: true; presence: null; precise: null }
+  | {
+      paused: false;
+      presence: PersonPresence | null;
+      /** Coordinates, when this share allows them right now. */
+      precise: PersonPrecise | null;
+      preciseWithheld?: PreciseWithheld;
+    };
+
+function minutesSince(iso: string, clock: Clock): number {
+  return Math.floor(secondsSince(iso, clock) / 60);
+}
+
+function preciseWithheld(
+  presence: PresenceContext | null,
+  share: ShareTerms,
+  owner: SharingOwnerContext,
+): PreciseWithheld | undefined {
+  if (!share.hideHomeExact) return undefined;
+  if (!owner.hasHomePlace) return "no_home_place";
+  if (presence && isAtOrNearHome(presence)) return "at_home";
+  return undefined;
+}
+
+/**
+ * What a viewer sees of one person who shares with them. Human sharing does
+ * not consult the owner's agent policy (`defaultAgentAccess` and the precise
+ * gates are about agents); the owner's `sharingPaused` hides them from every
+ * viewer at once.
+ */
+export function buildPersonView(
+  presence: PresenceContext | null,
+  share: ShareTerms,
+  owner: SharingOwnerContext,
+  clock: Clock = systemClock,
+): PersonView {
+  if (owner.sharingPaused) return { paused: true, presence: null, precise: null };
+  const summary: PersonPresence | null = presence && {
+    status: presence.status,
+    label: labelForStatus(presence.status),
+    motion: presence.motion ?? "unknown",
+    updatedAgoMin: minutesSince(presence.updatedAt, clock),
+    stale: isStale(presence.updatedAt, presence.staleAfterSec, clock),
+  };
+  if (share.level !== "precise") return { paused: false, presence: summary, precise: null };
+  const withheld = preciseWithheld(presence, share, owner);
+  if (withheld) return { paused: false, presence: summary, precise: null, preciseWithheld: withheld };
+  const point = presence?.precise;
+  const precise: PersonPrecise | null = point
+    ? {
+        lat: point.lat,
+        lon: point.lon,
+        accuracyM: point.accuracyM,
+        mapUrl: mapUrl(point.lat, point.lon),
+        updatedAgoMin: minutesSince(presence.updatedAt, clock),
+      }
+    : null;
+  return { paused: false, presence: summary, precise };
 }
 
 export interface PreciseAuthInput {

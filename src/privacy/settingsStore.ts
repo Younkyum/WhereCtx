@@ -23,6 +23,7 @@ interface SettingsRow {
   protectHomePlace: boolean;
   retentionHours: number;
   storeRawHistory: boolean;
+  sharingPaused: boolean;
   updatedAt: string;
 }
 
@@ -36,6 +37,7 @@ function rowToSettings(row: SettingsRow): PrivacySettings {
     protectHomePlace: row.protectHomePlace,
     retentionHours: row.retentionHours,
     storeRawHistory: row.storeRawHistory,
+    sharingPaused: row.sharingPaused,
   };
 }
 
@@ -77,6 +79,7 @@ export class SettingsStore {
         protectHomePlace: privacy.protectHomePlace,
         retentionHours: privacy.retentionHours,
         storeRawHistory: privacy.storeRawHistory,
+        sharingPaused: false,
         updatedAt: nowIso(this.clock),
       } satisfies SettingsRow)
       .onConflictDoNothing();

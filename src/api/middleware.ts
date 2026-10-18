@@ -146,6 +146,16 @@ export function requireAnyScope(...scopes: TokenScope[]): MiddlewareHandler<AppE
 }
 
 /**
+ * Mark the response uncacheable. For every response that carries a secret
+ * (a token, a pairing config, recovery codes), so no browser or proxy cache
+ * keeps a copy.
+ */
+export const noStore: MiddlewareHandler = async (c, next) => {
+  await next();
+  c.res.headers.set("Cache-Control", "no-store");
+};
+
+/**
  * A session must have proved its passkey within the step-up window; token
  * principals pass (a token is its own proof). Used where a session mints a
  * long-lived credential.

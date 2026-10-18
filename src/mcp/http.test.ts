@@ -32,6 +32,7 @@ const config: WhereCtxConfig = {
   allowMemberWorkspaces: true,
   webhooks: { allowPrivateTargets: false },
   events: { retentionHours: 720 },
+  sharing: { auditRetentionDays: 365 },
 };
 
 let ctx: AppContext;
@@ -77,6 +78,19 @@ describe("MCP /mcp auth boundary", () => {
     const r = await fetch(base, {
       method: "POST",
       headers: { authorization: AGENT, "content-type": "application/json" },
+      body: initBody,
+    });
+    expect(r.status).toBe(401);
+  });
+
+  it("rejects HTTP Basic, even carrying a valid agent token (401)", async () => {
+    const r = await fetch(base, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(`agent:${AGENT}`).toString("base64")}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
       body: initBody,
     });
     expect(r.status).toBe(401);

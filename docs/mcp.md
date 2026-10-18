@@ -40,7 +40,7 @@ mcp_servers:
 | `is_near_place` | `name: string` | `{name, inside, near}` booleans (no coordinates) |
 | `list_places` | – | `[{name, type}]` (admins also get coordinates) |
 | `get_location_age` | – | `{updatedAgoSec, stale, updatedAt}` |
-| `list_recent_presence_events` | `limit?: number` | recent events, including share.* audit events (place names and share viewers omitted for agents) |
+| `list_recent_presence_events` | `limit?: number` | recent events (place names omitted for agents) |
 | `create_location_reminder` | `place: string, message: string` | `{id, place, message}`; the place must exist; refused in hidden mode |
 | `create_place` | `name, type, lat, lon, radiusM?` | `{name, type, radiusM}`; registers/replaces a geofence |
 | `remember_current_place` | `name, type?, radiusM?` | `{name, type, radiusM}`; saves the **current** location as a place (coordinates are never returned) |

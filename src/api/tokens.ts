@@ -12,35 +12,21 @@
 
 import { Hono, type Context } from "hono";
 import { z } from "zod";
-import type { RouteContext, UserScope } from "../app/context.js";
+import type { RouteContext } from "../app/context.js";
+import { MAX_TOKENS } from "../auth/tokens.js";
 import { mcpClientConfig } from "../devices/pairing.js";
-import type { Token, TokenRole } from "../types.js";
-import { requireFreshSession, requireScope } from "./middleware.js";
+import { noStore, requireFreshSession, requireScope } from "./middleware.js";
 import { parseBody } from "./accountHttp.js";
 import type { AppEnv } from "./types.js";
-
-/** Per-user cap so one admin credential cannot mint tokens without bound. */
-const MAX_TOKENS = 50;
 
 const CreateSchema = z.object({
   name: z.string().min(1).max(64),
   role: z.enum(["device", "agent", "admin"]),
 });
 
-/**
- * Mint a token within the per-user cap, or return the 409 to send. Every
- * route that hands out a credential (tokens, device pairing) goes through here.
- */
-export async function mintToken(
-  c: Context,
-  scope: UserScope,
-  name: string,
-  role: TokenRole,
-): Promise<{ token: Token; secret: string } | Response> {
-  if ((await scope.tokens.count()) >= MAX_TOKENS) {
-    return c.json({ error: `token limit reached (${MAX_TOKENS})` }, 409);
-  }
-  return scope.tokens.create(name, role);
+/** The 409 for a mint refused by the per-user token cap. */
+export function tokenLimitReached(c: Context): Response {
+  return c.json({ error: `token limit reached (${MAX_TOKENS})` }, 409);
 }
 
 export function tokensRouter(ctx: RouteContext): Hono<AppEnv> {
@@ -52,11 +38,11 @@ export function tokensRouter(ctx: RouteContext): Hono<AppEnv> {
     return c.json({ tokens });
   });
 
-  app.post("/", requireFreshSession(ctx), async (c) => {
+  app.post("/", noStore, requireFreshSession(ctx), async (c) => {
     const body = await parseBody(c, CreateSchema);
     if (body instanceof Response) return body;
-    const minted = await mintToken(c, c.get("scope"), body.name, body.role);
-    if (minted instanceof Response) return minted;
+    const minted = await c.get("scope").tokens.create(body.name, body.role);
+    if (minted === "limit") return tokenLimitReached(c);
     const { token, secret } = minted;
     // The secret is shown exactly once.
     if (token.role !== "agent") return c.json({ token, secret }, 201);

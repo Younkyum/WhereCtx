@@ -43,9 +43,6 @@ function eventPayload(ev: PresenceEvent): Record<string, unknown> {
     place: ev.placeName,
     status: ev.status,
     source: ev.source,
-    // A hook belongs to the owner, who may see whom they share with.
-    viewer: ev.viewerUserId,
-    level: ev.level,
     timestamp: ev.createdAt,
   };
 }

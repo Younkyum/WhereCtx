@@ -21,6 +21,7 @@ const PatchSchema = z
     protectHomePlace: z.boolean(),
     retentionHours: z.number().int().min(0).max(8760),
     storeRawHistory: z.boolean(),
+    sharingPaused: z.boolean(),
   })
   .partial();
 

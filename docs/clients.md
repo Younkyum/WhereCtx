@@ -20,6 +20,12 @@ up. `"kind": "shortcut"` returns the URL, token and headers for the iOS
 Shortcut. See [api.md](api.md#devices-pairing). The manual setup below still
 works.
 
+The config points the phone at `BASE_URL`, so set it to the server's public
+https URL first. Pairing refuses (`400`, `code: "base_url_unusable"`) while
+`BASE_URL` is a loopback address (`localhost`, `127.x`, `::1`), which a phone
+cannot reach, or plain http on any other host, which would send the token in
+the clear. Nothing is minted when it refuses.
+
 ## Authentication
 
 Prefer the header:

@@ -42,6 +42,7 @@ const config: WhereCtxConfig = {
   allowMemberWorkspaces: true,
   webhooks: { allowPrivateTargets: true },
   events: { retentionHours: 720 },
+  sharing: { auditRetentionDays: 365 },
 };
 
 interface UserTokens {
@@ -88,8 +89,11 @@ const tick = () => new Promise((r) => setTimeout(r, 5));
 
 async function tokensFor(userId: UserId): Promise<UserTokens> {
   const scope = ctx.forUser(userId);
-  const create = async (role: "admin" | "device" | "agent") =>
-    (await scope.tokens.create(`${role}-${userId}`, role)).secret;
+  const create = async (role: "admin" | "device" | "agent") => {
+    const minted = await scope.tokens.create(`${role}-${userId}`, role);
+    if (minted === "limit") throw new Error("token limit reached");
+    return minted.secret;
+  };
   return { admin: await create("admin"), device: await create("device"), agent: await create("agent") };
 }
 
@@ -308,7 +312,12 @@ describe("REST isolation between users", () => {
   });
 
   it("caps tokens and webhooks per user", async () => {
-    for (let i = (await scopeB.tokens.count()); i < 50; i++) await scopeB.tokens.create(`t${i}`, "agent");
+    const start = await scopeB.tokens.count();
+    const minted = await Promise.all(
+      Array.from({ length: 55 - start }, (_, i) => scopeB.tokens.create(`t${i}`, "agent")),
+    );
+    expect(minted.filter((m) => m === "limit")).toHaveLength(5);
+    expect(await scopeB.tokens.count()).toBe(50);
     const overToken = await send("/v1/tokens", b.admin, { name: "one-more", role: "agent" });
     expect(overToken.status).toBe(409);
     expect(await overToken.json()).toEqual({ error: "token limit reached (50)" });

@@ -4,8 +4,9 @@
  *
  * Privacy:
  * - Withheld entirely in `hidden` mode.
- * - Non-admin (agent) callers get `agentEventView`: no place names, no share
- *   viewer identities. Admins see full events.
+ * - Non-admin (agent) callers get `agentEventView`: no place names, so the
+ *   feed cannot be used as a back-door movement log of named places + exact
+ *   times (review findings P4/P5). Admins see full events.
  */
 
 import { Hono } from "hono";

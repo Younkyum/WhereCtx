@@ -73,17 +73,36 @@ what agents see:
 
 - It is off until you share with someone, and only with a person who belongs
   to a workspace you are in. It ends the moment the two of you no longer have
-  a workspace in common.
-- `coarse` shows the summary above (status, label, motion, age, stale) with no
-  coordinates. `precise` adds your exact position. `hideHomeExact` withholds
-  it while you are at or near home; it is off by default, as in Find My.
+  a workspace in common, whichever way the membership ends.
+- `coarse` shows your status name (`home`, `away`, `work`, `custom`, …),
+  motion, how many whole minutes ago you were seen, and whether that is
+  stale. It never shows a place's name or label (a street address, the name
+  of a clinic) and never coordinates. `precise` adds your exact position, on
+  the one-person read only.
+- `hideHomeExact` withholds coordinates while you are at or near home. New
+  shares take it from your `hideHomeExactCoordinates` setting (on by default).
+  If you have no `home` place the server cannot tell when you are home, so it
+  withholds coordinates everywhere until you add one or turn it off.
+- Sharing more (a new share, coarse to precise, unhiding home) needs a recent
+  passkey proof; sharing less never does. A viewer can also stop seeing you.
+- `sharingPaused` (`PUT /v1/privacy`) hides you from everyone you share with
+  at once, without deleting the shares.
 - It does not follow `defaultAgentAccess`: putting agents in `hidden` mode
-  does not hide you from people you share with, and sharing with a person
-  gives nothing to agents. Only a signed-in person sees shared locations; no
-  token, including that person's own agent tokens, can.
-- Every grant, change and revoke, and each precise view (at most hourly per
-  viewer), lands in your events, so you can see who looked. Your agents see
-  that these events happened but not who the person was, as with place names.
+  does not hide you from people (use `sharingPaused` for that), and sharing
+  with a person gives nothing to agents. Only a signed-in person sees shared
+  locations; no token, including that person's own agent tokens, can.
+
+### The share audit
+
+Every grant, change (with the level and `hideHomeExact` before and after),
+revoke (with the reason when it was not yours: `membership_ended`,
+`viewer_declined`) and precise view lands in your share audit,
+`GET /v1/shares/audit`, so you can see who looked. Precise views are recorded
+at most once an hour per viewer, and only when coordinates were actually
+shown. The audit is a separate table (`share_audit`), kept for
+`SHARE_AUDIT_RETENTION_DAYS` (365 by default), and never part of presence
+events: your agents, MCP, `/v1/events` and webhooks see nothing of whom you
+share with.
 
 ## Token roles & the "device can't read" rule
 

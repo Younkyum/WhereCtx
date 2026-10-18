@@ -15,6 +15,7 @@
 import { randomBytes } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
+import { insertWhen, ONE_ROW } from "../db/insertWhen.js";
 import { tokens } from "../db/schema.js";
 import {
   ROLE_SCOPES,
@@ -27,6 +28,9 @@ import {
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 import { scopesForRole } from "./scopes.js";
 import { hashToken, newId, secretsEqual } from "./secrets.js";
+
+/** Per-user cap so one admin credential cannot mint tokens without bound. */
+export const MAX_TOKENS = 50;
 
 export interface VerifiedToken extends Token {
   /** Present so callers can scope-check without another lookup. */
@@ -136,13 +140,17 @@ export class TokenStore {
     return rows[0]?.c ?? 0;
   }
 
-  /** Create a token; returns the domain record and the one-time plaintext secret. */
+  /**
+   * Create a token within the per-user cap; returns the domain record and the
+   * one-time plaintext secret, or "limit". The cap is checked inside the
+   * insert, so concurrent mints cannot overshoot it.
+   */
   async create(
     userId: UserId,
     name: string,
     role: TokenRole,
     scopes?: TokenScope[],
-  ): Promise<{ token: Token; secret: string }> {
+  ): Promise<{ token: Token; secret: string } | "limit"> {
     const secret = generateTokenSecret();
     const record: TokenRow = {
       id: newId(),
@@ -154,7 +162,9 @@ export class TokenStore {
       createdAt: nowIso(this.clock),
       lastUsedAt: null,
     };
-    await this.db.insert(tokens).values(record);
+    const belowCap = sql`(SELECT count(*) FROM ${tokens} WHERE ${tokens.userId} = ${userId}) < ${MAX_TOKENS}`;
+    const result = await insertWhen(this.db, tokens, record, { from: ONE_ROW, where: belowCap });
+    if (result.rowsAffected === 0) return "limit";
     return { token: rowToToken(record), secret };
   }
 

@@ -28,6 +28,7 @@ const config: WhereCtxConfig = {
   allowMemberWorkspaces: true,
   webhooks: { allowPrivateTargets: false },
   events: { retentionHours: 720 },
+  sharing: { auditRetentionDays: 365 },
 };
 
 let app: Hono;

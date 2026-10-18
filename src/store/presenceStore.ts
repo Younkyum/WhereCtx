@@ -127,6 +127,11 @@ export function toPresenceContext(stored: StoredPresence): PresenceContext {
   return ctx;
 }
 
+/** A `presence` row selected by another store's join, as a PresenceContext. */
+export function presenceFromRow(row: typeof presence.$inferSelect): PresenceContext {
+  return toPresenceContext(rowToStored(row as PresenceRow));
+}
+
 export class PresenceStore {
   constructor(private readonly db: Database) {}
 

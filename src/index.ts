@@ -91,12 +91,13 @@ async function main(): Promise<void> {
   staleSweep.unref?.();
 
   // Retention pruning for the append-only tables (events + webhook dead-letters,
-  // review P3/L5), expired sessions, long-expired invites, spent ceremony
+  // review P3/L5, and the share audit), expired sessions, long-expired invites, spent ceremony
   // nonces, and expired access codes. Runs at boot and then every few hours.
   const pruneOnce = (): void => {
     void Promise.all([
       ctx.system.events.prune(config.events.retentionHours),
       ctx.system.webhooks.pruneDeadLetters(config.events.retentionHours),
+      ctx.system.shares.pruneAudit(config.sharing.auditRetentionDays),
       ctx.system.sessions.prune(),
       ctx.system.invites.pruneExpired(config.events.retentionHours),
       ctx.system.nonces.prune(),

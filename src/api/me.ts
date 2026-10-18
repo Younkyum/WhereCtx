@@ -24,6 +24,7 @@ import {
   parseBody,
   respond,
 } from "./accountHttp.js";
+import { noStore } from "./middleware.js";
 import { clearSessionCookie } from "./session.js";
 import type { SessionEnv } from "./types.js";
 
@@ -88,7 +89,7 @@ export function meRouter(ctx: RouteContext): Hono<SessionEnv> {
     c.json({ revoked: await c.get("account").me.revokeOtherSessions() }),
   );
 
-  app.post("/recovery-codes", async (c) =>
+  app.post("/recovery-codes", noStore, async (c) =>
     respond(c, await c.get("account").me.regenerateRecoveryCodes(), (recoveryCodes) =>
       c.json({ recoveryCodes }, 201),
     ),

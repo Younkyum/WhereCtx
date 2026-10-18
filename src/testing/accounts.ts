@@ -23,6 +23,8 @@ import type { RegistrationSubject } from "../accounts/usersStore.js";
 import { asUserId } from "../types.js";
 
 export const BASE_URL = "http://localhost:8787";
+/** A BASE_URL a phone could reach, for tests that pair devices. */
+export const PUBLIC_BASE_URL = "https://where.example.com";
 
 export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxConfig {
   return {
@@ -47,6 +49,7 @@ export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxCon
     allowMemberWorkspaces: true,
     webhooks: { allowPrivateTargets: true },
     events: { retentionHours: 720 },
+    sharing: { auditRetentionDays: 365 },
     ...overrides,
   };
 }
@@ -199,8 +202,8 @@ export interface Enrolled {
   recoveryCodes: string[];
 }
 
-export async function setupOwner(app: Hono, code: string): Promise<Enrolled> {
-  const browser = new Browser(app);
+export async function setupOwner(app: Hono, code: string, baseUrl = BASE_URL): Promise<Enrolled> {
+  const browser = new Browser(app, baseUrl);
   const start = await browser.json("/v1/auth/setup/options", { body: { code } });
   const response = authenticator.create(start.options);
   const done = await browser.json("/v1/auth/setup/verify", {
@@ -230,9 +233,10 @@ export async function signUpByInvite(
   app: Hono,
   inviteUrl: string,
   displayName: string,
+  baseUrl = BASE_URL,
 ): Promise<{ browser: Browser; res: Response; credentialId: string }> {
   const token = inviteToken(inviteUrl);
-  const browser = new Browser(app);
+  const browser = new Browser(app, baseUrl);
   const start = await browser.send("/v1/auth/invite/options", { body: { token, displayName } });
   if (!start.ok) return { browser, res: start, credentialId: "" };
   const { ceremony, options } = (await start.json()) as any;
