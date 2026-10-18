@@ -50,6 +50,7 @@ export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxCon
     webhooks: { allowPrivateTargets: true },
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
+    activity: { accessLogRetentionDays: 90 },
     ...overrides,
   };
 }

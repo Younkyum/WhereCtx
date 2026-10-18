@@ -26,6 +26,7 @@ import {
   buildPreciseView,
 } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
+import { accessRecorder, toolOutcome } from "../activity/record.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
 import { secondsSince, isStale } from "../util/time.js";
 
@@ -34,6 +35,11 @@ const MAX_ACTIVE_REMINDERS = 100;
 
 /** Cap on registered places, to bound writes from read-scoped tokens. */
 const MAX_PLACES = 100;
+
+/** Tools whose answer can carry coordinates. */
+const PRECISE_TOOLS: ReadonlySet<string> = new Set(["get_precise_location"]);
+
+type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
 const ok = (data: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(data) }],
@@ -53,6 +59,28 @@ export function buildMcpServer(
     { capabilities: { tools: {} } },
   );
 
+  // Every tool is registered through this wrapper, so each call lands in the
+  // owner's access log with its outcome.
+  const record = accessRecorder(scope, principal, "mcp");
+  const registerTool: McpServer["registerTool"] = (name, config, cb) => {
+    const call = cb as (...args: unknown[]) => Promise<ToolResult>;
+    const recorded = async (...args: unknown[]): Promise<ToolResult> => {
+      const input = (args[0] ?? {}) as { reason?: unknown };
+      const precise = PRECISE_TOOLS.has(name);
+      const reason = precise && typeof input.reason === "string" ? input.reason : undefined;
+      let result: ToolResult;
+      try {
+        result = await call(...args);
+      } catch (e) {
+        await record({ action: name, precise, reason, outcome: "denied", denial: "internal error" });
+        throw e;
+      }
+      await record({ action: name, precise, reason, ...toolOutcome(result) });
+      return result;
+    };
+    return server.registerTool(name, config, recorded as typeof cb);
+  };
+
   const isAdmin = principal.scopes.includes("manage_privacy");
   // Same scope REST places uses to decide who sees place coordinates.
   const canManagePlaces = principal.scopes.includes("manage_places");
@@ -64,7 +92,7 @@ export function buildMcpServer(
     return accessAtLeast(settings.defaultAgentAccess, "coarse");
   };
 
-  server.registerTool(
+  registerTool(
     "get_presence",
     {
       description:
@@ -86,7 +114,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_precise_location",
     {
       description:
@@ -106,7 +134,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "is_near_place",
     {
       description:
@@ -131,7 +159,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "list_places",
     {
       description:
@@ -145,7 +173,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_location_age",
     {
       description:
@@ -164,7 +192,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "list_recent_presence_events",
     {
       description:
@@ -179,7 +207,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "create_location_reminder",
     {
       description:
@@ -232,7 +260,7 @@ export function buildMcpServer(
     return null;
   };
 
-  server.registerTool(
+  registerTool(
     "create_place",
     {
       description:
@@ -267,7 +295,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "remember_current_place",
     {
       description:

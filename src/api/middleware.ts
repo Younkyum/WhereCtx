@@ -118,6 +118,17 @@ export function sessionAuth(ctx: AppContext): MiddlewareHandler<SessionEnv> {
   };
 }
 
+/**
+ * Only the signed-in person passes; a token gets 403. For views of the owner's
+ * own records (the activity logs) that no agent or device should read.
+ */
+export const requireSession: MiddlewareHandler<AppEnv> = async (c, next) => {
+  if (c.get("principal").via !== "session") {
+    return c.json({ error: "forbidden", detail: "requires a signed-in session" }, 403);
+  }
+  await next();
+};
+
 /** Require that the authenticated principal carries a specific scope, or 403. */
 export function requireScope(scope: TokenScope): MiddlewareHandler<AppEnv> {
   return async (c, next) => {

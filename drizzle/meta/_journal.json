@@ -50,6 +50,13 @@
       "when": 1792320428284,
       "tag": "0006_location_shares",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1792330848085,
+      "tag": "0007_access_log",
+      "breakpoints": true
     }
   ]
 }

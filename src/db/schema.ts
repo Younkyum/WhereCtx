@@ -36,6 +36,7 @@ import type {
   TokenScope,
 } from "../types.js";
 import type { WorkspaceRole } from "../accounts/types.js";
+import type { AccessOutcome, AccessSurface, CredentialKind } from "../activity/types.js";
 import type { AuthenticatorTransportFuture } from "@simplewebauthn/server";
 
 export const tokens = sqliteTable(
@@ -469,3 +470,30 @@ export const schema = {
 // (`new Date().toISOString()`). We intentionally avoid SQL CURRENT_TIMESTAMP
 // defaults, which emit a different `YYYY-MM-DD HH:MM:SS` format and would break
 // `updatedAgoSec` math and lexical sorting.
+
+/**
+ * Every agent or token read of a user's presence data, on REST and MCP.
+ * Sessions (the owner in the dashboard) are not recorded. No coordinates.
+ * Pruned after ACCESS_LOG_RETENTION_DAYS.
+ */
+export const accessLog = sqliteTable(
+  "access_log",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    credentialKind: text("credential_kind").$type<CredentialKind>().notNull(),
+    credentialId: text("credential_id").notNull(),
+    credentialName: text("credential_name").notNull(),
+    surface: text("surface").$type<AccessSurface>().notNull(),
+    action: text("action").notNull(),
+    precise: integer("precise", { mode: "boolean" }).notNull(),
+    reason: text("reason"),
+    outcome: text("outcome").$type<AccessOutcome>().notNull(),
+    denial: text("denial"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    userCreatedIdx: index("access_log_user_created_idx").on(t.userId, t.createdAt, t.id),
+    createdAtIdx: index("access_log_created_at_idx").on(t.createdAt),
+  }),
+);

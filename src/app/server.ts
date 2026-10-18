@@ -10,6 +10,7 @@ import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
 import { RateLimiter, authFailureGuard } from "../api/rateLimit.js";
 import { authenticate, sessionAuth } from "../api/middleware.js";
+import { auditAccess } from "../api/accessAudit.js";
 import type { AppEnv, SessionEnv } from "../api/types.js";
 import { authRouter, type AuthRouterLimits } from "../api/auth.js";
 import { meRouter } from "../api/me.js";
@@ -24,6 +25,7 @@ import { privacyRouter } from "../api/privacy.js";
 import { tokensRouter } from "../api/tokens.js";
 import { devicesRouter } from "../api/devices.js";
 import { webhooksRouter } from "../api/webhooks.js";
+import { activityRouter } from "../api/activity.js";
 import { log } from "../util/log.js";
 
 export interface BuildAppOptions {
@@ -102,6 +104,12 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
     app.use(`${path}/*`, auth);
     app.route(path, router);
   };
+  // Routes that read the owner's presence data: every agent or token request
+  // to them lands in the owner's access log.
+  const mountAudited = (path: string, router: Hono<AppEnv>): void => {
+    app.use(`${path}/*`, authenticate(ctx), auditAccess());
+    app.route(path, router);
+  };
   // Account routes act for a signed-in person only, through the account scope
   // `sessionAuth` attaches rather than raw stores.
   const mountSession = (path: string, router: Hono<SessionEnv>): void => {
@@ -114,13 +122,14 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   mountSession("/v1/shares", sharesRouter());
   mountSession("/v1/people", peopleRouter());
   mount("/v1/ingest", ingestRouter(ctx), authenticate(ctx, { deviceCredentials: true }));
-  mount("/v1/presence", presenceRouter(ctx));
-  mount("/v1/places", placesRouter(ctx));
-  mount("/v1/events", eventsRouter());
+  mountAudited("/v1/presence", presenceRouter(ctx));
+  mountAudited("/v1/places", placesRouter(ctx));
+  mountAudited("/v1/events", eventsRouter());
   mount("/v1/privacy", privacyRouter(ctx));
   mount("/v1/webhooks", webhooksRouter(ctx));
   mount("/v1/tokens", tokensRouter(ctx));
   mount("/v1/devices", devicesRouter(ctx));
+  mount("/v1/activity", activityRouter());
 
   app.notFound((c) => c.json({ error: "not found" }, 404));
   app.onError((err, c) => {

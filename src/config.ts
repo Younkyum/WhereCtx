@@ -112,6 +112,10 @@ export interface Config {
     /** How long the share audit (grants, revokes, precise views) is kept (days). */
     auditRetentionDays: number;
   };
+  activity: {
+    /** How long the record of agent reads (access_log) is kept (days). */
+    accessLogRetentionDays: number;
+  };
   geofence: {
     nearRadiusMultiplier: number;
   };
@@ -166,6 +170,9 @@ export function loadConfig(): Config {
     },
     sharing: {
       auditRetentionDays: Math.max(1, envInt("SHARE_AUDIT_RETENTION_DAYS", 365)),
+    },
+    activity: {
+      accessLogRetentionDays: Math.max(1, envInt("ACCESS_LOG_RETENTION_DAYS", 90)),
     },
     geofence: {
       nearRadiusMultiplier,
