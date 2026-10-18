@@ -19,6 +19,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { asUserId, SHARE_LEVELS } from "../types.js";
 import { parseBody, respond } from "./accountHttp.js";
+import { noStore } from "./middleware.js";
 import { parseLimit } from "./validation.js";
 import type { SessionEnv } from "./types.js";
 
@@ -59,6 +60,8 @@ export function sharesRouter(): Hono<SessionEnv> {
 
 export function peopleRouter(): Hono<SessionEnv> {
   const app = new Hono<SessionEnv>();
+  // Where people are right now: never kept by a browser or proxy cache.
+  app.use("*", noStore);
 
   app.get("/", async (c) => c.json({ people: await c.get("account").sharing.people() }));
 

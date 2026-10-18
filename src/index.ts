@@ -48,10 +48,9 @@ async function main(): Promise<void> {
         "  No passkey is registered yet. This one-time setup code lets\n" +
         "  you register the owner's passkey:\n\n" +
         `    ${bootstrap.setupCode}\n\n` +
-        "  The dashboard sign-in screens arrive in a later release; for now\n" +
-        "  use the API: POST /v1/auth/setup/options, then /v1/auth/setup/verify\n" +
-        "  (see docs/api.md). The code works until the first passkey is\n" +
-        "  registered; a restart replaces it.\n" +
+        `  Open ${config.baseUrl}/dashboard and choose "First-time setup".\n` +
+        "  The code works until the first passkey is registered; a restart\n" +
+        "  replaces it.\n" +
         "──────────────────────────────────────────────────────────────\n",
     );
   }

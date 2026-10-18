@@ -164,6 +164,15 @@ describe("granting a share", () => {
 });
 
 describe("what a viewer sees", () => {
+  it("is never cached: the list and the person read send Cache-Control: no-store", async () => {
+    await share(owner.browser, mina.userId, { level: "precise", hideHomeExact: false });
+    for (const path of ["/v1/people", `/v1/people/${owner.userId}`]) {
+      const res = await mina.browser.send(path);
+      expect(res.status, path).toBe(200);
+      expect(res.headers.get("cache-control"), path).toBe("no-store");
+    }
+  });
+
   it("shows a coarse share's status name and minute-bucketed age, never coordinates", async () => {
     await share(owner.browser, mina.userId, { level: "coarse" });
     clock.advance(119_000);

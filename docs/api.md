@@ -198,6 +198,8 @@ revoking a share do not.
 - `paused: true` (with `presence` and `precise` `null`) while the owner has
   `sharingPaused` on.
 
+Both reads are sent with `Cache-Control: no-store`.
+
 Only the person read with coordinates is audited (`precise_viewed`), at most
 once per owner and viewer per hour: a view exactly one hour after the last
 audited one is audited again. The list is never audited.
@@ -313,6 +315,6 @@ delivered by webhook; its audit is at `GET /v1/shares/audit`.
 ```
 GET /            # { name, version, status }
 GET /healthz     # { status:"ok" }
-GET /dashboard   # admin web UI
+GET /dashboard   # web UI: passkey sign-in, people, sharing, devices, agents
 POST /mcp        # MCP endpoint (see docs/mcp.md)
 ```

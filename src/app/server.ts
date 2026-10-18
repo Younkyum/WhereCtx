@@ -87,7 +87,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   );
   app.get("/healthz", (c) => c.json({ status: "ok" }));
 
-  app.route("/dashboard", dashboardRouter());
+  app.route("/", dashboardRouter());
 
   // Auth is mounted here, the one REST place holding the full context; routers
   // get only the user scope `authenticate` attaches (from a token or a session

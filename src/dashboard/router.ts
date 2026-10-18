@@ -1,24 +1,30 @@
 /**
- * Dashboard router. Serves the static admin HTML page (plan section 9.9) and
- * its client script. The page itself is unauthenticated (no data); all data
- * calls it makes use the REST API with an admin token the operator supplies in
- * the browser. The script is a separate response (not inline) so the CSP can
- * stay 'self'-only for scripts.
+ * Dashboard router: the HTML shell at /dashboard (and /dashboard/, the form
+ * invite links use) plus the files in DASHBOARD_ASSETS. Nothing here needs a
+ * session; the page signs in through the API. Scripts are files, never inline,
+ * so the CSP keeps script-src 'self'.
  */
 
 import { Hono } from "hono";
-import { DASHBOARD_HTML, DASHBOARD_JS } from "./page.js";
+import { etag } from "hono/etag";
+import { DASHBOARD_ASSETS } from "./assets.js";
+import { DASHBOARD_HTML } from "./page.js";
 
 export function dashboardRouter(): Hono {
   const app = new Hono();
-  app.get("/", (c) => c.html(DASHBOARD_HTML));
-  app.get("/app.js", (c) =>
-    c.body(DASHBOARD_JS, 200, {
-      "content-type": "text/javascript; charset=utf-8",
-      // Short-lived cache: the script changes only on releases, but a stale
-      // copy after an upgrade would talk to a newer API.
-      "cache-control": "max-age=300",
-    }),
-  );
+  // Revalidate every load: the modules import each other, so a browser must
+  // never mix files from two releases. The ETag keeps revalidation cheap.
+  app.use("/dashboard/*", etag(), async (c, next) => {
+    await next();
+    c.res.headers.set("Cache-Control", "no-cache");
+  });
+  app.get("/dashboard", (c) => c.html(DASHBOARD_HTML));
+  app.get("/dashboard/", (c) => c.html(DASHBOARD_HTML));
+  app.get("/dashboard/:file", (c) => {
+    const file = c.req.param("file");
+    const asset = Object.hasOwn(DASHBOARD_ASSETS, file) ? DASHBOARD_ASSETS[file] : undefined;
+    if (!asset) return c.json({ error: "not found" }, 404);
+    return c.body(asset.body, 200, { "content-type": asset.contentType });
+  });
   return app;
 }
