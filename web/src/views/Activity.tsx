@@ -19,6 +19,7 @@ export const OUTCOME_BADGE: Record<AccessOutcome, BadgeProps["variant"]> = {
   allowed: "success",
   denied: "error",
   hidden: "neutral",
+  error: "neutral",
 };
 
 const ALL = "all";

@@ -100,11 +100,12 @@ describe("ingest log", () => {
     expect(entry).toMatchObject({ outcome: "accepted", token: null, source: "generic" });
   });
 
-  it("records a server failure as rejected", async () => {
+  it("records a server failure as an error, not a rejection", async () => {
     vi.spyOn(ctx.system.service, "processReading").mockRejectedValueOnce(new Error("db locked"));
     expect((await post("/v1/ingest", JSON.stringify({ lat: 1, lon: 1 }), bearer(phone.secret))).status).toBe(500);
     const [entry] = await ingestOf(owner.browser);
-    expect(entry).toMatchObject({ outcome: "rejected", reason: "internal server error" });
+    expect(entry).toMatchObject({ outcome: "error" });
+    expect(entry.reason).toBeUndefined();
   });
 });
 

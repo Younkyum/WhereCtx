@@ -11,6 +11,7 @@ import type { RouteContext } from "../app/context.js";
 import type { WhereCtxConfig } from "../config.js";
 import type { UserId } from "../types.js";
 import { LOG_LEVELS, RING_SIZE, recentLogs, type LogLevel } from "../util/log.js";
+import { refuse } from "./accessAudit.js";
 import { noStore, requireSession } from "./middleware.js";
 import { parseLimit } from "./validation.js";
 import type { AppEnv } from "./types.js";
@@ -23,7 +24,7 @@ export function adminRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   app.use("*", requireSession, noStore, async (c, next) => {
     if (!isOperator(ctx.config, c.get("principal").userId)) {
-      return c.json({ error: "forbidden", detail: "only the server's operator can read its logs" }, 403);
+      return refuse(c, 403, "forbidden", "only the server's operator can read its logs");
     }
     await next();
   });

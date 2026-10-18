@@ -21,15 +21,27 @@ export type AccessSurface = (typeof ACCESS_SURFACES)[number];
 /**
  * allowed: the request was served (an empty answer counts).
  * hidden: policy withheld presence from agents (hidden mode).
- * denied: refused (scope, precise policy, a missing reason, a bad request).
+ * denied: refused (scope, precise policy, a missing reason, a bad request, an unknown route or tool).
+ * error: the server failed; nothing was decided about the caller.
  */
-export const ACCESS_OUTCOMES = ["allowed", "denied", "hidden"] as const;
+export const ACCESS_OUTCOMES = ["allowed", "denied", "hidden", "error"] as const;
 export type AccessOutcome = (typeof ACCESS_OUTCOMES)[number];
 
 /**
- * Every action the access log names: the REST routes (api/accessAudit.ts)
- * and the MCP tools (mcp/server.ts). Tests hold both surfaces to this list,
- * and the dashboard has copy for each.
+ * What became of one request, set by the code that decided it (a scope
+ * guard, the privacy policy, a handler) and read by the REST and MCP
+ * recorders. `precise` says the request sought or returned coordinates.
+ */
+export interface AccessDecision {
+  outcome: AccessOutcome;
+  denial?: string;
+  precise?: boolean;
+}
+
+/**
+ * Every action the access log names: the REST routes (api/accessAudit.ts),
+ * the MCP tools (mcp/server.ts), and three catch-alls. Tests hold both
+ * surfaces to this list, and the dashboard has copy for each.
  */
 export const ACCESS_ACTIONS = [
   "presence.read",
@@ -39,6 +51,26 @@ export const ACCESS_ACTIONS = [
   "places.write",
   "places.delete",
   "events.list",
+  "privacy.read",
+  "privacy.update",
+  "webhooks.list",
+  "webhooks.create",
+  "webhooks.update",
+  "webhooks.delete",
+  "webhooks.dead_letters",
+  "tokens.list",
+  "tokens.create",
+  "tokens.revoke",
+  "devices.list",
+  "devices.pair",
+  "activity.read",
+  "admin.logs",
+  /** Any route that only a signed-in person may use; a token is always refused there. */
+  "account",
+  /** A REST path no route matched, or an MCP tool that does not exist. Never the raw path or name. */
+  "unknown",
+  /** An MCP request from a token without read_presence, refused before any tool ran. */
+  "mcp.request",
   "get_presence",
   "get_precise_location",
   "is_near_place",
@@ -57,7 +89,7 @@ export const ACCESS_TEXT_MAX = 256;
 export interface AccessRecord {
   credential: Credential;
   surface: AccessSurface;
-  action: string;
+  action: AccessAction;
   precise: boolean;
   reason?: string;
   outcome: AccessOutcome;
@@ -83,8 +115,9 @@ export type IngestRoute = (typeof INGEST_ROUTES)[number];
  * accepted: the reading updated presence.
  * rejected: the payload could not be read, or the credential may not write.
  * ignored: an OwnTracks message that is not a location (a waypoint, a status).
+ * error: the server failed while handling it.
  */
-export const INGEST_OUTCOMES = ["accepted", "rejected", "ignored"] as const;
+export const INGEST_OUTCOMES = ["accepted", "rejected", "ignored", "error"] as const;
 export type IngestOutcome = (typeof INGEST_OUTCOMES)[number];
 
 export interface IngestVerdict {

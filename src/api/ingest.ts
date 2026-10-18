@@ -21,6 +21,7 @@ import {
 import { log } from "../util/log.js";
 import { nowIso } from "../util/time.js";
 import type { ProcessResult } from "../presence/service.js";
+import { matchedRoute, statusDenial } from "./accessAudit.js";
 import { requireScope } from "./middleware.js";
 import type { AppEnv } from "./types.js";
 
@@ -32,42 +33,35 @@ async function readJson(c: Context): Promise<unknown> {
   }
 }
 
-const ROUTE_PATHS: Record<IngestRoute, RegExp> = {
-  generic: /\/v1\/ingest\/?$/,
-  shortcut: /\/v1\/ingest\/shortcut\/?$/,
-  owntracks: /\/v1\/ingest\/owntracks\/?$/,
+/** Each ingest route, as `METHOD /pattern`, and the name the ingest log gives it. */
+const INGEST_ROUTE_OF: Record<string, IngestRoute> = {
+  "POST /v1/ingest": "generic",
+  "POST /v1/ingest/shortcut": "shortcut",
+  "POST /v1/ingest/owntracks": "owntracks",
 };
 
-function routeOf(path: string): IngestRoute | null {
-  for (const [route, pattern] of Object.entries(ROUTE_PATHS) as Array<[IngestRoute, RegExp]>) {
-    if (pattern.test(path)) return route;
-  }
-  return null;
-}
-
-async function verdictFromResponse(res: Response): Promise<IngestVerdict> {
-  if (res.status < 400) return { outcome: "accepted" };
-  let reason = `status ${res.status}`;
-  try {
-    const body = (await res.clone().json()) as { error?: unknown; detail?: unknown };
-    const detail = typeof body.detail === "string" ? body.detail : undefined;
-    if (typeof body.error === "string") reason = detail ? `${body.error}: ${detail}` : body.error;
-  } catch {
-    /* keep the status */
-  }
-  return { outcome: "rejected", reason };
+/** The upload's verdict: a handler's own, else a scope refusal, else the status. */
+function settleIngest(c: Context<AppEnv>): IngestVerdict {
+  const status = c.res.status;
+  if (status >= 500) return { outcome: "error" };
+  const set = c.get("ingestVerdict");
+  if (set) return set;
+  const access = c.get("access");
+  if (access?.outcome === "denied") return { outcome: "rejected", ...(access.denial ? { reason: access.denial } : {}) };
+  if (status < 400) return { outcome: "accepted" };
+  return { outcome: "rejected", reason: statusDenial(status) };
 }
 
 /** Records the request's outcome after the handler (and the scope check) ran. */
 const recordIngest: MiddlewareHandler<AppEnv> = async (c, next) => {
   await next();
-  const source = routeOf(c.req.path);
+  const route = matchedRoute(c);
+  const source = route ? INGEST_ROUTE_OF[route] : undefined;
   if (!source) return;
   const principal = c.get("principal");
-  const verdict = c.get("ingestVerdict") ?? (await verdictFromResponse(c.res));
   try {
     await c.get("scope").ingestLog.record({
-      ...verdict,
+      ...settleIngest(c),
       source,
       token: principal.via === "token" ? { id: principal.tokenId, name: principal.tokenName } : null,
     });
@@ -75,6 +69,12 @@ const recordIngest: MiddlewareHandler<AppEnv> = async (c, next) => {
     log.error("could not record an upload", e, { source });
   }
 };
+
+/** A payload that could not be read: 400, and the ingest log says why. */
+function rejected(c: Context<AppEnv>, err: NormalizeError): Response {
+  c.set("ingestVerdict", { outcome: "rejected", reason: err.message });
+  return c.json({ ok: false, error: err.message }, 400);
+}
 
 export function ingestRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -97,7 +97,7 @@ export function ingestRouter(ctx: RouteContext): Hono<AppEnv> {
       const result = await process(c.get("scope"), reading);
       return c.json({ ok: true, status: result.presence.status });
     } catch (err) {
-      if (err instanceof NormalizeError) return c.json({ ok: false, error: err.message }, 400);
+      if (err instanceof NormalizeError) return rejected(c, err);
       throw err;
     }
   });
@@ -110,7 +110,7 @@ export function ingestRouter(ctx: RouteContext): Hono<AppEnv> {
       const result = await process(c.get("scope"), reading);
       return c.json({ ok: true, status: result.presence.status });
     } catch (err) {
-      if (err instanceof NormalizeError) return c.json({ ok: false, error: err.message }, 400);
+      if (err instanceof NormalizeError) return rejected(c, err);
       throw err;
     }
   });

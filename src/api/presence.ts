@@ -10,7 +10,7 @@
  * separate scheduler (it is also swept periodically in Phase 4).
  */
 
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import type { RouteContext } from "../app/context.js";
 import {
   agentCoarseView,
@@ -21,6 +21,7 @@ import {
 import { toPresenceContext } from "../store/presenceStore.js";
 import { haversineMeters } from "../geofence/distance.js";
 import type { Place } from "../types.js";
+import { decide, refuse } from "./accessAudit.js";
 import { noStore, requireScope } from "./middleware.js";
 import { parseLimit } from "./validation.js";
 import type { AppEnv } from "./types.js";
@@ -58,20 +59,23 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
 
     const view = agentCoarseView(toPresenceContext(stored), settings, ctx.clock);
     if (!view) {
+      decide(c, { outcome: "hidden" });
       return c.json({ error: "presence is hidden from agents by policy", privacy: "hidden" }, 403);
     }
     return c.json(view);
   });
 
-  // Precise location, gated by the privacy engine.
-  app.get("/precise", requireScope("read_precise_location"), async (c) => {
+  // Precise location, gated by the privacy engine. Marked precise before the
+  // scope check, so a refusal is logged with the reason the agent gave.
+  const preciseRequest: MiddlewareHandler<AppEnv> = async (c, next) => {
+    decide(c, { precise: true, reason: c.req.query("reason") });
+    await next();
+  };
+  app.get("/precise", preciseRequest, requireScope("read_precise_location"), async (c) => {
     const { scopes } = c.get("principal");
     const scope = c.get("scope");
-    const rawReason = c.req.query("reason");
-    if (rawReason !== undefined && rawReason.length > 256) {
-      return c.json({ error: "reason too long (max 256 chars)" }, 400);
-    }
-    const reason = rawReason;
+    const reason = c.req.query("reason");
+    if (reason !== undefined && reason.length > 256) return refuse(c, 400, "reason too long (max 256 chars)");
     const stored = await scope.presence.getCurrent();
     if (!stored) return c.json({ error: "no presence recorded yet" }, 404);
     const settings = await scope.settings.getOrSeed();
@@ -84,6 +88,7 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
       reason,
     });
     if (!auth.allowed) {
+      decide(c, auth.outcome === "hidden" ? { outcome: "hidden" } : { outcome: "denied", denial: `precise location denied: ${auth.reason}` });
       return c.json({ error: "precise location denied", detail: auth.reason }, 403);
     }
     const view = buildPreciseView(presence, ctx.clock);
@@ -93,7 +98,11 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
 
   // Raw history: empty unless the person turned on storeRawHistory. Each point
   // names the place it fell inside, by the places as they are now.
-  app.get("/history", requireScope("manage_privacy"), noStore, async (c) => {
+  const historyRequest: MiddlewareHandler<AppEnv> = async (c, next) => {
+    decide(c, { precise: true });
+    await next();
+  };
+  app.get("/history", historyRequest, requireScope("manage_privacy"), noStore, async (c) => {
     const to = parseInstant(c.req.query("to")) ?? ctx.clock();
     const from = parseInstant(c.req.query("from")) ?? new Date(to.getTime() - DAY_MS);
     if (Number.isNaN(to.getTime()) || Number.isNaN(from.getTime())) {

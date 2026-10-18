@@ -4,11 +4,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AppContext } from "../app/context.js";
 import { resolveTokenPrincipal } from "../auth/principal.js";
-import { REST_ACTIONS, restActionFor } from "../api/accessAudit.js";
+import { REST_ACTIONS } from "../api/accessAudit.js";
 import { ACCESS_ACTIONS } from "./types.js";
-import { eventsRouter } from "../api/events.js";
-import { placesRouter } from "../api/places.js";
-import { presenceRouter } from "../api/presence.js";
+import { log } from "../util/log.js";
 import { buildMcpServer } from "../mcp/server.js";
 import { Browser, TestClock, bootApp, setupOwner, signUpByInvite, type Enrolled } from "../testing/accounts.js";
 
@@ -106,23 +104,109 @@ describe("REST access log", () => {
     expect((await accessOf(owner.browser)).entries).toEqual([]);
   });
 
-  it("names an action for every route on the audited routers", () => {
-    const routes = [
-      ...presenceRouter(ctx).routes.map((r) => ({ ...r, base: "/v1/presence" })),
-      ...placesRouter(ctx).routes.map((r) => ({ ...r, base: "/v1/places" })),
-      ...eventsRouter().routes.map((r) => ({ ...r, base: "/v1/events" })),
-    ].filter((r) => r.method !== "ALL");
-    expect(routes.length).toBeGreaterThan(0);
-    for (const r of routes) {
-      const path = (r.base + r.path).replace(/:[^/]+/g, "x").replace(/\/$/, "");
-      expect(REST_ACTIONS.some((a) => a.method === r.method && a.path.test(path)), `${r.method} ${path}`).toBe(true);
+  it("records every token request on every /v1 route but ingest and auth, each under a named action", async () => {
+    const admin = (await mint(owner.browser, "admin", "admin")).secret;
+    const routes = app.routes
+      .filter((r) => r.method !== "ALL" && r.path.startsWith("/v1/"))
+      .filter((r) => !r.path.startsWith("/v1/auth/") && !r.path.startsWith("/v1/ingest"))
+      .map((r) => `${r.method} ${r.path}`);
+    const unique = [...new Set(routes)];
+    expect(unique.length).toBeGreaterThan(40);
+    for (const route of unique) {
+      const [method, pattern] = route.split(" ") as [string, string];
+      const res = await asToken(pattern.replace(/:[^/]+/g, "x"), admin, { method });
+      expect(res.status, route).toBeLessThan(500);
     }
-    expect(restActionFor("GET", "/v1/presence/")).toEqual({ action: "presence.read", precise: false });
+    const { entries } = await accessOf(owner.browser, "?limit=200");
+    expect(entries).toHaveLength(unique.length);
+    const actions = entries.map((e: any) => e.action);
+    expect(actions.filter((a: string) => a === "unknown")).toEqual([]);
+    for (const [route, action] of Object.entries(REST_ACTIONS)) {
+      expect(unique, `${route} is no longer mounted`).toContain(route);
+      expect(actions).toContain(action);
+    }
+    const account = unique.filter((r) => /^\S+ \/v1\/(me|workspaces|shares|people)\b/.test(r));
+    expect(actions.filter((a: string) => a === "account")).toHaveLength(account.length);
+    expect(unique.filter((r) => !account.includes(r) && !(r in REST_ACTIONS))).toEqual([]);
   });
 
-  it("serves the request even when the log write fails", async () => {
-    vi.spyOn(ctx.system.accessLog, "record").mockRejectedValueOnce(new Error("disk full"));
+  it("records privacy, webhook and token changes made with a token", async () => {
+    const admin = (await mint(owner.browser, "admin", "admin")).secret;
+    const json = (method: string, body: unknown) => ({ method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    expect((await asToken("/v1/privacy", admin, json("PUT", { storeRawHistory: true }))).status).toBe(200);
+    const hook = await (await asToken("/v1/webhooks", admin, json("POST", { url: "https://example.com/h" }))).json();
+    expect((await asToken(`/v1/webhooks/${hook.webhook.id}`, admin, json("PATCH", { active: false }))).status).toBe(200);
+    expect((await asToken(`/v1/webhooks/${hook.webhook.id}`, admin, { method: "DELETE" })).status).toBe(200);
+    expect((await asToken("/v1/tokens", admin)).status).toBe(200);
+    const { entries } = await accessOf(owner.browser);
+    expect(entries.map((e: any) => [e.action, e.outcome])).toEqual([
+      ["tokens.list", "allowed"],
+      ["webhooks.delete", "allowed"],
+      ["webhooks.update", "allowed"],
+      ["webhooks.create", "allowed"],
+      ["privacy.update", "allowed"],
+    ]);
+  });
+
+  it("names a request no route matched unknown and denied, and never stores its path", async () => {
+    expect((await asToken("/v1/presence/secret-probe-path", agent)).status).toBe(404);
+    expect((await asToken("/v1/presence", agent, { method: "POST" })).status).toBe(404);
+    const { entries } = await accessOf(owner.browser);
+    expect(entries.map((e: any) => [e.action, e.outcome])).toEqual([
+      ["unknown", "denied"],
+      ["unknown", "denied"],
+    ]);
+    expect(JSON.stringify(entries)).not.toContain("secret-probe-path");
+  });
+
+  it("names a HEAD request as its GET route", async () => {
+    expect((await asToken("/v1/presence", agent, { method: "HEAD" })).status).toBe(200);
+    const [entry] = (await accessOf(owner.browser)).entries;
+    expect(entry).toMatchObject({ action: "presence.read", outcome: "allowed" });
+  });
+
+  it("records a precise request refused by hidden mode as hidden", async () => {
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { defaultAgentAccess: "hidden" } });
+    const precise = (await mint(owner.browser, "precise bot", "admin")).secret;
+    expect((await asToken("/v1/presence/precise?reason=why", precise)).status).toBe(403);
+    const [entry] = (await accessOf(owner.browser)).entries;
+    expect(entry).toMatchObject({ action: "presence.precise", outcome: "hidden", precise: true, reason: "why" });
+  });
+
+  it("records a precise request refused by scope with the reason given", async () => {
+    const device = (await mint(owner.browser, "Phone", "device")).secret;
+    expect((await asToken("/v1/presence/precise?reason=just%20curious", device)).status).toBe(403);
+    const [entry] = (await accessOf(owner.browser)).entries;
+    expect(entry).toMatchObject({ action: "presence.precise", outcome: "denied", precise: true, reason: "just curious" });
+    expect(entry.denial).toMatch(/read_precise_location/);
+  });
+
+  it("marks a place list precise when it carries coordinates", async () => {
+    const admin = (await mint(owner.browser, "admin", "admin")).secret;
+    await asToken("/v1/places", agent);
+    await asToken("/v1/places", admin);
+    const { entries } = await accessOf(owner.browser);
+    expect(entries.map((e: any) => [e.credential.name, e.precise])).toEqual([
+      ["admin", true],
+      ["Claude Desktop", false],
+    ]);
+  });
+
+  it("records a server failure as an error, not a refusal", async () => {
+    vi.spyOn(ctx.system.presence, "getCurrent").mockRejectedValueOnce(new Error("db locked"));
+    expect((await asToken("/v1/presence", agent)).status).toBe(500);
+    const [entry] = (await accessOf(owner.browser)).entries;
+    expect(entry).toMatchObject({ action: "presence.read", outcome: "error" });
+    expect(entry.denial).toBeUndefined();
+  });
+
+  it("serves the request when the log write fails, and reports the failure", async () => {
+    const record = vi.spyOn(ctx.system.accessLog, "record").mockRejectedValueOnce(new Error("disk full"));
+    const error = vi.spyOn(log, "error");
     expect((await asToken("/v1/presence", agent)).status).toBe(200);
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record.mock.calls[0]![1]).toMatchObject({ action: "presence.read", outcome: "allowed" });
+    expect(error).toHaveBeenCalledWith("could not record an agent request", expect.any(Error), expect.objectContaining({ action: "presence.read" }));
   });
 });
 

@@ -75,6 +75,7 @@ export const INGEST_BADGE: Record<IngestOutcome, BadgeProps["variant"]> = {
   accepted: "success",
   rejected: "error",
   ignored: "neutral",
+  error: "neutral",
 };
 
 function DeviceList({ devices, onChanged }: { devices: DeviceSummary[]; onChanged: () => Promise<void> }) {

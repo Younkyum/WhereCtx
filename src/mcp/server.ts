@@ -26,7 +26,8 @@ import {
   buildPreciseView,
 } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
-import { accessRecorder, toolOutcome } from "../activity/record.js";
+import { accessRecorder } from "../activity/record.js";
+import type { AccessAction, AccessDecision } from "../activity/types.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
 import { secondsSince, isStale } from "../util/time.js";
 
@@ -36,17 +37,41 @@ const MAX_ACTIVE_REMINDERS = 100;
 /** Cap on registered places, to bound writes from read-scoped tokens. */
 const MAX_PLACES = 100;
 
-/** Tools whose answer can carry coordinates. */
-const PRECISE_TOOLS: ReadonlySet<string> = new Set(["get_precise_location"]);
-
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
-const ok = (data: unknown) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(data) }],
+/**
+ * A tool's answer together with its access decision, so every tool says what
+ * became of the call and the recorder never reads the answer back.
+ */
+interface Reply {
+  decision: AccessDecision;
+  body: unknown;
+  isError?: boolean;
+}
+
+/** Served. `precise` when the answer carries coordinates. */
+const ok = (body: unknown, precise = false): Reply => ({
+  decision: { outcome: "allowed", ...(precise ? { precise } : {}) },
+  body,
 });
-const err = (message: string) => ({
-  content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }],
+/** Withheld by hidden mode. */
+const hidden = (body: unknown): Reply => ({ decision: { outcome: "hidden" }, body });
+/** Refused by scope or policy. */
+const err = (message: string, precise = false): Reply => ({
+  decision: { outcome: "denied", denial: message, ...(precise ? { precise } : {}) },
+  body: { error: message },
   isError: true,
+});
+/** Nothing to answer with (no presence yet, no such place): served, as a REST 404 is. */
+const none = (message: string, precise = false): Reply => ({
+  decision: { outcome: "allowed", ...(precise ? { precise } : {}) },
+  body: { error: message },
+  isError: true,
+});
+
+const toResult = (reply: Reply): ToolResult => ({
+  content: [{ type: "text", text: JSON.stringify(reply.body) }],
+  ...(reply.isError ? { isError: true } : {}),
 });
 
 export function buildMcpServer(
@@ -60,25 +85,30 @@ export function buildMcpServer(
   );
 
   // Every tool is registered through this wrapper, so each call lands in the
-  // owner's access log with its outcome.
+  // owner's access log with the decision its handler returned.
   const record = accessRecorder(scope, principal, "mcp");
-  const registerTool: McpServer["registerTool"] = (name, config, cb) => {
-    const call = cb as (...args: unknown[]) => Promise<ToolResult>;
-    const recorded = async (...args: unknown[]): Promise<ToolResult> => {
-      const input = (args[0] ?? {}) as { reason?: unknown };
-      const precise = PRECISE_TOOLS.has(name);
-      const reason = precise && typeof input.reason === "string" ? input.reason : undefined;
-      let result: ToolResult;
+  const registerTool = <Shape extends z.ZodRawShape>(
+    name: AccessAction,
+    config: { description: string; inputSchema: Shape },
+    handler: (args: z.infer<z.ZodObject<Shape>>) => Promise<Reply>,
+  ): void => {
+    const run = async (args: z.infer<z.ZodObject<Shape>>): Promise<ToolResult> => {
+      let reply: Reply;
       try {
-        result = await call(...args);
+        reply = await handler(args);
       } catch (e) {
-        await record({ action: name, precise, reason, outcome: "denied", denial: "internal error" });
+        await record({ action: name, outcome: "error" });
         throw e;
       }
-      await record({ action: name, precise, reason, ...toolOutcome(result) });
-      return result;
+      const reason = (args as { reason?: unknown }).reason;
+      await record({
+        action: name,
+        ...reply.decision,
+        ...(reply.decision.precise && typeof reason === "string" ? { reason } : {}),
+      });
+      return toResult(reply);
     };
-    return server.registerTool(name, config, recorded as typeof cb);
+    server.registerTool(name, config, run as never);
   };
 
   const isAdmin = principal.scopes.includes("manage_privacy");
@@ -105,7 +135,7 @@ export function buildMcpServer(
       const settings = await scope.settings.getOrSeed();
       if (!isAdmin) {
         const view = agentCoarseView(toPresenceContext(stored), settings, ctx.clock);
-        if (!view) return ok({ status: "hidden", privacy: "hidden" });
+        if (!view) return hidden({ status: "hidden", privacy: "hidden" });
         return ok(view);
       }
       // Admin sees the coarse summary using the live mode.
@@ -123,14 +153,18 @@ export function buildMcpServer(
     },
     async ({ reason }) => {
       const stored = await scope.presence.getCurrent();
-      if (!stored) return err("no presence recorded yet");
+      if (!stored) return none("no presence recorded yet", true);
       const settings = await scope.settings.getOrSeed();
       const presence = toPresenceContext(stored);
       const auth = authorizePrecise({ scopes: principal.scopes, settings, presence, reason });
-      if (!auth.allowed) return err(auth.reason ?? "precise location denied");
+      if (!auth.allowed) {
+        return auth.outcome === "hidden"
+          ? { decision: { outcome: "hidden", precise: true }, body: { error: auth.reason }, isError: true }
+          : err(auth.reason, true);
+      }
       const view = buildPreciseView(presence, ctx.clock);
-      if (!view) return err("no precise location available");
-      return ok(view);
+      if (!view) return none("no precise location available", true);
+      return ok(view, true);
     },
   );
 
@@ -142,9 +176,9 @@ export function buildMcpServer(
       inputSchema: { name: z.string().min(1).max(64).describe("The place name to check") },
     },
     async ({ name }) => {
-      if (!(await presenceVisible())) return ok({ name, hidden: true });
+      if (!(await presenceVisible())) return hidden({ name, hidden: true });
       const place = await scope.places.get(name);
-      if (!place) return err(`no place named "${name}"`);
+      if (!place) return none(`no place named "${name}"`);
       const stored = await scope.presence.getCurrent();
       if (!stored?.precise) return ok({ name, near: false, inside: false, note: "no location" });
       const d = haversineMeters(
@@ -168,7 +202,7 @@ export function buildMcpServer(
     },
     async () => {
       const places = await scope.places.list();
-      if (canManagePlaces) return ok({ places });
+      if (canManagePlaces) return ok({ places }, true);
       return ok({ places: places.map(sanitizePlace) });
     },
   );
@@ -181,7 +215,7 @@ export function buildMcpServer(
       inputSchema: {},
     },
     async () => {
-      if (!(await presenceVisible())) return ok({ hidden: true });
+      if (!(await presenceVisible())) return hidden({ hidden: true });
       const stored = await scope.presence.getCurrent();
       if (!stored) return ok({ note: "no presence recorded yet" });
       return ok({
@@ -200,7 +234,7 @@ export function buildMcpServer(
       inputSchema: { limit: z.number().int().min(1).max(200).optional() },
     },
     async ({ limit }) => {
-      if (!(await presenceVisible())) return ok({ hidden: true, events: [] });
+      if (!(await presenceVisible())) return hidden({ hidden: true, events: [] });
       const events = await scope.events.listRecent(limit ?? 20);
       if (isAdmin) return ok({ events });
       return ok({ events: events.map(agentEventView) });
@@ -219,11 +253,13 @@ export function buildMcpServer(
     },
     async ({ place, message }) => {
       // Re-apply the same gates as the read tools: withhold in hidden mode...
-      if (!(await presenceVisible())) return err("presence is hidden from agents by policy");
+      if (!(await presenceVisible())) {
+        return { decision: { outcome: "hidden" }, body: { error: "presence is hidden from agents by policy" }, isError: true };
+      }
       // ...require the target place to actually exist (no name probing / dangling
       // reminders)...
       const target = await scope.places.get(place);
-      if (!target) return err(`no place named "${place}"`);
+      if (!target) return none(`no place named "${place}"`);
       // ...and cap total active reminders so a read-scoped token cannot exhaust
       // storage (review finding M2).
       if ((await scope.reminders.countActive()) >= MAX_ACTIVE_REMINDERS) {
@@ -313,7 +349,7 @@ export function buildMcpServer(
         return err(`place limit reached (${MAX_PLACES})`);
       }
       const current = await scope.presence.getCurrent();
-      if (!current?.precise) return err("no current location available to remember");
+      if (!current?.precise) return none("no current location available to remember");
       const place = await scope.places.upsert({
         name,
         type: type ?? "custom",

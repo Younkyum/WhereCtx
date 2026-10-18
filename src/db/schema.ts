@@ -37,6 +37,7 @@ import type {
 } from "../types.js";
 import type { WorkspaceRole } from "../accounts/types.js";
 import type {
+  AccessAction,
   AccessOutcome,
   AccessSurface,
   CredentialKind,
@@ -491,7 +492,7 @@ export const accessLog = sqliteTable(
     credentialId: text("credential_id").notNull(),
     credentialName: text("credential_name").notNull(),
     surface: text("surface").$type<AccessSurface>().notNull(),
-    action: text("action").notNull(),
+    action: text("action").$type<AccessAction>().notNull(),
     precise: integer("precise", { mode: "boolean" }).notNull(),
     reason: text("reason"),
     outcome: text("outcome").$type<AccessOutcome>().notNull(),
