@@ -1,0 +1,53 @@
+/**
+ * The one Node request listener the server runs: /mcp goes to the MCP
+ * transport, the OAuth protocol endpoints to oidc-provider, and everything
+ * else to the Hono app. Each surface authenticates on its own, so a path that
+ * falls through to Hono is fail-safe (a 404, never an auth bypass).
+ */
+
+import type { RequestListener } from "node:http";
+import { getRequestListener } from "@hono/node-server";
+import type { RateLimiter } from "../api/rateLimit.js";
+import { mcpNodeHandler } from "../mcp/http.js";
+import type { AppContext } from "./context.js";
+import { buildApp, type BuildAppOptions } from "./server.js";
+
+export type Surface = "mcp" | "oauth" | "app";
+
+const OAUTH_DISCOVERY = new Set([
+  "/.well-known/oauth-authorization-server",
+  "/.well-known/openid-configuration",
+]);
+
+/** Which surface serves a path. The consent API under /oauth/interaction/ is WhereCtx's own. */
+export function surfaceFor(pathname: string): Surface {
+  if (pathname === "/mcp") return "mcp";
+  if (OAUTH_DISCOVERY.has(pathname)) return "oauth";
+  if (pathname.startsWith("/oauth/") && !pathname.startsWith("/oauth/interaction/")) return "oauth";
+  return "app";
+}
+
+export interface ListenerOptions extends BuildAppOptions {
+  /** Shared by REST and MCP so auth failures on either count together. */
+  authLimiter: RateLimiter;
+}
+
+export function createListener(ctx: AppContext, options: ListenerOptions): RequestListener {
+  const mcp = mcpNodeHandler(ctx, options.authLimiter);
+  const handlers: Record<Surface, RequestListener> = {
+    mcp: (req, res) => void mcp(req, res),
+    oauth: ctx.oauth.provider.callback(),
+    app: getRequestListener(buildApp(ctx, options).fetch),
+  };
+  return (req, res) => {
+    // Match on the parsed pathname so query strings and encodings cannot
+    // confuse the split.
+    let pathname = req.url ?? "";
+    try {
+      pathname = new URL(req.url ?? "", "http://localhost").pathname;
+    } catch {
+      /* keep raw */
+    }
+    handlers[surfaceFor(pathname)](req, res);
+  };
+}

@@ -42,7 +42,7 @@ step.
 
 ## Quick start with Node
 
-Node 20 or later.
+Node 22 or later.
 
 ```bash
 npm install
@@ -114,8 +114,13 @@ See [docs/clients.md](docs/clients.md) and [clients/](clients/).
 
 ## Connect an agent
 
-Under **Agents**, create a token. The dashboard shows it once, with a Claude
-Desktop entry ready to paste:
+A remote MCP client that supports OAuth, such as Claude, needs only the URL
+`https://wherectx.example.com/mcp`. It opens a WhereCtx consent screen where
+you sign in with your passkey and choose what it may read. Revoke it later
+under **Agents**, in **Connected apps**.
+
+For a client without OAuth, create a token under **Agents**. The dashboard
+shows it once, with a Claude Desktop entry ready to paste:
 
 ```json
 {

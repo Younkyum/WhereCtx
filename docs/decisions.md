@@ -241,4 +241,41 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
   delivery stays at-least-once. Shutdown aborts in-flight requests, which
   leave their cursors in place, and waits for drains before closing the DB.
 - **MCP stays on bearer tokens.** Each token belongs to one person. OAuth 2.1
-  for MCP clients is a later step.
+  for MCP clients is a later step (done, see the next section).
+
+## 2026-10-18: OAuth 2.1 for MCP clients
+
+- **The authorization server is embedded and runs on oidc-provider.** A remote
+  MCP client such as Claude should connect without a pasted token, and the MCP
+  spec (revision 2026-07-28) needs an OAuth 2.1 server for that. Writing the
+  protocol by hand was ruled out: PKCE, code replay, refresh rotation, and
+  RFC 9207 `iss` are easy to get subtly wrong. An external server (Keycloak,
+  Authentik) would add a second service and its own account database to a
+  household install. oidc-provider is certified, ships Client ID Metadata
+  Documents, and stores everything through one adapter over our database
+  (`oauth_store`).
+- **Clients register with Client ID Metadata Documents. Dynamic registration
+  is off.** The spec deprecates dynamic registration, and it lets anyone write
+  client rows. `OAUTH_DYNAMIC_REGISTRATION=true` turns it back on for older
+  clients.
+- **An OAuth token is a third kind of `Principal`.** `via: "oauth"` carries the
+  grant and the client next to the user. Tokens and sessions keep their
+  meaning, and the MCP tools still see only `ctx.forUser(userId)`, so an OAuth
+  token reaches its owner's presence and nothing of anyone else's.
+- **Access tokens are opaque and short.** They last 10 minutes and are looked
+  up in the database on each `/mcp` request. That costs a read per request,
+  but revoking an app takes effect at once, with no window where a signed JWT
+  still works. Each token's audience is `<BASE_URL>/mcp`. `/mcp` checks it,
+  and REST never accepts OAuth tokens.
+- **Consent is asked every time, and precise location is opt-in.** The scope
+  registry (`src/oauth/scopes.ts`) has two scopes: `presence:read` and
+  `location:precise`. The person can drop precise location on the consent
+  screen. The privacy settings still gate it after that. Asking every time
+  follows the spec's advice not to redirect to a client automatically. The
+  consent screen is part of the dashboard, so it uses the existing passkey
+  sign-in.
+- **Bearer tokens stay.** Agent and admin tokens keep working on `/mcp`, for
+  clients that cannot do OAuth. A secret is first looked up as a WhereCtx
+  token, then as an OAuth token.
+- **The runtime moves to Node 22.** oidc-provider 9 supports Node 22 LTS and
+  later. Node 24 is still avoided for the NAS reason in the `Dockerfile`.

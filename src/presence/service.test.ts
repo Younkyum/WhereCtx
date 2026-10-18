@@ -42,6 +42,7 @@ const config: WhereCtxConfig = {
   webhooks: { allowPrivateTargets: false },
   events: { retentionHours: 720 },
   sharing: { auditRetentionDays: 365 },
+  oauth: { dynamicRegistration: false },
 };
 
 const T0 = Date.parse("2026-06-05T00:00:00.000Z");

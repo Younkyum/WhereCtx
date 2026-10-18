@@ -165,6 +165,28 @@ export type Pairing =
   | { kind: "owntracks"; link: string; qrSvg: string; config: unknown }
   | { kind: "shortcut"; url: string; headers: { Authorization: string } };
 
+export type OAuthScope = "presence:read" | "location:precise";
+
+/** A pending authorization from an MCP client, as the consent screen shows it. */
+export interface ConsentRequest {
+  client: { id: string; name: string | null; uri: string | null };
+  redirectUri: string;
+  redirectHost: string;
+  localhostOnly: boolean;
+  requestedScopes: OAuthScope[];
+  resource: string;
+}
+
+/** An MCP client the person authorized with OAuth. */
+export interface ConnectedApp {
+  id: string;
+  clientId: string;
+  clientName: string | null;
+  scopes: OAuthScope[];
+  createdAt: string;
+  expiresAt: string | null;
+}
+
 /** A WebAuthn ceremony the server started: an opaque handle plus the options JSON. */
 export interface CeremonyStart<O> {
   ceremony: string;

@@ -125,6 +125,14 @@ export interface Config {
      */
     encryptionKey?: string;
   };
+  oauth: {
+    /**
+     * Let MCP clients register themselves at /oauth/register (RFC 7591). Off by
+     * default: the MCP spec deprecates it in favour of Client ID Metadata
+     * Documents, which need no registration.
+     */
+    dynamicRegistration: boolean;
+  };
 }
 
 export function loadConfig(): Config {
@@ -173,6 +181,9 @@ export function loadConfig(): Config {
     webhooks: {
       allowPrivateTargets: envBool("WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
       encryptionKey: envOptional("WEBHOOK_ENCRYPTION_KEY"),
+    },
+    oauth: {
+      dynamicRegistration: envBool("OAUTH_DYNAMIC_REGISTRATION", false),
     },
   });
 }

@@ -44,7 +44,7 @@ export interface SeedResult {
   generatedAdminSecret?: string;
 }
 
-const TOKEN_PREFIX = "wctx";
+export const TOKEN_PREFIX = "wctx";
 
 /** Minimum interval between lastUsedAt writes for the same token (ms). */
 const LAST_USED_THROTTLE_MS = 60_000;

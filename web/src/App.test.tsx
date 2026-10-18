@@ -147,6 +147,79 @@ describe("dashboard app", () => {
     expect(host.textContent).toContain("Sign in to WhereCtx");
   });
 
+  it("shows a pending authorization's consent screen, precise location off until ticked", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", Object.assign(new URL(location.href), { hash: "#authorize/u1", assign }));
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /oauth/interaction/u1/details", () => ({
+      status: 200,
+      body: {
+        client: { id: "https://client.example/meta.json", name: "Test Agent", uri: "https://client.example" },
+        redirectUri: "http://127.0.0.1:9876/cb",
+        redirectHost: "127.0.0.1:9876",
+        localhostOnly: true,
+        requestedScopes: ["presence:read", "location:precise"],
+        resource: "https://where.example.com/mcp",
+      },
+    }));
+    let confirmed: unknown;
+    route("POST /oauth/interaction/u1/confirm", (body) => {
+      confirmed = body;
+      return { status: 200, body: { redirectTo: "https://where.example.com/oauth/authorize/u1" } };
+    });
+
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.querySelector("h1")?.textContent).toBe("Connect Test Agent?");
+    expect(host.textContent).toContain("127.0.0.1:9876");
+    expect(host.textContent).toContain("client.example");
+    expect(host.textContent).toContain("This app runs on a computer, not a website");
+    const checkbox = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(checkbox.checked).toBe(false);
+    await act(async () => checkbox.click());
+
+    await act(async () => button("Allow").click());
+    await settle();
+    expect(confirmed).toEqual({ precise: true });
+    expect(assign).toHaveBeenCalledWith("https://where.example.com/oauth/authorize/u1");
+  });
+
+  it("lists connected apps on the Agents screen and disconnects one after confirmation", async () => {
+    let grants = [
+      {
+        id: "g1",
+        clientId: "https://client.example/meta.json",
+        clientName: "Test Agent",
+        scopes: ["presence:read"],
+        createdAt: "2026-10-18T00:00:00.000Z",
+        expiresAt: "2026-11-17T00:00:00.000Z",
+      },
+    ];
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/tokens", () => ({ status: 200, body: { tokens: [] } }));
+    route("GET /v1/oauth/grants", () => ({ status: 200, body: { grants } }));
+    route("DELETE /v1/oauth/grants/g1", () => {
+      grants = [];
+      return { status: 200, body: { ok: true } };
+    });
+    location.hash = "#agents";
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.textContent).toContain("Connected apps");
+    expect(host.textContent).toContain("Test Agent");
+
+    await act(async () => button("Revoke").click());
+    await settle();
+    const dialog = document.querySelector('[role="alertdialog"]');
+    expect(dialog?.textContent).toContain('Disconnect "Test Agent"?');
+    const confirmButton = [...dialog!.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Revoke")!;
+    await act(async () => confirmButton.click());
+    await settle();
+    expect(calls).toContain("DELETE /v1/oauth/grants/g1");
+    expect(host.textContent).toContain("No connected apps yet.");
+    location.hash = "";
+  });
+
   it("on plain http, links the passkey warning to the README section that explains it", async () => {
     vi.stubGlobal("isSecureContext", false);
     route("GET /v1/me", () => ({ status: 401, body: { error: "unauthorized" } }));

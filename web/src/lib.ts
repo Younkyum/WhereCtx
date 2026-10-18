@@ -160,6 +160,20 @@ export function parseInviteHash(hash: string): string | null {
   }
 }
 
+/** The host of an absolute URL, or null. */
+export function hostOf(url: string): string | null {
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
+}
+
+/** The pending OAuth authorization in a '#authorize/<uid>' fragment, or null. */
+export function parseAuthorizeHash(hash: string): string | null {
+  return /^#authorize\/([A-Za-z0-9_-]+)$/.exec(hash)?.[1] ?? null;
+}
+
 /** [i18n key, n] for an age in whole minutes. */
 export function ageParts(min: number): [I18nKey, number] {
   const m = Math.max(0, Math.floor(Number(min) || 0));
@@ -196,6 +210,7 @@ const CODE_KEYS: Record<string, I18nKey> = {
   invalid: "err.invalid",
   base_url_unusable: "err.baseUrl",
   network: "err.network",
+  interaction_expired: "err.interactionExpired",
 };
 
 /** The i18n key for an API error, or null to show the server's message. */

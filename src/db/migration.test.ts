@@ -42,6 +42,7 @@ function config(defaultUserId: string): WhereCtxConfig {
     webhooks: { allowPrivateTargets: true },
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
+    oauth: { dynamicRegistration: false },
   };
 }
 

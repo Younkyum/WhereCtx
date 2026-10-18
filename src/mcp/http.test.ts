@@ -33,6 +33,7 @@ const config: WhereCtxConfig = {
   webhooks: { allowPrivateTargets: false },
   events: { retentionHours: 720 },
   sharing: { auditRetentionDays: 365 },
+  oauth: { dynamicRegistration: false },
 };
 
 let ctx: AppContext;

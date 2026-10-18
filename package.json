@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "bin": {
     "wherectx": "dist/index.js",
@@ -42,6 +42,7 @@
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.23",
     "ngeohash": "^0.6.3",
+    "oidc-provider": "^9.12.2",
     "qrcode": "1.5.4",
     "zod": "^4.4.3"
   },
@@ -52,6 +53,7 @@
     "@stylexjs/stylex": "0.19.1",
     "@types/ngeohash": "^0.6.8",
     "@types/node": "^25.9.1",
+    "@types/oidc-provider": "9.12.1",
     "@types/qrcode": "1.5.6",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",

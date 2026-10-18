@@ -5,16 +5,41 @@ WhereCtx exposes presence to AI agents over the Model Context Protocol using the
 
 ## Connecting
 
-The `/mcp` endpoint authenticates with a Bearer token that has the
-`read_presence` scope (an `agent` or `admin` token). Device tokens and session
-cookies are rejected.
+`/mcp` accepts two kinds of Bearer credential:
+
+- An OAuth access token. A remote MCP client such as Claude gets one by
+  sending you through a consent screen. Nothing is pasted.
+- An `agent` or `admin` token from the dashboard. Use it for clients that
+  cannot do OAuth, such as Hermes or a script.
+
+Device tokens and session cookies are rejected. Either way, every tool reads
+and writes only the presence, places, events, and reminders of the person who
+consented or made the token.
+
+### Connect with OAuth
+
+Add `<BASE_URL>/mcp` as a remote MCP server in the client. The client finds
+the rest on its own:
+
+1. Its first request gets a `401` whose `WWW-Authenticate` header points at
+   the protected resource metadata.
+2. It reads the metadata, then the authorization server metadata, and starts
+   an authorization code flow with PKCE.
+3. Your browser opens the WhereCtx consent screen. Sign in with your passkey
+   if you are not signed in.
+4. Check the app name and the redirect host, choose whether to allow precise
+   location, and click **Allow**.
+
+To disconnect an app, open **Agents** in the dashboard and click **Revoke**
+next to it under **Connected apps**. Its access and refresh tokens stop
+working at once.
+
+### Bearer token
 
 Create an agent token under **Agents** in the dashboard. It is shown once,
-together with a Claude Desktop entry for `<BASE_URL>/mcp`. A token belongs to
-the person who made it, and every tool reads and writes only that person's
-presence, places, events, and reminders.
+together with a Claude Desktop entry for `<BASE_URL>/mcp`.
 
-### Claude Desktop
+#### Claude Desktop
 
 ```json
 {
@@ -27,7 +52,7 @@ presence, places, events, and reminders.
 }
 ```
 
-### Hermes
+#### Hermes
 
 ```yaml
 mcp_servers:
@@ -36,6 +61,76 @@ mcp_servers:
     headers:
       Authorization: "Bearer AGENT_TOKEN"
 ```
+
+## OAuth reference
+
+WhereCtx follows the
+[MCP authorization spec, revision 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization).
+The authorization server is embedded and runs on
+[oidc-provider](https://github.com/panva/node-oidc-provider). Its issuer is
+`BASE_URL`, so `BASE_URL` must be the public `https` origin.
+
+### Endpoints
+
+| Path | Purpose |
+|------|---------|
+| `/.well-known/oauth-protected-resource/mcp` | protected resource metadata for `/mcp` (RFC 9728). Also served at `/.well-known/oauth-protected-resource`. |
+| `/.well-known/oauth-authorization-server` | authorization server metadata (RFC 8414). Also served at `/.well-known/openid-configuration`. |
+| `/oauth/authorize` | authorization endpoint |
+| `/oauth/token` | token endpoint |
+| `/oauth/revoke` | token revocation (RFC 7009) |
+| `/oauth/jwks` | the server's public signing key |
+| `/oauth/par` | pushed authorization requests |
+| `/oauth/register` | dynamic client registration, only when `OAUTH_DYNAMIC_REGISTRATION=true` |
+| `/oauth/interaction/:uid` | sends the browser to the dashboard consent screen |
+| `/v1/oauth/grants` | `GET` lists your connected apps, `DELETE /v1/oauth/grants/:id` revokes one (session only) |
+
+### Scopes
+
+| OAuth scope | Grants | On the consent screen |
+|-------------|--------|-----------------------|
+| `presence:read` | `read_presence` | always granted when requested |
+| `location:precise` | `read_precise_location` | granted only if you tick the box. It is unticked by default. |
+| `offline_access` | a refresh token | granted when requested |
+
+Precise location stays subject to the privacy settings, as it is for agent
+tokens. An OAuth token never gets `manage_places`, so the home place stays
+protected from it.
+
+### Clients
+
+- Clients identify themselves with a
+  [Client ID Metadata Document](https://datatracker.ietf.org/doc/draft-ietf-oauth-client-id-metadata-document/):
+  an `https` URL as `client_id` that serves the client's metadata. The server
+  advertises `client_id_metadata_document_supported: true`. It refuses to
+  fetch documents from private or special-use addresses.
+- Dynamic client registration is off. The MCP spec deprecates it. Set
+  `OAUTH_DYNAMIC_REGISTRATION=true` to turn it on for older clients.
+- Every client is public (`token_endpoint_auth_method: none`). PKCE with
+  `S256` is required.
+- The consent screen shows the redirect host. It warns when every redirect URI
+  is on `localhost`, because any program on that machine could use the name.
+  Consent is asked on every authorization, never skipped.
+
+### Tokens
+
+- The `resource` parameter (RFC 8707) must name `<BASE_URL>/mcp`. Any other
+  resource gets `invalid_target`. Upper-case scheme and host and a trailing
+  slash are accepted.
+- Access tokens are opaque, last 10 minutes, and are bound to `/mcp` as their
+  audience. REST endpoints under `/v1/` reject them.
+- Refresh tokens rotate on every use and last 30 days, as long as the grant.
+- Authorization responses include `iss` (RFC 9207).
+- Signing and cookie keys are generated on first boot and kept in the
+  database, so every instance sharing it agrees.
+
+### Errors on `/mcp`
+
+| Case | Status | `WWW-Authenticate` |
+|------|--------|--------------------|
+| no credential | `401` | `Bearer scope="presence:read location:precise", resource_metadata="…"` |
+| unknown, expired, or revoked token, or a token for another resource | `401` | adds `error="invalid_token"` |
+| token without `read_presence` | `403` | `Bearer error="insufficient_scope", scope="presence:read", resource_metadata="…"` |
 
 ## Tools
 
@@ -60,7 +155,7 @@ return raw coordinates or geohash.
 By default (`PROTECT_HOME_PLACE=true`, toggleable live from the dashboard's
 Privacy panel), `create_place` and `remember_current_place` refuse to create a
 `home`-typed place — or to overwrite an existing `home` place under any type —
-unless the token carries the `manage_places` scope (admin). This stops an agent
+unless the credential carries the `manage_places` scope (an admin token). This stops an agent
 from moving the home geofence, which would mislead the home-coordinate privacy
 protections. Non-home places stay writable by agent tokens.
 

@@ -3,24 +3,52 @@
  *
  * Runs outside Hono (composed at the http.Server level via getRequestListener)
  * because the MCP StreamableHTTP transport writes directly to the Node response.
- * Each request is authenticated (Bearer token with read_presence scope) and gets
- * a fresh, stateless server+transport so there is no cross-request session state.
+ * Each request is authenticated (a WhereCtx token or an OAuth access token,
+ * with read_presence scope) and gets a fresh, stateless server+transport so
+ * there is no cross-request session state. Refusals carry the RFC 6750 /
+ * RFC 9728 challenge that tells an MCP client where to get a token.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AppContext } from "../app/context.js";
 import { nodeClientKey, type RateLimiter } from "../api/rateLimit.js";
-import { resolveTokenPrincipal } from "../auth/principal.js";
+import { resolveBearerPrincipal } from "../auth/principal.js";
+import { RESOURCE_SCOPES, oauthScopeFor } from "../oauth/scopes.js";
 import { buildMcpServer } from "./server.js";
 
 // Match the REST body cap (app/server.ts bodyLimit) for consistency.
 const MAX_BODY_BYTES = 64 * 1024;
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
+function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const text = JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json" });
+  res.writeHead(status, { "content-type": "application/json", ...headers });
   res.end(text);
+}
+
+const REQUIRED_SCOPE = oauthScopeFor("read_presence")!;
+
+/** Why /mcp refused a request, each with its status and Bearer challenge parameters. */
+const REFUSALS = {
+  missing: { status: 401, body: { error: "unauthorized" }, params: { scope: RESOURCE_SCOPES.join(" ") } },
+  invalid: {
+    status: 401,
+    body: { error: "unauthorized" },
+    params: { error: "invalid_token", scope: RESOURCE_SCOPES.join(" ") },
+  },
+  scope: {
+    status: 403,
+    body: { error: "forbidden", detail: "requires read_presence scope" },
+    params: { error: "insufficient_scope", scope: REQUIRED_SCOPE },
+  },
+} as const;
+
+function refuse(res: ServerResponse, why: keyof typeof REFUSALS, resourceMetadata: string): void {
+  const { status, body, params } = REFUSALS[why];
+  const challenge = Object.entries({ ...params, resource_metadata: resourceMetadata })
+    .map(([k, v]) => `${k}="${v}"`)
+    .join(", ");
+  sendJson(res, status, body, { "www-authenticate": `Bearer ${challenge}` });
 }
 
 function bearerSecret(req: IncomingMessage): string | null {
@@ -71,15 +99,14 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: RateLimiter) {
       });
     }
 
-    // Authenticate: agent/admin tokens with read_presence.
-    const principal = await resolveTokenPrincipal(ctx, bearerSecret(req));
+    const { resourceMetadata } = ctx.oauth.urls;
+    const secret = bearerSecret(req);
+    const principal = await resolveBearerPrincipal(ctx, secret);
     if (!principal) {
       authLimiter?.record(clientKey);
-      return sendJson(res, 401, { error: "unauthorized" });
+      return refuse(res, secret ? "invalid" : "missing", resourceMetadata);
     }
-    if (!principal.scopes.includes("read_presence")) {
-      return sendJson(res, 403, { error: "forbidden", detail: "requires read_presence scope" });
-    }
+    if (!principal.scopes.includes("read_presence")) return refuse(res, "scope", resourceMetadata);
 
     let body: unknown;
     if (req.method === "POST") {

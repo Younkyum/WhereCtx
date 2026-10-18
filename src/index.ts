@@ -1,20 +1,17 @@
 /**
  * WhereCtx server entrypoint.
  *
- * Composes a single Node http.Server that routes `/mcp` to the MCP transport
- * (raw Node) and everything else to the Hono REST app (via getRequestListener).
- * Wires the webhook dispatcher to the event sink and starts a periodic stale
+ * Runs a single Node http.Server over the composed listener (app/listener.ts:
+ * MCP, the OAuth server, and the Hono REST app). Wires the webhook dispatcher to the event sink and starts a periodic stale
  * sweep so `presence.became_stale` fires without a client read.
  */
 
 import { createServer } from "node:http";
-import { getRequestListener } from "@hono/node-server";
 import { loadConfig } from "./config.js";
 import { RateLimiter } from "./api/rateLimit.js";
 import { passkeyBaseUrlProblem } from "./accounts/passkeys.js";
 import { createAppContext, closeAppContext } from "./app/context.js";
-import { buildApp } from "./app/server.js";
-import { mcpNodeHandler } from "./mcp/http.js";
+import { createListener } from "./app/listener.js";
 import { WebhookDispatcher } from "./webhooks/dispatcher.js";
 
 const STALE_SWEEP_MS = 60_000;
@@ -91,7 +88,7 @@ async function main(): Promise<void> {
 
   // Retention pruning for the append-only tables (events + webhook dead-letters,
   // review P3/L5, and the share audit), expired sessions, long-expired invites, spent ceremony
-  // nonces, and expired access codes. Runs at boot and then every few hours.
+  // nonces, expired access codes, and expired OAuth state. Runs at boot and then every few hours.
   const pruneOnce = (): void => {
     void Promise.all([
       ctx.system.events.prune(config.events.retentionHours),
@@ -101,40 +98,20 @@ async function main(): Promise<void> {
       ctx.system.invites.pruneExpired(config.events.retentionHours),
       ctx.system.nonces.prune(),
       ctx.system.accessCodes.prune(),
+      ctx.system.oauth.prune(),
     ]).catch((e) => console.error("prune sweep error:", e));
   };
   pruneOnce();
   const pruneSweep = setInterval(pruneOnce, PRUNE_SWEEP_MS);
   pruneSweep.unref?.();
 
-  // One shared limiter so REST and MCP auth failures count together.
-  const authLimiter = new RateLimiter();
-  const app = buildApp(ctx, { authLimiter });
-  const honoListener = getRequestListener(app.fetch);
-  const mcp = mcpNodeHandler(ctx, authLimiter);
-
-  const server = createServer((req, res) => {
-    // Match on the parsed pathname so query strings / encodings don't confuse
-    // the /mcp vs Hono split. The MCP handler authenticates independently, so a
-    // miss falling through to Hono is fail-safe (404, no auth bypass).
-    let pathname = req.url ?? "";
-    try {
-      pathname = new URL(req.url ?? "", "http://localhost").pathname;
-    } catch {
-      /* keep raw */
-    }
-    if (pathname === "/mcp") {
-      void mcp(req, res);
-      return;
-    }
-    honoListener(req, res);
-  });
+  const server = createServer(createListener(ctx, { authLimiter: new RateLimiter() }));
 
   server.listen(config.port, config.host, () => {
     console.log(
       `WhereCtx listening on http://${config.host}:${config.port}  (base: ${config.baseUrl})`,
     );
-    console.log(`  REST: /v1/*   MCP: /mcp   health: /healthz`);
+    console.log(`  REST: /v1/*   MCP: /mcp   OAuth: /oauth/*   health: /healthz`);
   });
 
   let shuttingDown = false;

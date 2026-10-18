@@ -1,7 +1,8 @@
 /**
  * The app root: language and color mode, the session (booting, signed out,
- * signed in), the invite token from the address bar, and the shell with one
- * navigation table that feeds the desktop sidebar and the phone drawer.
+ * signed in), the invite token and pending OAuth authorization from the
+ * address bar, and the shell with one navigation table that feeds the desktop
+ * sidebar and the phone drawer.
  */
 
 import { AppShell } from "@astryxdesign/core/AppShell";
@@ -35,11 +36,12 @@ import { useCallback, useEffect, useMemo, useState, type ComponentType } from "r
 import { api, setApiHooks } from "./api";
 import { AppContext, useApp, type AppContextValue, type ColorMode } from "./context";
 import { isLang, translate, type I18nKey, type Lang } from "./i18n";
-import { parseInviteHash } from "./lib";
+import { parseAuthorizeHash, parseInviteHash } from "./lib";
 import type { Me } from "./model";
 import { theme } from "./theme";
 import { ConfirmProvider } from "./ui";
 import { AccountView } from "./views/Account";
+import { AuthorizeView } from "./views/Authorize";
 import { DevicesView, AgentsView } from "./views/Devices";
 import { EventsView, PlacesView, PrivacyView, WebhooksView } from "./views/Data";
 import { Gate, InviteAccept } from "./views/Gate";
@@ -196,6 +198,7 @@ function SessionRoot(prefs: Prefs) {
   );
 
   const view = viewFor(hash);
+  const authorizing = parseAuthorizeHash(hash);
   useEffect(() => {
     document.title = me ? `${t(view.label)} · WhereCtx` : "WhereCtx";
   }, [me, t, view]);
@@ -217,6 +220,12 @@ function SessionRoot(prefs: Prefs) {
           void refreshMe();
         }}
       />
+    );
+  } else if (authorizing) {
+    body = (
+      <Shell route={null}>
+        <AuthorizeView key={authorizing} uid={authorizing} />
+      </Shell>
     );
   } else if (invite) {
     body = (

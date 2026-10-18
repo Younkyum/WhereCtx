@@ -1,8 +1,9 @@
 # ── build stage ────────────────────────────────────────────────────────
-# Node 20 LTS (not 24): npm's install finalizer ("Exit handler") breaks on old
-# NAS kernels (e.g. Synology DSM on Linux 4.4) — node:20 runs cleanly there and
-# everywhere else. glibc base for broad @libsql/client prebuild compatibility.
-FROM node:20-slim AS build
+# Node 22 LTS: the oldest line oidc-provider (the MCP OAuth server) supports.
+# Not 24: its npm's install finalizer ("Exit handler") breaks on old NAS kernels
+# (e.g. Synology DSM on Linux 4.4). glibc base for broad @libsql/client
+# prebuild compatibility.
+FROM node:22-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -13,7 +14,7 @@ COPY web ./web
 RUN npm run build
 
 # ── runtime stage ──────────────────────────────────────────────────────
-FROM node:20-slim AS runtime
+FROM node:22-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # Only production deps.

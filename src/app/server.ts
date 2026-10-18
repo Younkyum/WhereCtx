@@ -1,6 +1,7 @@
 /**
  * HTTP application assembly. Mounts every REST router plus health/info routes
- * onto a single Hono app. The MCP endpoint is mounted separately in Phase 4.
+ * onto a single Hono app. The MCP endpoint and the OAuth protocol endpoints
+ * are routed beside it (app/listener.ts).
  */
 
 import { Hono } from "hono";
@@ -24,6 +25,7 @@ import { privacyRouter } from "../api/privacy.js";
 import { tokensRouter } from "../api/tokens.js";
 import { devicesRouter } from "../api/devices.js";
 import { webhooksRouter } from "../api/webhooks.js";
+import { oauthGrantsRouter, oauthRouter } from "../oauth/http.js";
 
 export interface BuildAppOptions {
   /** Shared with the MCP handler so both surfaces count auth failures together. */
@@ -92,6 +94,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   app.get("/healthz", (c) => c.json({ status: "ok" }));
 
   app.route("/", dashboardRouter(options.dashboardDir));
+  app.route("/", oauthRouter(ctx));
 
   // Auth is mounted here, the one REST place holding the full context; routers
   // get only the user scope `authenticate` attaches (from a token or a session
@@ -112,6 +115,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   mountSession("/v1/workspaces", workspacesRouter());
   mountSession("/v1/shares", sharesRouter());
   mountSession("/v1/people", peopleRouter());
+  mountSession("/v1/oauth", oauthGrantsRouter());
   mount("/v1/ingest", ingestRouter(ctx), authenticate(ctx, { deviceCredentials: true }));
   mount("/v1/presence", presenceRouter(ctx));
   mount("/v1/places", placesRouter(ctx));
