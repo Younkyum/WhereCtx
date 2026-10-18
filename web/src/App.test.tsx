@@ -285,4 +285,51 @@ describe("log views", () => {
     expect(host.textContent).toContain("owntracks ingest rejected");
     expect(host.textContent).toContain("error=bad");
   });
+
+  it("Webhooks starts with arrivals and departures, explains each event, and edits a hook's events", async () => {
+    const hooks = [{ id: "h1", url: "https://ha.example/hook", events: ["*"], active: true }];
+    let created: any;
+    let patched: any;
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: hooks } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    route("POST /v1/webhooks", (body) => {
+      created = body;
+      return { status: 201, body: { webhook: { id: "h2" } } };
+    });
+    route("PATCH /v1/webhooks/h1", (body) => {
+      patched = body;
+      return { status: 200, body: { webhook: hooks[0] } };
+    });
+    await open("#webhooks");
+    expect(host.textContent).toContain("Home Assistant");
+    expect(host.textContent).toContain("Arrived at a place");
+    expect(host.textContent).toContain("When you leave one of your places");
+    const checked = () =>
+      [...host.querySelectorAll<HTMLInputElement>('li input[type="checkbox"]')].filter((c) => c.checked).map((c) => c.closest("li")?.textContent ?? "");
+    const on = checked();
+    expect(on).toHaveLength(2);
+    expect(on[0]).toContain("presence.entered_place");
+    expect(on[1]).toContain("presence.left_place");
+    const example = [...host.querySelectorAll("pre, code")].map((n) => n.textContent).join("\n");
+    expect(example).toContain('"event": "presence.entered_place"');
+    expect(example).not.toMatch(/"lat"|"lon"/);
+
+    const input = host.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, "https://n8n.example/hook");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => button("Add").click());
+    await settle();
+    expect(created).toEqual({ url: "https://n8n.example/hook", events: ["presence.entered_place", "presence.left_place"] });
+
+    await act(async () => button("Change events").click());
+    await settle();
+    const updated = [...host.querySelectorAll("li")].find((li) => li.textContent?.startsWith("Every location update"))!;
+    await act(async () => updated.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await act(async () => button("Save").click());
+    await settle();
+    expect(patched).toEqual({ events: ["presence.updated"] });
+  });
 });

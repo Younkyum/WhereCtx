@@ -456,6 +456,27 @@ export const EN = {
   "logs.filter.error": "Errors only",
   "logs.empty": "Nothing logged at this level.",
   "logs.note": "Tokens, cookies, codes and coordinates are removed before anything is kept. Only the last 1,000 entries since the server started are here; docker logs has the rest.",
+
+  "webhooks.introTitle": "What webhooks are for",
+  "webhooks.intro": "WhereCtx calls a URL of yours when your presence changes, so another service can react. For example, Home Assistant can turn on the lights when you get home, or n8n, Zapier or a Slack workflow can post when you leave work. Only your own events are sent, never anyone else's, and a delivery never contains your exact coordinates.",
+  "webhooks.pick": "Events to send",
+  "webhooks.all": "All events",
+  "webhooks.allDesc": "Every event below, and any added later.",
+  "webhooks.event.presence.updated": "Every location update",
+  "webhooks.event.presence.entered_place": "Arrived at a place",
+  "webhooks.event.presence.left_place": "Left a place",
+  "webhooks.event.presence.became_stale": "Location went stale",
+  "webhooks.event.presence.privacy_changed": "Privacy setting changed",
+  "webhooks.eventDesc.presence.updated": "Sent each time a phone reports, so it can be frequent (every few minutes).",
+  "webhooks.eventDesc.presence.entered_place": "When you enter one of your places, such as home or work. Includes the place name.",
+  "webhooks.eventDesc.presence.left_place": "When you leave one of your places. Includes the place name.",
+  "webhooks.eventDesc.presence.became_stale": "When your phone hasn't reported for a while, so your status may be out of date.",
+  "webhooks.eventDesc.presence.privacy_changed": "When you change what agents may see in Privacy.",
+  "webhooks.editEvents": "Change events",
+  "webhooks.example": "Example delivery",
+  "webhooks.verifySigned": "With a signing secret, each delivery is signed: recompute HMAC-SHA256 of the timestamp header, a dot, and the raw body with your secret, compare it with the signature header, and reject old timestamps.",
+  "webhooks.verifyUnsigned": "Add a signing secret so your endpoint can check that a delivery really came from this server.",
+  "webhooks.verifyLink": "How to verify the signature",
 } as const;
 
 export type I18nKey = keyof typeof EN;

@@ -5,6 +5,7 @@ import { asUserId } from "../types.js";
 import { EventsStore } from "../store/eventsStore.js";
 import { WebhooksStore } from "../store/webhooksStore.js";
 import { WebhookDispatcher, type DispatcherOptions } from "./dispatcher.js";
+import { exampleDelivery } from "./payload.js";
 
 let nowMs = Date.parse("2026-06-05T00:00:00.000Z");
 const clock = () => new Date(nowMs);
@@ -337,5 +338,23 @@ describe("WebhookDispatcher scheduling", () => {
     expect(delivered).toEqual(ids.slice(0, 3));
     await dispatcher.tick();
     expect(delivered).toEqual(ids);
+  });
+});
+
+describe("the dashboard's example delivery", () => {
+  it("has the headers and body fields a real signed delivery has", async () => {
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], secret: "s3cret-s3cret" });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.entered_place", placeName: "home", status: "home", source: "owntracks" });
+    let sent: { headers: Record<string, string>; body: string } | undefined;
+    const fetchFn = vi.fn(async (_url: string, init: any) => {
+      sent = { headers: init.headers, body: init.body };
+      return new Response(null, { status: 200 });
+    });
+    await makeDispatcher({ fetchFn: fetchFn as any }).tick();
+    const example = exampleDelivery("presence.entered_place", true);
+    expect(Object.keys(example.headers).sort()).toEqual(Object.keys(sent!.headers).sort());
+    expect(Object.keys(example.body).sort()).toEqual(Object.keys(JSON.parse(sent!.body)).sort());
+    expect(Object.keys(exampleDelivery("presence.updated", false).headers)).not.toContain("x-wherectx-signature");
   });
 });

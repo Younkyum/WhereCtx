@@ -168,3 +168,15 @@ describe("history helpers", () => {
     ]);
   });
 });
+
+describe("webhook event selection", () => {
+  it("lets all events and single events replace each other", () => {
+    expect(lib.pickEvents(["presence.left_place"], ["presence.left_place", "*"])).toEqual(["*"]);
+    expect(lib.pickEvents(["*"], ["*", "presence.updated"])).toEqual(["presence.updated"]);
+    expect(lib.pickEvents(["presence.left_place"], ["presence.left_place", "presence.updated"])).toEqual([
+      "presence.left_place",
+      "presence.updated",
+    ]);
+    expect(lib.pickEvents(["*"], [])).toEqual([]);
+  });
+});

@@ -279,9 +279,16 @@ the server's public https URL.
 ```
 GET    /v1/webhooks                 # manage_privacy — secrets stripped
 POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "secret":"…" }
+PATCH  /v1/webhooks/:id             # { "events"?: [...], "active"?: bool }
 GET    /v1/webhooks/dead-letters    # undeliverable events
 DELETE /v1/webhooks/:id
 ```
+`events` is a non-empty list of the event types below, or `["*"]` for all of
+them (including any added later). `PATCH` changes a hook's selection or
+pauses it; another person's hook id answers `404`. Turning a paused hook back
+on starts it from now, so it does not replay what happened while it was off.
+The dashboard creates hooks for `presence.entered_place` and
+`presence.left_place` unless the person picks otherwise.
 `POST` answers `400` when the URL's host does not resolve, or resolves to a
 private or reserved IP (SSRF guard) unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`.
 The delivery re-checks the address each time. Each user may have 20 webhooks

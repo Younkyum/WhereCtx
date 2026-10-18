@@ -393,3 +393,14 @@ export function groupByDay<T>(items: readonly T[], timeOf: (item: T) => string):
   }
   return groups;
 }
+
+/**
+ * The next webhook event selection after a checkbox change: picking "all"
+ * replaces the single events, picking a single event drops "all".
+ */
+export function pickEvents(prev: readonly string[], next: readonly string[]): string[] {
+  const all = next.includes("*");
+  if (all && !prev.includes("*")) return ["*"];
+  if (all && next.length > 1) return next.filter((e) => e !== "*");
+  return [...next];
+}

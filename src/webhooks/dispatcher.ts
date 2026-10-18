@@ -24,6 +24,7 @@ import type { EventsStore } from "../store/eventsStore.js";
 import type { Webhook, WebhooksStore } from "../store/webhooksStore.js";
 import type { PresenceEvent } from "../types.js";
 import type { Clock } from "../util/time.js";
+import { WEBHOOK_HEADERS, WEBHOOK_USER_AGENT, eventPayload } from "./payload.js";
 import { assertSafeWebhookUrl } from "./ssrf.js";
 import { log } from "../util/log.js";
 
@@ -47,17 +48,6 @@ export interface DispatcherOptions {
   perUserSlots?: number;
   /** A drain stops starting deliveries after this long. Default 10 s. */
   drainBudgetMs?: number;
-}
-
-function eventPayload(ev: PresenceEvent): Record<string, unknown> {
-  return {
-    id: ev.id,
-    event: ev.type,
-    place: ev.placeName,
-    status: ev.status,
-    source: ev.source,
-    timestamp: ev.createdAt,
-  };
 }
 
 function subscribed(hook: Webhook, type: string): boolean {
@@ -243,8 +233,8 @@ export class WebhookDispatcher {
     const body = JSON.stringify(eventPayload(ev));
     const headers: Record<string, string> = {
       "content-type": "application/json",
-      "x-wherectx-event": ev.type,
-      "user-agent": "wherectx/0.1",
+      [WEBHOOK_HEADERS.event]: ev.type,
+      "user-agent": WEBHOOK_USER_AGENT,
     };
     if (hook.secret) {
       // BREAKING CHANGE (v0.2): The signed payload is `${timestamp}.${body}`, NOT
@@ -259,8 +249,8 @@ export class WebhookDispatcher {
       // and rejecting when |now - timestamp| exceeds a small tolerance (e.g. 5 min).
       const ts = Math.floor(this.opts.clock().getTime() / 1000).toString();
       const sig = createHmac("sha256", hook.secret).update(`${ts}.${body}`).digest("hex");
-      headers["x-wherectx-timestamp"] = ts;
-      headers["x-wherectx-signature"] = `sha256=${sig}`;
+      headers[WEBHOOK_HEADERS.timestamp] = ts;
+      headers[WEBHOOK_HEADERS.signature] = `sha256=${sig}`;
     }
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), this.timeoutMs);
