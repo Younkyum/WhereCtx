@@ -24,7 +24,7 @@ const USAGE = "usage: wherectx-admin reset-access <userId>";
 
 async function resetAccess(rawUserId: string | undefined): Promise<number> {
   if (!rawUserId) {
-    log.banner(USAGE);
+    log.banner`${USAGE}`;
     return 2;
   }
   const config = loadConfig();
@@ -33,17 +33,18 @@ async function resetAccess(rawUserId: string | undefined): Promise<number> {
     await ensureSchema(handle);
     const userId = asUserId(rawUserId);
     if (!(await new UsersStore(handle.db).get(userId))) {
-      log.banner(`no user with id "${userId}"`);
+      log.banner`no user with id "${userId}"`;
       return 1;
     }
     const codes = new AccessCodesStore(handle.db, new PasskeysStore(handle.db));
     const { code, expiresAt } = await codes.issue(userId);
-    log.banner(
-      `One-time access code for "${userId}" (valid until ${expiresAt}):\n\n    ${code}\n\n` +
-        "Give it to that person only. It registers a new passkey through\n" +
-        "POST /v1/auth/access-code/options and /verify, signs out their other\n" +
-        "sessions, and issues new recovery codes.",
-    );
+    log.banner`One-time access code for "${userId}" (valid until ${expiresAt}):
+
+    ${code}
+
+Give it to that person only. It registers a new passkey through
+POST /v1/auth/access-code/options and /verify, signs out their other
+sessions, and issues new recovery codes.`;
     return 0;
   } finally {
     handle.client.close();
@@ -53,7 +54,7 @@ async function resetAccess(rawUserId: string | undefined): Promise<number> {
 async function main(argv: string[]): Promise<number> {
   const [command, ...args] = argv;
   if (command === "reset-access") return resetAccess(args[0]);
-  log.banner(USAGE);
+  log.banner`${USAGE}`;
   return 2;
 }
 

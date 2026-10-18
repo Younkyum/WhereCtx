@@ -10,15 +10,21 @@
  *
  * `banner` is the one exception: the boot banner and the CLI print a setup
  * code, a generated admin token, or an access code that the operator must
- * read. It goes to stdout as is and never into the ring.
+ * read. Those values are Secrets (util/secret.ts), which the other calls
+ * refuse at the type level and print as "[secret]" anyway; `banner` reveals
+ * them, to stdout only, and never into the ring.
  */
 
 import { DrizzleQueryError } from "drizzle-orm";
 import { LOG_LEVELS, type LogEntry, type LogLevel } from "./logEntry.js";
+import { Secret } from "./secret.js";
 
 export { LOG_LEVELS, type LogEntry, type LogLevel };
 
 export type LogFields = Record<string, unknown>;
+
+/** Fields with no Secret among their values: the type-level half of keeping secrets out of the ring. */
+type NoSecrets<F> = { [K in keyof F]: F[K] extends Secret ? never : F[K] };
 
 export const RING_SIZE = 1000;
 const REDACTED = "[redacted]";
@@ -135,6 +141,7 @@ function redactValue(value: unknown, depth: number): unknown {
       return value;
   }
   if (value === null) return null;
+  if (value instanceof Secret) return REDACTED;
   if (value instanceof Error) return serializeError(value);
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? "Invalid Date" : value.toISOString();
   if (value instanceof URL) return redactString(value.href);
@@ -199,15 +206,25 @@ function withError(fields: LogFields | undefined, err: unknown): LogFields | und
 }
 
 export const log = {
-  debug: (msg: string, fields?: LogFields) => write("debug", msg, fields),
-  info: (msg: string, fields?: LogFields) => write("info", msg, fields),
-  warn: (msg: string, fields?: LogFields) => write("warn", msg, fields),
-  error: (msg: string, err?: unknown, fields?: LogFields) => write("error", msg, withError(fields, err)),
-  /** Operator-facing text with a secret in it: stdout only, unredacted, never kept. */
-  banner: (text: string) => {
+  debug: <F extends LogFields>(msg: string, fields?: F & NoSecrets<F>) => write("debug", msg, fields),
+  info: <F extends LogFields>(msg: string, fields?: F & NoSecrets<F>) => write("info", msg, fields),
+  warn: <F extends LogFields>(msg: string, fields?: F & NoSecrets<F>) => write("warn", msg, fields),
+  error: <F extends LogFields>(msg: string, err?: unknown, fields?: F & NoSecrets<F>) =>
+    write("error", msg, withError(fields, err)),
+  /**
+   * Operator-facing text that may carry a Secret, as a tagged template:
+   * log.banner`code: ${setupCode}`. Stdout only, never kept in the ring.
+   */
+  banner: (strings: TemplateStringsArray, ...values: Array<string | number | Secret>) => {
+    const text = strings.reduce(
+      (out, part, i) => out + part + (i < values.length ? reveal(values[i]!) : ""),
+      "",
+    );
     process.stdout.write(text + "\n");
   },
 };
+
+const reveal = (value: string | number | Secret): string => (value instanceof Secret ? value.reveal() : String(value));
 
 /** Newest first, at or above `minLevel`. */
 export function recentLogs(options: { minLevel?: LogLevel; limit?: number } = {}): LogEntry[] {

@@ -94,7 +94,7 @@ describe("the HTTP flows with real WebAuthn", () => {
     ctx = built.ctx;
     const app = buildApp(ctx);
     const authenticator = new SoftAuthenticator();
-    const code = built.bootstrap.setupCode!;
+    const code = built.bootstrap.setupCode!.reveal();
 
     const setup = new Browser(app, ORIGIN);
     const start = await setup.json("/v1/auth/setup/options", { body: { code } });

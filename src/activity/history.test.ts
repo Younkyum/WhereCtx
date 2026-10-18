@@ -3,6 +3,7 @@ import type { Hono } from "hono";
 import type { AppContext } from "../app/context.js";
 import { Browser, TestClock, bootApp, setupOwner, signUpByInvite, type Enrolled } from "../testing/accounts.js";
 import { clearLogs, log } from "../util/log.js";
+import { Secret } from "../util/secret.js";
 
 const HOME = { lat: 37.5, lon: 127.0 };
 const MINUTE = 60_000;
@@ -141,7 +142,7 @@ describe("history retention", () => {
 describe("GET /v1/admin/logs", () => {
   it("shows the operator recent redacted entries, never a banner", async () => {
     clearLogs();
-    log.banner("setup code ABCD-EFGH-IJKL");
+    log.banner`setup code ${new Secret("ABCD-EFGH-IJKL")}`;
     log.warn("upload refused", { token: "wctx_secretsecret", lat: 37.1 });
     const res = await owner.browser.send("/v1/admin/logs");
     expect(res.status).toBe(200);

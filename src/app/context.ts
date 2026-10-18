@@ -31,6 +31,7 @@ import { SecretBox } from "../webhooks/secretBox.js";
 import { systemClock, type Clock } from "../util/time.js";
 import { AccessCodesStore } from "../accounts/accessCodesStore.js";
 import { PasskeyAuth, generateSetupCode, setupCodeHash } from "../accounts/authService.js";
+import { Secret } from "../util/secret.js";
 import { Ceremonies } from "../accounts/ceremonies.js";
 import { InvitesStore } from "../accounts/invitesStore.js";
 import { NoncesStore } from "../accounts/noncesStore.js";
@@ -187,7 +188,7 @@ export type RouteContext = Pick<AppContext, "config" | "clock" | "onEvents">;
 export interface BootstrapInfo {
   seed: SeedResult;
   /** One-time code for registering the first passkey; set while none exists. */
-  setupCode?: string;
+  setupCode?: Secret;
 }
 
 export interface AppContextOptions {
@@ -313,14 +314,14 @@ export async function createAppContext(
  * While no passkey exists, mint a fresh setup code (only its hash is stored,
  * so any instance can check it); once one does, drop any leftover hash.
  */
-async function rotateSetupCode(system: SystemStores): Promise<string | undefined> {
+async function rotateSetupCode(system: SystemStores): Promise<Secret | undefined> {
   if ((await system.passkeys.countAll()) > 0) {
     await system.serverSecrets.clearSetupCode();
     return undefined;
   }
   const code = generateSetupCode();
   await system.serverSecrets.putSetupCodeHash(setupCodeHash(code));
-  return code;
+  return new Secret(code);
 }
 
 function pick<T, K extends keyof T>(source: T, keys: readonly K[]): Pick<T, K> {

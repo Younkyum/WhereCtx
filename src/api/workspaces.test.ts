@@ -41,7 +41,7 @@ beforeEach(async () => {
   });
   ctx = built.ctx;
   app = buildApp(ctx);
-  owner = (await setupOwner(app, built.bootstrap.setupCode!)).browser;
+  owner = (await setupOwner(app, built.bootstrap.setupCode!.reveal())).browser;
   defaultWs = (await owner.json("/v1/workspaces")).workspaces[0].id;
 });
 

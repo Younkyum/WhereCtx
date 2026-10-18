@@ -196,7 +196,7 @@ describe("log", () => {
   });
 
   it("never keeps a banner, which carries a secret on purpose", () => {
-    log.banner(`Save it now: ${SECRET}`);
+    log.banner`Save it now: ${SECRET}`;
     expect(written.join("")).toContain(SECRET);
     expect(recentLogs()).toEqual([]);
   });

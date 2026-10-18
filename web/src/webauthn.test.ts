@@ -15,7 +15,7 @@ let setupCode: string;
 beforeAll(async () => {
   const booted = await createAppContext(testConfig());
   app = buildApp(booted.ctx);
-  setupCode = booted.bootstrap.setupCode!;
+  setupCode = booted.bootstrap.setupCode!.reveal();
 });
 
 /** Turn the soft authenticator's JSON into what a browser's PublicKeyCredential looks like. */

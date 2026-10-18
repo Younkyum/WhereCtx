@@ -1,0 +1,153 @@
+/**
+ * The server's startup sequence, from a loaded config to a listening
+ * http.Server: build the context, print the boot banners, wire the webhook
+ * dispatcher and the sweeps, and route /mcp to the MCP transport and
+ * everything else to the Hono app. `close` undoes it in order.
+ */
+
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { getRequestListener } from "@hono/node-server";
+import type { WhereCtxConfig } from "../config.js";
+import { RateLimiter } from "../api/rateLimit.js";
+import { passkeyBaseUrlProblem } from "../accounts/passkeys.js";
+import { createAppContext, closeAppContext, type AppContext, type AppContextOptions } from "./context.js";
+import { buildApp, type BuildAppOptions } from "./server.js";
+import { pruneOnce } from "./prune.js";
+import { mcpNodeHandler } from "../mcp/http.js";
+import { WebhookDispatcher } from "../webhooks/dispatcher.js";
+import { log } from "../util/log.js";
+
+const STALE_SWEEP_MS = 60_000;
+const WEBHOOK_TICK_MS = 15_000;
+const PRUNE_SWEEP_MS = 6 * 3600_000;
+
+export interface Running {
+  ctx: AppContext;
+  server: Server;
+  /** The bound port (useful with port 0). */
+  port: number;
+  close(): Promise<void>;
+}
+
+const RULE = "──────────────────────────────────────────────────────────────";
+
+export async function startServer(
+  config: WhereCtxConfig,
+  options: AppContextOptions & Pick<BuildAppOptions, "dashboardDir"> = {},
+): Promise<Running> {
+  const { ctx, bootstrap } = await createAppContext(config, options);
+
+  for (const w of bootstrap.seed.warnings) log.warn(w);
+  if (bootstrap.seed.seeded.length > 0) {
+    log.info("seeded tokens", { roles: bootstrap.seed.seeded.join(",") });
+  }
+  if (bootstrap.seed.generatedAdminSecret) {
+    log.banner`
+${RULE}
+  USER_ID "${config.defaultUserId}" had no admin token, so one was generated.
+  Save it now — it will not be shown again:
+
+    ${bootstrap.seed.generatedAdminSecret}
+${RULE}
+`;
+  }
+
+  const passkeyProblem = passkeyBaseUrlProblem(config.baseUrl);
+  if (passkeyProblem) log.warn(passkeyProblem);
+
+  if (bootstrap.setupCode) {
+    log.banner`
+${RULE}
+  No passkey is registered yet. This one-time setup code lets
+  you register the owner's passkey:
+
+    ${bootstrap.setupCode}
+
+  Open ${config.baseUrl}/dashboard and choose "First-time setup".
+  The code works until the first passkey is registered; a restart
+  replaces it.
+${RULE}
+`;
+  }
+
+  // Webhook secret hygiene: encrypt any legacy plaintext secrets once a key is
+  // configured, and warn when secrets are stored without one (review H2).
+  if (config.webhooks.encryptionKey) {
+    const migrated = await ctx.system.webhooks.encryptLegacySecrets();
+    if (migrated > 0) {
+      log.info("encrypted legacy webhook secrets at rest", { count: migrated });
+    }
+  } else if (await ctx.system.webhooks.hasPlaintextSecrets()) {
+    log.warn(
+      "webhook signing secrets are stored as plaintext; set WEBHOOK_ENCRYPTION_KEY to encrypt them at rest",
+    );
+  }
+
+  // Webhook delivery: nudge on every emitted event, plus a periodic tick.
+  const dispatcher = new WebhookDispatcher({
+    webhooksStore: ctx.system.webhooks,
+    eventsStore: ctx.system.events,
+    clock: ctx.clock,
+    allowPrivateTargets: config.webhooks.allowPrivateTargets,
+  });
+  ctx.onEvents = () => dispatcher.nudge();
+  dispatcher.start(WEBHOOK_TICK_MS);
+
+  // Periodic stale sweep: fires became_stale even with no reads.
+  const staleSweep = setInterval(() => {
+    ctx.system.service
+      .sweepStale()
+      .then((events) => {
+        if (events.length > 0) dispatcher.nudge();
+      })
+      .catch((e) => log.error("stale sweep failed", e));
+  }, STALE_SWEEP_MS);
+  staleSweep.unref?.();
+
+  const prune = (): void => {
+    pruneOnce(ctx.system, config).catch((e) => log.error("prune sweep failed", e));
+  };
+  prune();
+  const pruneSweep = setInterval(prune, PRUNE_SWEEP_MS);
+  pruneSweep.unref?.();
+
+  // One shared limiter so REST and MCP auth failures count together.
+  const authLimiter = new RateLimiter();
+  const app = buildApp(ctx, { authLimiter, dashboardDir: options.dashboardDir });
+  const honoListener = getRequestListener(app.fetch);
+  const mcp = mcpNodeHandler(ctx, authLimiter);
+
+  const server = createServer((req, res) => {
+    // Match on the parsed pathname so query strings / encodings don't confuse
+    // the /mcp vs Hono split. The MCP handler authenticates independently, so a
+    // miss falling through to Hono is fail-safe (404, no auth bypass).
+    let pathname = req.url ?? "";
+    try {
+      pathname = new URL(req.url ?? "", "http://localhost").pathname;
+    } catch {
+      /* keep raw */
+    }
+    if (pathname === "/mcp") {
+      void mcp(req, res);
+      return;
+    }
+    honoListener(req, res);
+  });
+
+  await new Promise<void>((resolve) => server.listen(config.port, config.host, resolve));
+  const port = (server.address() as AddressInfo).port;
+  log.info(`WhereCtx listening on http://${config.host}:${port}`, { baseUrl: config.baseUrl });
+
+  const close = async (): Promise<void> => {
+    const drained = dispatcher.stop();
+    clearInterval(staleSweep);
+    clearInterval(pruneSweep);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // In-flight drains write cursors; let them return before the DB closes.
+    await drained;
+    closeAppContext(ctx);
+  };
+
+  return { ctx, server, port, close };
+}

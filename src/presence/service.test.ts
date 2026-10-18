@@ -176,7 +176,7 @@ describe("TokenStore", () => {
     expect(result.warnings.length).toBeGreaterThanOrEqual(2);
     expect(result.generatedAdminSecret).toBeDefined();
 
-    const verified = await store.verify(result.generatedAdminSecret);
+    const verified = await store.verify(result.generatedAdminSecret!.reveal());
     expect(verified?.role).toBe("admin");
     expect(verified?.scopes).toContain("manage_tokens");
     expect(await store.verify("wrong")).toBeNull();
@@ -188,7 +188,7 @@ describe("TokenStore", () => {
     const strong = "a-very-strong-agent-token-1234567890";
     const first = await store.seedBootstrap(USER, { agent: strong });
     expect(first.generatedAdminSecret).toBeDefined();
-    expect((await store.verify(first.generatedAdminSecret))?.userId).toBe(USER);
+    expect((await store.verify(first.generatedAdminSecret!.reveal()))?.userId).toBe(USER);
     expect((await store.seedBootstrap(USER, { agent: strong })).generatedAdminSecret).toBeUndefined();
   });
 
