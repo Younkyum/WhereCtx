@@ -76,7 +76,9 @@ accident.
      `presence.privacy_changed`. A sweep emits `presence.became_stale`.
    - raw history is recorded when enabled, and matching reminders fire.
 4. The events are stored, then the webhook dispatcher delivers each user's
-   events to that user's hooks.
+   events to that user's hooks. Each hook drains on its own from its cursor,
+   with at most 8 drains at once, at most 2 per user, and 10 s per drain,
+   so a slow endpoint delays only its own hook.
 
 ## Read flow
 

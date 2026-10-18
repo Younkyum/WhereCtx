@@ -246,3 +246,96 @@ describe("WebhookDispatcher", () => {
     expect(dead[0]!.error).toMatch(/private|reserved/);
   });
 });
+
+describe("WebhookDispatcher scheduling", () => {
+  const OTHER = asUserId("other");
+
+  /** A fake endpoint per URL: "hang" waits until aborted, "ok" answers 200. */
+  function endpoints(behavior: (url: string) => "hang" | "ok") {
+    const delivered: Array<{ url: string; id: string }> = [];
+    const hanging = new Set<string>();
+    const fetchFn = (async (url: string, init: RequestInit) => {
+      if (behavior(url) === "ok") {
+        delivered.push({ url, id: JSON.parse(String(init.body)).id });
+        return new Response(null, { status: 200 });
+      }
+      hanging.add(url);
+      return new Promise<Response>((_, reject) => {
+        init.signal!.addEventListener("abort", () => {
+          hanging.delete(url);
+          reject(new Error("aborted"));
+        });
+      });
+    }) as unknown as typeof fetch;
+    return { fetchFn, delivered, hanging };
+  }
+
+  it("delivers another user's new events while one user's endpoint hangs", async () => {
+    await webhooks.create(USER, { url: "https://slow.test/hook", events: ["*"] });
+    await webhooks.create(OTHER, { url: "https://fast.test/hook", events: ["*"] });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    const first = await events.append(OTHER, { type: "presence.updated", status: "home" });
+
+    const ep = endpoints((url) => (url.includes("slow") ? "hang" : "ok"));
+    const dispatcher = makeDispatcher({ fetchFn: ep.fetchFn, timeoutMs: 60_000 });
+    dispatcher.nudge();
+    await vi.waitFor(() => expect(ep.delivered.map((d) => d.id)).toEqual([first.id]));
+
+    nowMs += 1;
+    const second = await events.append(OTHER, { type: "presence.entered_place", placeName: "home" });
+    dispatcher.nudge();
+    await vi.waitFor(() => expect(ep.delivered.map((d) => d.id)).toEqual([first.id, second.id]));
+    expect(ep.hanging).toEqual(new Set(["https://slow.test/hook"]));
+
+    await dispatcher.stop();
+    expect(ep.hanging.size).toBe(0);
+    expect(await webhooks.listDeadLetters(USER)).toEqual([]);
+  });
+
+  it("caps drains per user and in total", async () => {
+    for (let i = 0; i < 3; i++) await webhooks.create(USER, { url: `https://a${i}.test/hook`, events: ["*"] });
+    for (let i = 0; i < 3; i++) await webhooks.create(OTHER, { url: `https://b${i}.test/hook`, events: ["*"] });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    await events.append(OTHER, { type: "presence.updated", status: "home" });
+
+    const ep = endpoints(() => "hang");
+    const dispatcher = makeDispatcher({
+      fetchFn: ep.fetchFn,
+      timeoutMs: 60_000,
+      maxConcurrent: 3,
+      perUserSlots: 2,
+    });
+    dispatcher.nudge();
+    await vi.waitFor(() => expect(ep.hanging.size).toBe(3));
+    await new Promise((r) => setTimeout(r, 20));
+    const perUser = (prefix: string) => [...ep.hanging].filter((u) => u.startsWith(prefix)).length;
+    expect(ep.hanging.size).toBe(3);
+    expect(perUser("https://a")).toBe(2);
+    expect(perUser("https://b")).toBe(1);
+    await dispatcher.stop();
+  });
+
+  it("stops a drain at its time budget and resumes from the cursor", async () => {
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"] });
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      nowMs += 1000;
+      ids.push((await events.append(USER, { type: "presence.updated", status: "home" })).id);
+    }
+
+    const delivered: string[] = [];
+    const fetchFn = (async (_url: string, init: RequestInit) => {
+      delivered.push(JSON.parse(String(init.body)).id);
+      nowMs += 4_000;
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+    const dispatcher = makeDispatcher({ fetchFn, drainBudgetMs: 10_000 });
+
+    await dispatcher.tick();
+    expect(delivered).toEqual(ids.slice(0, 3));
+    await dispatcher.tick();
+    expect(delivered).toEqual(ids);
+  });
+});

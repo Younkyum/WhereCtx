@@ -142,12 +142,15 @@ async function main(): Promise<void> {
     if (shuttingDown) process.exit(1);
     shuttingDown = true;
     console.log("shutting down…");
-    dispatcher.stop();
+    const drained = dispatcher.stop();
     clearInterval(staleSweep);
     clearInterval(pruneSweep);
     server.close(() => {
-      closeAppContext(ctx);
-      process.exit(0);
+      // In-flight drains write cursors; let them return before the DB closes.
+      void drained.finally(() => {
+        closeAppContext(ctx);
+        process.exit(0);
+      });
     });
     setTimeout(() => process.exit(0), 10_000).unref();
   };

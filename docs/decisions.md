@@ -232,5 +232,13 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
   Boot warns on any IP `BASE_URL`, and the sign-in page says so on an IP
   origin, both pointing at `http://localhost:<port>` or an https domain.
   Phone pairing keeps its own rule, which rejects every loopback host.
+- **Webhook hooks drain independently, in a slot table.** The old dispatcher
+  ran one tick over every hook and waited for all of them, so one user's
+  hanging endpoint (5 s per event, up to 100 events) delayed every other
+  user's next delivery. Now a tick marks hooks due, and due hooks start in
+  least-recently-run order while a slot is free: 8 in all, 2 per user. A
+  drain stops after 10 s and resumes from its cursor on the next tick, so
+  delivery stays at-least-once. Shutdown aborts in-flight requests, which
+  leave their cursors in place, and waits for drains before closing the DB.
 - **MCP stays on bearer tokens.** Each token belongs to one person. OAuth 2.1
   for MCP clients is a later step.
