@@ -147,41 +147,87 @@ describe("dashboard app", () => {
     expect(host.textContent).toContain("Sign in to WhereCtx");
   });
 
-  it("shows a pending authorization's consent screen, precise location off until ticked", async () => {
+  const CONSENT_REQUEST = {
+    client: { id: "https://client.example/meta.json", name: "Test Agent", uri: "https://agent-site.example" },
+    redirectUri: "http://127.0.0.1:9876/cb",
+    redirectHost: "127.0.0.1:9876",
+    localhostOnly: true,
+    requestedScopes: ["presence:read", "location:precise"],
+    resource: "https://where.example.com/mcp",
+  };
+
+  it("shows a pending authorization's consent screen and confirms after a passkey step-up", async () => {
     const assign = vi.fn();
     vi.stubGlobal("location", Object.assign(new URL(location.href), { hash: "#authorize/u1", assign }));
     route("GET /v1/me", () => ({ status: 200, body: ME }));
-    route("GET /oauth/interaction/u1/details", () => ({
-      status: 200,
-      body: {
-        client: { id: "https://client.example/meta.json", name: "Test Agent", uri: "https://client.example" },
-        redirectUri: "http://127.0.0.1:9876/cb",
-        redirectHost: "127.0.0.1:9876",
-        localhostOnly: true,
-        requestedScopes: ["presence:read", "location:precise"],
-        resource: "https://where.example.com/mcp",
-      },
-    }));
-    let confirmed: unknown;
+    route("GET /oauth/interaction/u1/details", () => ({ status: 200, body: CONSENT_REQUEST }));
+    let reauthed = false;
+    route("POST /v1/me/reauth/options", () => ({ status: 200, body: { ceremony: "c1", options: { challenge: "AQID" } } }));
+    route("POST /v1/me/reauth/verify", () => {
+      reauthed = true;
+      return { status: 200, body: { ok: true } };
+    });
+    const confirmed: unknown[] = [];
     route("POST /oauth/interaction/u1/confirm", (body) => {
-      confirmed = body;
-      return { status: 200, body: { redirectTo: "https://where.example.com/oauth/authorize/u1" } };
+      confirmed.push(body);
+      return reauthed
+        ? { status: 200, body: { redirectTo: "https://where.example.com/oauth/authorize/u1" } }
+        : { status: 403, body: { error: "confirm with your passkey first", code: "reauth_required" } };
     });
 
     await act(async () => root.render(<App />));
     await settle();
     expect(host.querySelector("h1")?.textContent).toBe("Connect Test Agent?");
-    expect(host.textContent).toContain("127.0.0.1:9876");
+    expect(host.textContent).toContain("Verified app ID");
     expect(host.textContent).toContain("client.example");
+    expect(host.textContent).toContain("Website (the app's claim)");
+    expect(host.textContent).toContain("agent-site.example");
+    expect(host.textContent).toContain("127.0.0.1:9876");
+    expect(host.textContent).toContain(ME.user.displayName);
+    expect(host.querySelector("img")).toBeNull();
     expect(host.textContent).toContain("This app runs on a computer, not a website");
+    expect(host.textContent).toContain("Create location reminders, and new places other than home");
     const checkbox = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     expect(checkbox.checked).toBe(false);
     await act(async () => checkbox.click());
 
     await act(async () => button("Allow").click());
     await settle();
-    expect(confirmed).toEqual({ precise: true });
+    expect(calls).toContain("POST /v1/me/reauth/verify");
+    expect(confirmed).toEqual([{ precise: true }, { precise: true }]);
     expect(assign).toHaveBeenCalledWith("https://where.example.com/oauth/authorize/u1");
+  });
+
+  it("lists only what the requested scopes allow", async () => {
+    vi.stubGlobal("location", Object.assign(new URL(location.href), { hash: "#authorize/u1", assign: vi.fn() }));
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /oauth/interaction/u1/details", () => ({
+      status: 200,
+      body: { ...CONSENT_REQUEST, requestedScopes: ["location:precise"] },
+    }));
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.textContent).not.toContain("See your presence");
+    expect(host.textContent).toContain("Also allow precise location");
+  });
+
+  it("shows an answered or expired authorization as expired and disables Allow", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", Object.assign(new URL(location.href), { hash: "#authorize/u1", assign }));
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /oauth/interaction/u1/details", () => ({ status: 200, body: CONSENT_REQUEST }));
+    route("POST /oauth/interaction/u1/confirm", () => ({
+      status: 404,
+      body: { error: "expired", code: "interaction_expired" },
+    }));
+    await act(async () => root.render(<App />));
+    await settle();
+    await act(async () => button("Allow").click());
+    await settle();
+    expect(host.textContent).toContain("This request expired or was started in another browser.");
+    expect(button("Allow").disabled).toBe(true);
+    expect(button("Deny").disabled).toBe(true);
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("lists connected apps on the Agents screen and disconnects one after confirmation", async () => {
@@ -207,6 +253,7 @@ describe("dashboard app", () => {
     await settle();
     expect(host.textContent).toContain("Connected apps");
     expect(host.textContent).toContain("Test Agent");
+    expect(host.textContent).toContain("client.example");
 
     await act(async () => button("Revoke").click());
     await settle();

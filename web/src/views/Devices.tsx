@@ -17,7 +17,7 @@ import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
-import { qrFromSvg } from "../lib";
+import { hostOf, qrFromSvg } from "../lib";
 import type { ApiToken, ConnectedApp, Pairing } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, Secret, download, useAction, useConfirm, useLoad, useNotify } from "../ui";
 
@@ -229,6 +229,7 @@ function ConnectedApps() {
               idKey="id"
               columns={[
                 { key: "name", header: t("agents.app") },
+                { key: "clientId", header: t("agents.appId"), renderCell: (a) => <Code>{hostOf(a.clientId) ?? a.clientId}</Code> },
                 { key: "scopes", header: t("agents.access"), renderCell: (a) => a.scopes.map((s) => t(`scope.${s}`)).join(", ") },
                 { key: "createdAt", header: t("agents.connected"), renderCell: (a) => <Timestamp value={a.createdAt} format="date" /> },
                 {

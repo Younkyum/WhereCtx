@@ -1,8 +1,12 @@
 /**
  * The OAuth consent screen an MCP client sends the person to
- * (`#authorize/<uid>`): who is asking, where the browser goes back to, and
- * what the app may read. Every authorization comes here; nothing is
- * remembered from an earlier one.
+ * (`#authorize/<uid>`): who is asking, where the browser goes back to, which
+ * account it would act as, and what the app may do. Every authorization comes
+ * here; nothing is remembered from an earlier one. Allowing needs a fresh
+ * passkey proof, which `api()` asks for on the server's `reauth_required`.
+ *
+ * Only the client ID is verified (the server fetched the app's metadata from
+ * it); the name and website are whatever that metadata claims.
  */
 
 import { Banner } from "@astryxdesign/core/Banner";
@@ -13,11 +17,12 @@ import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Code } from "@astryxdesign/core/Code";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
+import { List, ListItem } from "@astryxdesign/core/List";
 import { MetadataList, MetadataListItem } from "@astryxdesign/core/MetadataList";
 import { Text } from "@astryxdesign/core/Text";
 import { useState } from "react";
-import { api } from "../api";
-import { useApp } from "../context";
+import { ApiError, api } from "../api";
+import { useApp, useMe } from "../context";
 import { hostOf } from "../lib";
 import type { ConsentRequest } from "../model";
 import { Loaded, useLoad, useNotify } from "../ui";
@@ -37,11 +42,15 @@ export function AuthorizeView({ uid }: { uid: string }) {
 
 function Consent({ uid, request }: { uid: string; request: ConsentRequest }) {
   const { t } = useApp();
+  const me = useMe();
   const notify = useNotify();
   const [precise, setPrecise] = useState(false);
   const [pending, setPending] = useState<"confirm" | "abort" | null>(null);
+  const [expired, setExpired] = useState(false);
   const client = request.client.name ?? request.client.id;
+  const clientHost = hostOf(request.client.id) ?? request.client.id;
   const website = request.client.uri ? hostOf(request.client.uri) : null;
+  const scopes = new Set(request.requestedScopes);
 
   const finish = async (action: "confirm" | "abort") => {
     setPending(action);
@@ -50,7 +59,8 @@ function Consent({ uid, request }: { uid: string; request: ConsentRequest }) {
       const { redirectTo } = await api<{ redirectTo: string }>(interactionPath(uid, action), { method: "POST", body });
       location.assign(redirectTo);
     } catch (e) {
-      notify.fail(e);
+      if (e instanceof ApiError && e.status === 404) setExpired(true);
+      else notify.fail(e);
       setPending(null);
     }
   };
@@ -61,9 +71,9 @@ function Consent({ uid, request }: { uid: string; request: ConsentRequest }) {
         <Heading level={1}>{t("authorize.title", { client })}</Heading>
         <Text color="secondary">{t("authorize.desc", { client })}</Text>
       </VStack>
-      <MetadataList columns="single" label={{ position: "start", width: 128 }}>
-        <MetadataListItem label={t("authorize.app")}>
-          <Text weight="semibold">{client}</Text>
+      <MetadataList columns="single" label={{ position: "start", width: 144 }}>
+        <MetadataListItem label={t("authorize.clientId")}>
+          <Code>{clientHost}</Code>
         </MetadataListItem>
         {website ? (
           <MetadataListItem label={t("authorize.website")}>
@@ -72,6 +82,9 @@ function Consent({ uid, request }: { uid: string; request: ConsentRequest }) {
         ) : null}
         <MetadataListItem label={t("authorize.redirect")}>
           <Code>{request.redirectHost}</Code>
+        </MetadataListItem>
+        <MetadataListItem label={t("authorize.account")}>
+          <Text weight="semibold">{me.user.displayName}</Text>
         </MetadataListItem>
       </MetadataList>
       {request.localhostOnly ? (
@@ -84,30 +97,37 @@ function Consent({ uid, request }: { uid: string; request: ConsentRequest }) {
       ) : null}
       <VStack gap={3}>
         <Heading level={2}>{t("authorize.can")}</Heading>
-        <Text>{t("authorize.presence")}</Text>
-        {request.requestedScopes.includes("location:precise") ? (
+        {scopes.has("presence:read") ? (
+          <List listStyle="disc" density="compact">
+            <ListItem label={t("authorize.presence")} />
+            <ListItem label={t("authorize.places")} />
+            <ListItem label={t("authorize.create")} />
+          </List>
+        ) : null}
+        {scopes.has("location:precise") ? (
           <CheckboxInput
             label={t("authorize.precise")}
             description={t("authorize.preciseDesc")}
             value={precise}
             onChange={setPrecise}
-            isDisabled={pending !== null}
+            isDisabled={pending !== null || expired}
           />
         ) : null}
       </VStack>
+      {expired ? <Banner status="error" title={t("err.interactionExpired")} collapsible={false} /> : null}
       <HStack gap={2} hAlign="end" wrap="wrap">
         <Button
           label={t("authorize.deny")}
           variant="ghost"
           isLoading={pending === "abort"}
-          isDisabled={pending === "confirm"}
+          isDisabled={pending === "confirm" || expired}
           onClick={() => void finish("abort")}
         />
         <Button
           label={t("authorize.allow")}
           variant="primary"
           isLoading={pending === "confirm"}
-          isDisabled={pending === "abort"}
+          isDisabled={pending === "abort" || expired}
           onClick={() => void finish("confirm")}
         />
       </HStack>
