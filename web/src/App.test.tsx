@@ -234,4 +234,31 @@ describe("log views", () => {
     expect(host.textContent).toContain("Claude Desktop · REST API");
     expect(() => button("Show older")).toThrow();
   });
+
+  it("Devices shows when each phone last sent and the recent uploads, never a location", async () => {
+    route("GET /v1/devices", () => ({
+      status: 200,
+      body: {
+        devices: [
+          { id: "d1", name: "Pixel", createdAt: "", lastUsedAt: null, lastReceivedAt: "2026-10-18T01:00:00.000Z", lastOutcome: "rejected", accepted24h: 3, rejected24h: 1 },
+          { id: "d2", name: "iPad", createdAt: "", lastUsedAt: null, lastReceivedAt: null, lastOutcome: null, accepted24h: 0, rejected24h: 0 },
+        ],
+      },
+    }));
+    route("GET /v1/activity/ingest?limit=20", () => ({
+      status: 200,
+      body: {
+        entries: [
+          { id: "i1", token: { id: "d1", name: "Pixel" }, source: "owntracks", outcome: "rejected", reason: "OwnTracks location missing lat/lon", receivedAt: "2026-10-18T01:00:00.000Z" },
+          { id: "i2", token: null, source: "generic", outcome: "accepted", receivedAt: "2026-10-18T00:30:00.000Z" },
+        ],
+      },
+    }));
+    await open("#devices");
+    expect(host.textContent).toContain("Last 24 hours: 3 accepted, 1 rejected");
+    expect(host.textContent).toContain("Nothing received yet");
+    expect(host.textContent).toContain("This dashboard");
+    expect(host.textContent).toContain("OwnTracks location missing lat/lon");
+    expect(host.textContent).toContain("Rejected");
+  });
 });

@@ -4,6 +4,7 @@
  * after creation; the lists show tokens without them.
  */
 
+import { Badge, type BadgeProps } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Code } from "@astryxdesign/core/Code";
@@ -17,19 +18,19 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import { qrFromSvg } from "../lib";
-import type { ApiToken, Pairing } from "../model";
-import { Empty, Hint, Loaded, Page, Panel, Secret, download, useAction, useConfirm, useLoad, useNotify } from "../ui";
+import type { ApiToken, DeviceSummary, IngestEntry, IngestOutcome, Pairing } from "../model";
+import { Empty, Hint, Loaded, Page, Panel, Row, Rows, Secret, download, useAction, useConfirm, useFormat, useLoad, useNotify, usePaged } from "../ui";
 
 function useTokens(keep: (k: ApiToken) => boolean) {
   return useLoad(() => api<{ tokens: ApiToken[] }>("/v1/tokens").then((r) => (r.tokens ?? []).filter(keep)), []);
 }
 
-function TokenTable({ tokens, emptyText, onChanged }: { tokens: ApiToken[]; emptyText: string; onChanged: () => Promise<void> }) {
+/** Revoke a token after a confirmation, then refresh the list it came from. */
+function useRevoke(onChanged: () => Promise<void>) {
   const { t } = useApp();
   const notify = useNotify();
   const confirm = useConfirm();
-  if (!tokens.length) return <Empty text={emptyText} />;
-  const revoke = async (k: ApiToken) => {
+  return async (k: { id: string; name: string }) => {
     if (!(await confirm({ title: t("tokens.revokeConfirm", { name: k.name }), action: t("common.revoke") }))) return;
     try {
       await api(`/v1/tokens/${encodeURIComponent(k.id)}`, { method: "DELETE" });
@@ -39,6 +40,12 @@ function TokenTable({ tokens, emptyText, onChanged }: { tokens: ApiToken[]; empt
     }
     await onChanged();
   };
+}
+
+function TokenTable({ tokens, emptyText, onChanged }: { tokens: ApiToken[]; emptyText: string; onChanged: () => Promise<void> }) {
+  const { t } = useApp();
+  const revoke = useRevoke(onChanged);
+  if (!tokens.length) return <Empty text={emptyText} />;
   return (
     <Table
       data={tokens.map((k) => ({ ...k }))}
@@ -64,9 +71,88 @@ function TokenTable({ tokens, emptyText, onChanged }: { tokens: ApiToken[]; empt
 
 type PairResult = { kind: "paired"; name: string; pairing: Pairing } | { kind: "baseUrl"; message: string };
 
+export const INGEST_BADGE: Record<IngestOutcome, BadgeProps["variant"]> = {
+  accepted: "success",
+  rejected: "error",
+  ignored: "neutral",
+};
+
+function DeviceList({ devices, onChanged }: { devices: DeviceSummary[]; onChanged: () => Promise<void> }) {
+  const { t } = useApp();
+  const format = useFormat();
+  const revoke = useRevoke(onChanged);
+  if (!devices.length) return <Empty text={t("devices.empty")} />;
+  return (
+    <Rows items={devices} keyOf={(d) => d.id}>
+      {(d) => (
+        <Row
+          title={
+            <HStack gap={2} wrap="wrap" vAlign="center">
+              <Text weight="semibold">{d.name}</Text>
+              {d.lastOutcome ? <Badge variant={INGEST_BADGE[d.lastOutcome]} label={t(`ingest.outcome.${d.lastOutcome}`)} /> : null}
+            </HStack>
+          }
+          subtitle={
+            <VStack gap={0.5}>
+              <Text type="supporting">
+                {d.lastReceivedAt ? t("devices.lastReceived", { when: format.time(d.lastReceivedAt) }) : t("devices.neverReceived")}
+              </Text>
+              <Text type="supporting">{t("devices.counts", { accepted: d.accepted24h, rejected: d.rejected24h })}</Text>
+            </VStack>
+          }
+        >
+          <Button label={t("common.revoke")} variant="destructive" size="sm" clickAction={() => revoke(d)} />
+        </Row>
+      )}
+    </Rows>
+  );
+}
+
+function RecentUploads() {
+  const { t } = useApp();
+  const format = useFormat();
+  const log = usePaged<IngestEntry>("/v1/activity/ingest?limit=20");
+  return (
+    <VStack gap={3}>
+      <Loaded state={log.state}>
+        {(entries) =>
+          entries.length ? (
+            <Rows items={entries} keyOf={(e) => e.id}>
+              {(e) => (
+                <Row
+                  title={
+                    <HStack gap={2} wrap="wrap" vAlign="center">
+                      <Text weight="semibold">{e.token?.name ?? t("devices.fromDashboard")}</Text>
+                      <Badge variant={INGEST_BADGE[e.outcome] ?? "neutral"} label={t(`ingest.outcome.${e.outcome}`)} />
+                    </HStack>
+                  }
+                  subtitle={[t(`ingest.route.${e.source}`), format.time(e.receivedAt), e.reason].filter(Boolean).join(" · ")}
+                />
+              )}
+            </Rows>
+          ) : (
+            <Empty text={t("devices.uploadsEmpty")} />
+          )
+        }
+      </Loaded>
+      {log.hasMore ? (
+        <HStack>
+          <Button label={t("activity.more")} isLoading={log.loadingMore} onClick={() => void log.more()} />
+        </HStack>
+      ) : null}
+      <Hint>{t("devices.uploadsNote")}</Hint>
+    </VStack>
+  );
+}
+
 export function DevicesView() {
   const { t } = useApp();
-  const [tokens, reload] = useTokens((k) => k.role === "device");
+  const [devices, reloadDevices] = useLoad(() => api<{ devices: DeviceSummary[] }>("/v1/devices").then((r) => r.devices ?? []), []);
+  const [version, setVersion] = useState(0);
+  const reload = async () => {
+    setVersion((v) => v + 1);
+    await reloadDevices();
+  };
   const [name, setName] = useState("");
   const [kind, setKind] = useState<Pairing["kind"]>("owntracks");
   const [result, setResult] = useState<PairResult | null>(null);
@@ -122,8 +208,11 @@ export function DevicesView() {
           {result?.kind === "paired" ? <PairingResult name={result.name} pairing={result.pairing} /> : null}
         </VStack>
       </Panel>
-      <Panel title={t("devices.list")}>
-        <Loaded state={tokens}>{(list) => <TokenTable tokens={list} emptyText={t("devices.empty")} onChanged={reload} />}</Loaded>
+      <Panel title={t("devices.list")} actions={<Button label={t("devices.refresh")} size="sm" onClick={() => void reload()} />}>
+        <Loaded state={devices}>{(list) => <DeviceList devices={list} onChanged={reload} />}</Loaded>
+      </Panel>
+      <Panel title={t("devices.uploads")}>
+        <RecentUploads key={version} />
       </Panel>
     </Page>
   );
@@ -175,6 +264,7 @@ function PairingResult({ name, pairing }: { name: string; pairing: Pairing }) {
       <StackItem size="fill">
         <VStack gap={3}>
           <Steps steps={[{ text: t("devices.ot.step1") }, { text: t("devices.ot.step2") }, { text: t("devices.ot.step3") }]} />
+          <Banner status="info" title={t("devices.ot.iosTitle")} description={t("devices.ot.iosDesc")} collapsible={false} />
           <HStack gap={2} wrap="wrap">
             <Button label={t("devices.ot.open")} variant="primary" href={pairing.link} />
             <Button

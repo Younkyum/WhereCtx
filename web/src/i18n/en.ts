@@ -424,6 +424,23 @@ export const EN = {
   "access.action.create_location_reminder": "Set a reminder for a place",
   "access.action.create_place": "Saved a place",
   "access.action.remember_current_place": "Saved where you are as a place",
+
+  "devices.lastReceived": "Last received {when}",
+  "devices.neverReceived": "Nothing received yet",
+  "devices.counts": "Last 24 hours: {accepted} accepted, {rejected} rejected",
+  "devices.refresh": "Refresh",
+  "devices.uploads": "Recent uploads",
+  "devices.uploadsEmpty": "No uploads yet. Once a phone sends its location, it shows up here.",
+  "devices.uploadsNote": "Shows when each upload arrived and whether it was used, never the location itself. Kept for a few days.",
+  "devices.fromDashboard": "This dashboard",
+  "ingest.outcome.accepted": "Accepted",
+  "ingest.outcome.rejected": "Rejected",
+  "ingest.outcome.ignored": "Ignored",
+  "ingest.route.generic": "HTTP",
+  "ingest.route.shortcut": "iOS Shortcut",
+  "ingest.route.owntracks": "OwnTracks",
+  "devices.ot.iosTitle": "On iPhone, allow setup links first",
+  "devices.ot.iosDesc": "OwnTracks for iOS 26.2.2 and later refuses setup by link or file (\"URL or file configuration not allowed\"). In OwnTracks, open Settings, allow configuration by URL and config file, confirm the warning, then scan again. Turn it back off once the phone is connected.",
 } as const;
 
 export type I18nKey = keyof typeof EN;

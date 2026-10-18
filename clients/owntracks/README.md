@@ -29,6 +29,21 @@ OwnTracks imports the configuration and starts reporting. The token is shown
 only in this response; to replace it, revoke it under `/v1/tokens` and pair
 again.
 
+### iPhone: allow configuration by link first
+
+OwnTracks for iOS 26.2.2 and later turns off configuration from
+`owntracks://` links and config files by default. Scanning the code then
+fails with "URL or file configuration not allowed". To pair:
+
+1. In OwnTracks, open **Settings** and allow configuration by URL and config
+   file. The app shows a confirmation dialog, because any such link can
+   reconfigure it completely. Confirm it.
+2. Scan the QR code (or open the link) again.
+3. Once the phone reports, turn the setting back off.
+
+Sources: the [26.2.2 release notes](https://newreleases.io/project/github/owntracks/ios/release/26.2.2)
+and the booklet's [remote configuration](https://owntracks.org/booklet/features/remoteconfig/) page.
+
 ## Configure OwnTracks by hand (HTTP mode)
 
 In the OwnTracks app: **Settings → Connection**
