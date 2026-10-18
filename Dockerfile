@@ -8,6 +8,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY tsconfig.json ./
 COPY src ./src
+COPY web ./web
+# Server (tsc -> dist/) and dashboard (Vite -> dist/web/, static files only).
 RUN npm run build
 
 # ── runtime stage ──────────────────────────────────────────────────────
@@ -17,7 +19,9 @@ ENV NODE_ENV=production
 # Only production deps.
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
-# Compiled app + the canonical migrations (required at boot).
+# Compiled app, the built dashboard (dist/web) and the canonical migrations
+# (required at boot). React and the design system are build-time devDependencies,
+# so they are not installed here.
 COPY --from=build /app/dist ./dist
 COPY drizzle ./drizzle
 

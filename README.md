@@ -33,9 +33,10 @@ cp docker-compose.example.yml docker-compose.yml
 docker compose up -d
 ```
 
-Open the dashboard at <http://localhost:8787/dashboard> and paste your admin
-token. (If you left the tokens as `change-me-*`, a strong admin token is
-auto-generated and printed once in the logs: `docker compose logs wherectx`.)
+Open the dashboard at <http://localhost:8787/dashboard>, choose "First-time
+setup" and enter the setup code from the logs (`docker compose logs wherectx`)
+to create the owner's passkey. (If you left the tokens as `change-me-*`, a
+strong admin token is auto-generated and printed there once too.)
 
 ## Quick start (local / Node ≥ 20)
 
@@ -43,8 +44,14 @@ auto-generated and printed once in the logs: `docker compose logs wherectx`.)
 npm install
 cp .env.example .env
 npm run db:migrate     # apply the SQLite schema
+npm run build:web      # the dashboard, built into dist/web
 npm run dev            # or: npm run build && npm start
 ```
+
+Working on the dashboard (`web/`, React)? `npm run dev:web` serves it with hot
+reload at <http://localhost:5173/dashboard/> and forwards `/v1` to the server on
+port 8787. Passkeys there are checked against the server's `BASE_URL` origin,
+so sign in through the server's own address.
 
 ## Send your location
 
@@ -98,8 +105,8 @@ recommended agent system prompt.
 
 People sign in with passkeys; tokens stay for devices and agents. On first
 boot the server log prints a one-time setup code that registers the owner's
-passkey (`POST /v1/auth/setup/options|verify`; the dashboard screens for this
-arrive in a later release). Owners and admins invite others to a workspace with
+passkey (`POST /v1/auth/setup/options|verify`, or "First-time setup" in the
+dashboard). Owners and admins invite others to a workspace with
 single-use links. See [docs/api.md](docs/api.md#accounts-signed-in-people).
 
 Locked out (no passkey, no recovery code), or claiming an account migrated

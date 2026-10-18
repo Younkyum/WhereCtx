@@ -30,6 +30,8 @@ export interface BuildAppOptions {
   authLimiter?: RateLimiter;
   /** Request and per-recovery-code limits on the sign-in routes. */
   authRouterLimits?: AuthRouterLimits;
+  /** The built dashboard to serve; defaults to dist/web. */
+  dashboardDir?: string;
 }
 
 export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
@@ -43,7 +45,9 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
     secureHeaders({
       contentSecurityPolicy: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"], // dashboard JS is served at /dashboard/app.js (M5)
+        scriptSrc: ["'self'"], // dashboard JS is a built file under /dashboard/assets/ (M5)
+        // The design system adds a few <style> elements at runtime (overlay
+        // motion, code highlighting), so inline styles stay allowed.
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'"],
         connectSrc: ["'self'"],
@@ -87,7 +91,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   );
   app.get("/healthz", (c) => c.json({ status: "ok" }));
 
-  app.route("/", dashboardRouter());
+  app.route("/", dashboardRouter(options.dashboardDir));
 
   // Auth is mounted here, the one REST place holding the full context; routers
   // get only the user scope `authenticate` attaches (from a token or a session

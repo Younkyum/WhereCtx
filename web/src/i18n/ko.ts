@@ -1,6 +1,6 @@
 /** Korean dashboard copy, typed against the English keys. */
 
-import type { I18nKey } from "./i18n.en.js";
+import type { I18nKey } from "./en";
 
 export const KO: Record<I18nKey, string> = {
   "app.subtitle": "위치 컨텍스트",
@@ -15,18 +15,24 @@ export const KO: Record<I18nKey, string> = {
   "nav.events": "이벤트",
   "nav.webhooks": "웹훅",
   "nav.more": "더보기",
+  "nav.section.main": "주요 메뉴",
+  "app.display": "언어와 화면",
+  "app.language": "언어",
+  "theme.title": "화면 모드",
+  "theme.system": "시스템 설정 따르기",
+  "theme.light": "라이트",
+  "theme.dark": "다크",
 
   "common.loading": "불러오는 중…",
   "common.save": "저장",
   "common.delete": "삭제",
   "common.revoke": "폐기",
-  "common.copy": "복사",
-  "common.copied": "복사했어요",
   "common.yes": "예",
   "common.no": "아니요",
-  "common.confirm": "계속할까요?",
   "common.notNow": "나중에",
   "common.close": "닫기",
+  "common.cancel": "취소",
+  "common.cannotUndo": "되돌릴 수 없어요.",
 
   "toast.saved": "저장했어요",
   "toast.deleted": "삭제했어요",
@@ -52,7 +58,6 @@ export const KO: Record<I18nKey, string> = {
   "err.passkeyExists": "이미 등록된 패스키예요.",
   "err.insecure": "패스키는 HTTPS(또는 localhost)에서만 쓸 수 있어요.",
   "err.unsupported": "이 브라우저는 패스키를 지원하지 않아요.",
-  "err.copy": "복사하지 못했어요. 직접 선택해서 복사해 주세요.",
   "err.sessionEnded": "로그아웃됐어요. 다시 로그인해 주세요.",
   "reauth.prompt": "패스키로 본인 확인을 해 주세요",
 
@@ -118,7 +123,6 @@ export const KO: Record<I18nKey, string> = {
   "gate.err.invite": "이 초대는 쓸 수 없어요. 새 링크를 요청하세요.",
   "gate.err.recover": "복구 코드가 맞지 않아요. 다시 확인하거나 다른 코드를 써 보세요.",
   "gate.err.access": "접근 코드가 맞지 않아요. 관리자에게 새 코드를 요청하세요.",
-  "gate.err.codes": "문제가 생겼어요.",
   "gate.insecure.title": "패스키는 보안 연결에서만 쓸 수 있어요",
   "gate.insecure": "지금 이 페이지는 {origin}에 일반 http로 열려 있어요. 브라우저는 HTTPS나 localhost에서만 패스키를 허용해요. 서버의 https 주소(BASE_URL)로 대시보드를 여세요.",
   "gate.unsupported.title": "패스키를 쓸 수 없어요",
@@ -248,6 +252,7 @@ export const KO: Record<I18nKey, string> = {
   "webhooks.deadLetters": "전송 실패",
   "webhooks.deadEmpty": "없어요. 모두 전송됐어요.",
   "webhooks.error": "오류",
+  "webhooks.deleteConfirm": "이 웹훅을 삭제할까요?",
 
   "tokens.name": "이름",
   "tokens.role": "종류",
@@ -311,7 +316,6 @@ export const KO: Record<I18nKey, string> = {
   "ws.leaveConfirm": "{name}에서 나갈까요? 이 워크스페이스로만 연결된 사람과의 공유는 끝나요.",
   "ws.left": "워크스페이스에서 나왔어요",
   "ws.members": "멤버",
-  "ws.member": "이름",
   "ws.role": "역할",
   "ws.roleFor": "{name}님의 역할",
   "ws.joined": "참여일",
@@ -324,6 +328,7 @@ export const KO: Record<I18nKey, string> = {
   "ws.inviteCreated": "초대할 사람에게 이 링크를 보내세요. 한 번만 쓸 수 있고 {date}에 만료돼요.",
   "ws.inviteLink": "초대 링크 (한 번만 표시)",
   "ws.noInvites": "대기 중인 초대가 없어요.",
+  "ws.revokeInviteConfirm": "이 초대 링크를 취소할까요?",
   "ws.createdAt": "만든 시각",
   "ws.expires": "만료",
   "ws.create": "새 워크스페이스",
@@ -341,6 +346,7 @@ export const KO: Record<I18nKey, string> = {
   "account.signOut": "로그아웃",
   "account.signedOut": "로그아웃했어요",
   "account.signOutConfirm": "이 기기에서 로그아웃할까요?",
+  "account.signOutDesc": "다시 로그인하려면 패스키가 필요해요.",
   "account.passkeys": "패스키",
   "account.addPasskey": "패스키 추가",
   "account.passkeyAdded": "패스키를 추가했어요",
@@ -353,6 +359,7 @@ export const KO: Record<I18nKey, string> = {
   "account.unknownDevice": "알 수 없는 기기",
   "account.sessionMeta": "{created} 로그인 · 마지막 활동 {seen}",
   "account.endOthers": "다른 기기 모두 로그아웃",
+  "account.endSessionConfirm": "그 기기를 로그아웃할까요?",
   "account.endOthersConfirm": "다른 기기를 모두 로그아웃할까요?",
   "account.endedOthers": "다른 기기 {n}대를 로그아웃했어요",
   "account.recovery": "복구 코드",
