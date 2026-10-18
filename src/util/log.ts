@@ -15,7 +15,6 @@
  * them, to stdout only, and never into the ring.
  */
 
-import { DrizzleQueryError } from "drizzle-orm";
 import { LOG_LEVELS, type LogEntry, type LogLevel } from "./logEntry.js";
 import { Secret } from "./secret.js";
 
@@ -95,12 +94,13 @@ const firstLine = (text: string): string => text.split("\n", 1)[0]!;
 /**
  * An error as a fixed set of fields: its name, the first line of its message,
  * its code, its stack frames, and its cause. Nothing else an error carries is
- * read, so a query's bound parameters (DrizzleQueryError's `params`, also
- * repeated in its message) never reach a log line.
+ * read. drizzle's DrizzleQueryError puts the bound parameters on the second
+ * line of its message ("Failed query: <sql>\nparams: …") and in `params`, so
+ * neither reaches a log line.
  */
 export function serializeError(err: Error, depth = 0): Record<string, unknown> {
   const name = err.name !== "Error" ? err.name : err.constructor?.name || "Error";
-  const message = err instanceof DrizzleQueryError ? `Failed query: ${err.query}` : String(err.message ?? "");
+  const message = String(err.message ?? "");
   const code = (err as { code?: unknown }).code;
   const frames = (typeof err.stack === "string" ? err.stack.split("\n") : [])
     .filter((line) => /^\s+at /.test(line))
