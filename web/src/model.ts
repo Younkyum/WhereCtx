@@ -50,6 +50,8 @@ export interface WorkspaceMembership {
 
 export interface Me {
   user: UserRef;
+  /** The instance owner, who may read the server's logs. */
+  isOperator?: boolean;
   workspaces: WorkspaceMembership[];
   passkeys: { id: string; name: string; createdAt: string; lastUsedAt: string | null }[];
   sessions: { id: string; userAgent: string | null; createdAt: string; lastSeenAt: string; current: boolean }[];
@@ -169,4 +171,24 @@ export type Pairing =
 export interface CeremonyStart<O> {
   ceremony: string;
   options: O;
+}
+
+export interface HistoryPoint {
+  recordedAt: string;
+  lat: number;
+  lon: number;
+  accuracyM?: number;
+  source?: string;
+  /** The place whose geofence held the point, by today's places. */
+  place?: string;
+  mapUrl: string;
+}
+
+export interface History {
+  enabled: boolean;
+  retentionHours: number;
+  from: string;
+  to: string;
+  truncated: boolean;
+  points: HistoryPoint[];
 }

@@ -158,3 +158,47 @@ describe("dashboard app", () => {
     expect(readme).toContain("\n## Passkeys need HTTPS or localhost\n");
   });
 });
+
+describe("log views", () => {
+  async function open(hash: string) {
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    location.hash = hash;
+    await act(async () => root.render(<App />));
+    await settle();
+  }
+
+  afterEach(() => {
+    location.hash = "";
+  });
+
+  it("History explains that history is off and links to Privacy", async () => {
+    route("GET /v1/presence/history", () => ({
+      status: 200,
+      body: { enabled: false, retentionHours: 24, from: "", to: "", truncated: false, points: [] },
+    }));
+    route("GET /v1/places", () => ({ status: 200, body: { places: [] } }));
+    await open("#history");
+    expect(host.textContent).toContain("History is off");
+    expect(host.querySelector('a[href="#privacy"]')).not.toBeNull();
+    expect(host.querySelector('svg[role="img"] path')).toBeNull();
+  });
+
+  it("History draws the track and lists each point with a map link", async () => {
+    const points = [
+      { recordedAt: "2026-10-18T01:00:00.000Z", lat: 37.5, lon: 127, place: "home", mapUrl: "https://maps.google.com/?q=37.5,127" },
+      { recordedAt: "2026-10-18T02:00:00.000Z", lat: 37.52, lon: 127.03, accuracyM: 12, mapUrl: "https://maps.google.com/?q=37.52,127.03" },
+    ];
+    route("GET /v1/presence/history", () => ({
+      status: 200,
+      body: { enabled: true, retentionHours: 24, from: "", to: "", truncated: false, points },
+    }));
+    route("GET /v1/places", () => ({ status: 200, body: { places: [{ name: "home", type: "home", lat: 37.5, lon: 127, radiusM: 100 }] } }));
+    await open("#history");
+    const path = host.querySelector('svg[role="img"] path');
+    expect(path?.getAttribute("d")).toMatch(/^M[\d.]+ [\d.]+ L[\d.]+ [\d.]+$/);
+    expect(host.textContent).toContain("At home");
+    expect(host.textContent).toContain("37.52000, 127.03000");
+    const links = [...host.querySelectorAll("a")].filter((a) => a.textContent?.includes("Map"));
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(points.map((p) => p.mapUrl).reverse());
+  });
+});

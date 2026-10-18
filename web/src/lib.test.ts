@@ -120,3 +120,51 @@ describe("pairing QR code", () => {
     expect(kept.paths).toEqual([{ d: "M0 0h1", stroke: "#000" }]);
   });
 });
+
+describe("history helpers", () => {
+  it("fits a track to the drawing with the north up and the first point first", () => {
+    const d = lib.drawTrack(
+      [
+        { lat: 37.5, lon: 127.0 },
+        { lat: 37.51, lon: 127.02 },
+      ],
+      [{ name: "home", lat: 37.5, lon: 127.0, radiusM: 100 }],
+      { width: 400, height: 200, pad: 10 },
+    )!;
+    const [a, b] = d.dots as [{ x: number; y: number }, { x: number; y: number }];
+    expect(b.x).toBeGreaterThan(a.x);
+    expect(b.y).toBeLessThan(a.y);
+    for (const p of d.dots) {
+      expect(p.x).toBeGreaterThanOrEqual(10);
+      expect(p.x).toBeLessThanOrEqual(390);
+      expect(p.y).toBeGreaterThanOrEqual(10);
+      expect(p.y).toBeLessThanOrEqual(190);
+    }
+    expect(d.line).toBe(`M${a.x} ${a.y} L${b.x} ${b.y}`);
+    expect(d.places[0]).toMatchObject({ name: "home", x: a.x, y: a.y });
+    expect(d.places[0]!.r).toBeGreaterThan(0);
+  });
+
+  it("draws a track that never moved, and nothing for no points", () => {
+    const still = lib.drawTrack([{ lat: 1, lon: 1 }, { lat: 1, lon: 1 }], [])!;
+    expect(still.dots[0]).toEqual({ x: still.width / 2, y: still.height / 2 });
+    expect(lib.drawTrack([], [])).toBeNull();
+  });
+
+  it("turns a local day into an inclusive ISO range and steps across months", () => {
+    const { from, to } = lib.dayRange("2026-03-31");
+    expect(new Date(from).getDate()).toBe(31);
+    expect(new Date(to).getTime() - new Date(from).getTime()).toBe(86_400_000 - 1);
+    expect(lib.shiftDay("2026-03-31", 1)).toBe("2026-04-01");
+    expect(lib.shiftDay("2026-01-01", -1)).toBe("2025-12-31");
+  });
+
+  it("groups by local day in order", () => {
+    const at = (d: number, h: number) => new Date(2026, 9, d, h).toISOString();
+    const groups = lib.groupByDay([at(18, 23), at(18, 1), at(17, 22)], (x) => x);
+    expect(groups.map((g) => [g.day, g.items.length])).toEqual([
+      ["2026-10-18", 2],
+      ["2026-10-17", 1],
+    ]);
+  });
+});

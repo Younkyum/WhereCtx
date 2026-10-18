@@ -298,3 +298,98 @@ export function qrFromSvg(svg: unknown): QrDrawing | null {
   }
   return paths.length ? { viewBox, paths } : null;
 }
+
+export interface GeoPoint {
+  lat: number;
+  lon: number;
+}
+
+export interface TrackDrawing {
+  width: number;
+  height: number;
+  /** SVG path data for the polyline, oldest point first. */
+  line: string;
+  dots: { x: number; y: number }[];
+  places: { x: number; y: number; r: number; name: string }[];
+}
+
+const M_PER_DEG = 111_320;
+/** A track that never moved still shows about this much ground (meters). */
+const MIN_SPAN_M = 300;
+
+/**
+ * Lays a day's points out for an inline SVG: an equirectangular projection
+ * around the track's mean latitude, fitted to the points' bounds with
+ * `pad` pixels to spare. Places become circles at their geofence radius,
+ * clipped by the SVG where they reach past the track.
+ */
+export function drawTrack(
+  points: readonly GeoPoint[],
+  places: readonly (GeoPoint & { radiusM: number; name: string })[],
+  size: { width: number; height: number; pad: number } = { width: 640, height: 360, pad: 20 },
+): TrackDrawing | null {
+  if (points.length === 0) return null;
+  const meanLat = points.reduce((sum, p) => sum + p.lat, 0) / points.length;
+  const kx = Math.cos((meanLat * Math.PI) / 180);
+  const project = (p: GeoPoint) => ({ x: p.lon * kx, y: -p.lat });
+  const xy = points.map(project);
+  const xs = xy.map((p) => p.x);
+  const ys = xy.map((p) => p.y);
+  const minSpan = MIN_SPAN_M / M_PER_DEG;
+  const spanX = Math.max(Math.max(...xs) - Math.min(...xs), minSpan);
+  const spanY = Math.max(Math.max(...ys) - Math.min(...ys), minSpan);
+  const cx = (Math.max(...xs) + Math.min(...xs)) / 2;
+  const cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+  const scale = Math.min((size.width - 2 * size.pad) / spanX, (size.height - 2 * size.pad) / spanY);
+  const toScreen = (p: { x: number; y: number }) => ({
+    x: round(size.width / 2 + (p.x - cx) * scale),
+    y: round(size.height / 2 + (p.y - cy) * scale),
+  });
+  const dots = xy.map(toScreen);
+  return {
+    width: size.width,
+    height: size.height,
+    line: dots.map((d, i) => `${i === 0 ? "M" : "L"}${d.x} ${d.y}`).join(" "),
+    dots,
+    places: places.map((place) => ({
+      ...toScreen(project(place)),
+      r: round((place.radiusM / M_PER_DEG) * scale),
+      name: place.name,
+    })),
+  };
+}
+
+const round = (n: number) => Math.round(n * 10) / 10;
+
+/** Local calendar day of an ISO time, as YYYY-MM-DD. */
+export function localDay(iso: string | Date): string {
+  const d = typeof iso === "string" ? new Date(iso) : iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** [start, end] of a local calendar day (YYYY-MM-DD), as ISO times for the API. */
+export function dayRange(day: string): { from: string; to: string } {
+  const [y, m, d] = day.split("-").map(Number) as [number, number, number];
+  const start = new Date(y, m - 1, d);
+  const end = new Date(y, m - 1, d + 1);
+  return { from: start.toISOString(), to: new Date(end.getTime() - 1).toISOString() };
+}
+
+/** The day before or after a YYYY-MM-DD day. */
+export function shiftDay(day: string, by: number): string {
+  const [y, m, d] = day.split("-").map(Number) as [number, number, number];
+  return localDay(new Date(y, m - 1, d + by));
+}
+
+/** Items grouped by their local day, keeping order. */
+export function groupByDay<T>(items: readonly T[], timeOf: (item: T) => string): { day: string; items: T[] }[] {
+  const groups: { day: string; items: T[] }[] = [];
+  for (const item of items) {
+    const day = localDay(timeOf(item));
+    const last = groups.at(-1);
+    if (last?.day === day) last.items.push(item);
+    else groups.push({ day, items: [item] });
+  }
+  return groups;
+}
