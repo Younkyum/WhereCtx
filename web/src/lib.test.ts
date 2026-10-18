@@ -180,3 +180,10 @@ describe("webhook event selection", () => {
     expect(lib.pickEvents(["*"], [])).toEqual([]);
   });
 });
+
+describe("bearer header", () => {
+  it("always renders the value as Bearer, one space, the token", () => {
+    expect(lib.bearerHeader("wctx_abc")).toEqual({ name: "Authorization", value: "Bearer wctx_abc", token: "wctx_abc" });
+    expect(lib.bearerHeader("Bearer wctx_abc").value).toBe("Bearer wctx_abc");
+  });
+});

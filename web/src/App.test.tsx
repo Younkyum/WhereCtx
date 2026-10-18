@@ -332,4 +332,32 @@ describe("log views", () => {
     await settle();
     expect(patched).toEqual({ events: ["presence.updated"] });
   });
+
+  it("Devices shows the Shortcut's Authorization header as a name and a Bearer value", async () => {
+    route("GET /v1/devices", () => ({ status: 200, body: { devices: [] } }));
+    route("GET /v1/activity/ingest?limit=20", () => ({ status: 200, body: { entries: [] } }));
+    route("POST /v1/devices/pair", () => ({
+      status: 201,
+      body: { kind: "shortcut", url: "https://where.example/v1/ingest/shortcut", token: "wctx_tok", headers: { Authorization: "Bearer wctx_tok" } },
+    }));
+    await open("#devices");
+    const name = host.querySelector<HTMLInputElement>('input[placeholder="e.g. My iPhone"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "iPhone");
+      name.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const shortcut = [...host.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find((r) => r.value === "shortcut")!;
+    await act(async () => shortcut.click());
+    await act(async () => button("Create connection").click());
+    await settle();
+    const block = host.querySelector('[data-testid="bearer-header"]')!;
+    const codes = [...block.querySelectorAll("pre, code")].map((c) => c.textContent?.trim()).filter(Boolean);
+    expect(codes).toContain("Authorization");
+    const values = [...block.querySelectorAll("code")].map((c) => c.textContent?.trim() ?? "").filter((c) => c.includes("wctx_tok"));
+    expect(values.length).toBeGreaterThan(0);
+    for (const value of values) expect(value.startsWith("Bearer ")).toBe(true);
+    expect(block.textContent).toContain("Header name");
+    expect(block.textContent).toContain("Header value");
+    expect(block.textContent).toContain("Get Contents of URL");
+  });
 });

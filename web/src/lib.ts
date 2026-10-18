@@ -404,3 +404,11 @@ export function pickEvents(prev: readonly string[], next: readonly string[]): st
   if (all && next.length > 1) return next.filter((e) => e !== "*");
   return [...next];
 }
+
+export const AUTH_HEADER = "Authorization";
+
+/** The Authorization header for a token: the scheme, one space, the token. */
+export function bearerHeader(token: string): { name: typeof AUTH_HEADER; value: string; token: string } {
+  const bare = token.replace(/^Bearer\s+/i, "");
+  return { name: AUTH_HEADER, value: `Bearer ${bare}`, token: bare };
+}

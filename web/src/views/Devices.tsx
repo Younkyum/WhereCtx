@@ -19,7 +19,7 @@ import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import { qrFromSvg } from "../lib";
 import type { ApiToken, DeviceSummary, IngestEntry, IngestOutcome, Pairing } from "../model";
-import { Empty, Hint, Loaded, Page, Panel, Row, Rows, Secret, download, useAction, useConfirm, useFormat, useLoad, useNotify, usePaged } from "../ui";
+import { BearerHeader, Empty, Hint, Loaded, Page, Panel, Row, Rows, Secret, download, useAction, useConfirm, useFormat, useLoad, useNotify, usePaged } from "../ui";
 
 function useTokens(keep: (k: ApiToken) => boolean) {
   return useLoad(() => api<{ tokens: ApiToken[] }>("/v1/tokens").then((r) => (r.tokens ?? []).filter(keep)), []);
@@ -248,7 +248,7 @@ function PairingResult({ name, pairing }: { name: string; pairing: Pairing }) {
           steps={[
             { text: t("devices.sc.step1") },
             { text: t("devices.sc.step2"), extra: <Secret label={t("devices.sc.url")} value={pairing.url} /> },
-            { text: t("devices.sc.step3"), extra: <Secret label={t("devices.sc.header")} value={pairing.headers.Authorization} /> },
+            { text: t("devices.sc.step3"), extra: <BearerHeader token={pairing.headers.Authorization} hint={t("header.shortcutHint")} /> },
             { text: t("devices.sc.step4") },
             { text: t("devices.sc.step5") },
           ]}
@@ -329,6 +329,7 @@ export function AgentsView() {
             <VStack gap={3}>
               <Banner status="success" title={t("agents.created")} />
               <Secret label={t("agents.token")} value={created.secret} />
+              <BearerHeader token={created.secret} hint={t("header.agentHint")} />
               <Secret label={t("agents.mcpConfig")} value={created.mcp} language="json" />
               <Hint>{t("agents.mcpHint")}</Hint>
               <Hint>{t("devices.secretOnce")}</Hint>

@@ -286,9 +286,8 @@ export const KO: Record<I18nKey, string> = {
   "devices.ot.download": "설정 파일 받기 (.otrc)",
   "devices.sc.step1": "단축어 앱에서 '현재 위치 가져오기' 다음에 'URL의 콘텐츠 가져오기'를 넣어 단축어를 만드세요.",
   "devices.sc.step2": "URL은 아래 주소, 방식은 POST로 하세요.",
-  "devices.sc.header": "Authorization 헤더",
   "devices.sc.url": "URL",
-  "devices.sc.step3": "Authorization이라는 헤더를 추가하고 값에 아래 내용을 넣으세요.",
+  "devices.sc.step3": "헤더에 아래 헤더를 추가하세요. 값은 Bearer와 공백 한 칸으로 시작해요.",
   "devices.sc.step4": "요청 본문은 JSON으로, lat에 현재 위치의 위도, lon에 경도를 넣으세요.",
   "devices.sc.step5": "'특정 장소에 도착하거나 떠날 때' 같은 자동화에서 실행하세요.",
   "devices.baseUrl.title": "휴대폰이 이 서버 주소로 접속할 수 없어요",
@@ -479,4 +478,11 @@ export const KO: Record<I18nKey, string> = {
   "webhooks.verifySigned": "서명 비밀값을 넣으면 전송마다 서명이 붙어요. 타임스탬프 헤더 값, 점(.), 원본 본문을 이어 붙여 비밀값으로 HMAC-SHA256을 다시 계산해 서명 헤더와 비교하고, 오래된 타임스탬프는 거부하세요.",
   "webhooks.verifyUnsigned": "서명 비밀값을 넣으면 받는 쪽에서 이 서버가 보낸 것인지 확인할 수 있어요.",
   "webhooks.verifyLink": "서명 확인 방법",
+
+  "header.name": "헤더 이름",
+  "header.value": "헤더 값",
+  "header.space": "+ 공백 한 칸 +",
+  "header.token": "토큰",
+  "header.shortcutHint": "단축어의 'URL의 콘텐츠 가져오기' → 헤더에서 이름이 Authorization인 헤더를 추가하고, 값에는 Bearer, 공백 한 칸, 토큰을 차례로 넣으세요. 위의 값을 복사하면 한 번에 들어가요.",
+  "header.agentHint": "설정 파일 대신 헤더를 입력받는 MCP 클라이언트나 도구라면 이름이 Authorization인 헤더를 추가하고, 값에는 Bearer, 공백 한 칸, 토큰을 넣으세요.",
 };

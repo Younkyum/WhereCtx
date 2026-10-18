@@ -284,9 +284,8 @@ export const EN = {
   "devices.ot.download": "Download config (.otrc)",
   "devices.sc.step1": "In the Shortcuts app, create a shortcut with \"Get Current Location\" followed by \"Get Contents of URL\".",
   "devices.sc.step2": "Use this URL, with method POST:",
-  "devices.sc.header": "Authorization header",
   "devices.sc.url": "URL",
-  "devices.sc.step3": "Add a header named Authorization with this value:",
+  "devices.sc.step3": "Under Headers, add this header. Its value starts with the word Bearer and a space:",
   "devices.sc.step4": "Set the request body to JSON with lat = Latitude and lon = Longitude of the current location.",
   "devices.sc.step5": "Run it from automations, for example when you arrive at or leave a place.",
   "devices.baseUrl.title": "Phones can't reach this server's address",
@@ -477,6 +476,13 @@ export const EN = {
   "webhooks.verifySigned": "With a signing secret, each delivery is signed: recompute HMAC-SHA256 of the timestamp header, a dot, and the raw body with your secret, compare it with the signature header, and reject old timestamps.",
   "webhooks.verifyUnsigned": "Add a signing secret so your endpoint can check that a delivery really came from this server.",
   "webhooks.verifyLink": "How to verify the signature",
+
+  "header.name": "Header name",
+  "header.value": "Header value",
+  "header.space": "+ one space +",
+  "header.token": "your token",
+  "header.shortcutHint": "In Shortcuts, open Get Contents of URL → Headers and add a header named Authorization whose value is Bearer, a space, and the token. Copy the value above to get all of it.",
+  "header.agentHint": "For an MCP client or tool that asks for headers instead of a config file: add a header named Authorization whose value is Bearer, a space, and the token.",
 } as const;
 
 export type I18nKey = keyof typeof EN;

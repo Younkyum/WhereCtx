@@ -5,6 +5,7 @@
  */
 
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
+import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
@@ -21,7 +22,7 @@ import { Fragment, createContext, useCallback, useContext, useEffect, useRef, us
 import { ApiError, api, isHandled } from "./api";
 import { useApp } from "./context";
 import type { Lang, Translate } from "./i18n";
-import { ageParts, errorKey, passkeyErrorKey } from "./lib";
+import { ageParts, bearerHeader, errorKey, passkeyErrorKey } from "./lib";
 
 /** A message the person can act on, for any error an action or loader throws. */
 export function describe(e: unknown, t: Translate): string {
@@ -226,6 +227,30 @@ export function Rows<T>({ items, keyOf, children }: { items: T[]; keyOf: (item: 
 /** A value shown once (a token, a link, a config) with the copy button CodeBlock provides. */
 export function Secret({ label, value, language = "plaintext" }: { label: string; value: string; language?: string }) {
   return <CodeBlock code={value} title={label} language={language} isWrapped width="100%" hasLanguageLabel={false} />;
+}
+
+/**
+ * An HTTP header to type into another app, as two labelled fields: the name,
+ * and the value with its "Bearer " prefix set apart so it is not left out.
+ * The value's copy button copies the whole thing, prefix included.
+ */
+export function BearerHeader({ token, hint }: { token: string; hint: string }) {
+  const { t } = useApp();
+  const header = bearerHeader(token);
+  return (
+    <VStack gap={3} data-testid="bearer-header">
+      <Secret label={t("header.name")} value={header.name} />
+      <VStack gap={1}>
+        <HStack gap={1} vAlign="center" wrap="wrap" aria-hidden>
+          <Badge variant="purple" label="Bearer" />
+          <Text type="supporting">{t("header.space")}</Text>
+          <Text type="supporting">{t("header.token")}</Text>
+        </HStack>
+        <Secret label={t("header.value")} value={header.value} />
+      </VStack>
+      <Hint>{hint}</Hint>
+    </VStack>
+  );
 }
 
 export function download(filename: string, text: string, type = "application/json"): void {

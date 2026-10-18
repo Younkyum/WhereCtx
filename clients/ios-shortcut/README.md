@@ -10,9 +10,18 @@ app. No app to install.
 3. Add **Get Contents of URL** and configure:
    - **URL:** `https://wherectx.example.com/v1/ingest/shortcut`
    - **Method:** `POST`
-   - **Headers:**
-     - `Authorization` = `Bearer DEVICE_TOKEN`
-     - `Content-Type` = `application/json`
+   - **Headers:** tap **Add new header** twice.
+
+     | Header name | Header value |
+     |-------------|--------------|
+     | `Authorization` | `Bearer DEVICE_TOKEN` |
+     | `Content-Type` | `application/json` |
+
+     The Authorization value is the word `Bearer`, one space, then the
+     device token (`Bearer wctx_…`). Leaving out `Bearer ` is the most common
+     reason for a `401`. The dashboard's Devices page shows the header name
+     and the full value separately, and its copy button copies the value with
+     the prefix.
    - **Request Body:** `JSON`
      - `latitude` → (Magic Variable) Current Location → **Latitude**
      - `longitude` → Current Location → **Longitude**
