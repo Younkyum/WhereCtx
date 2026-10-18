@@ -21,6 +21,7 @@ import { placesRouter } from "../api/places.js";
 import { presenceRouter } from "../api/presence.js";
 import { privacyRouter } from "../api/privacy.js";
 import { tokensRouter } from "../api/tokens.js";
+import { devicesRouter } from "../api/devices.js";
 import { webhooksRouter } from "../api/webhooks.js";
 
 export interface BuildAppOptions {
@@ -90,7 +91,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   // Auth is mounted here, the one REST place holding the full context; routers
   // get only the user scope `authenticate` attaches (from a token or a session
   // cookie). Device clients (Shortcut/OwnTracks) may pass the token via ?token=
-  // on ingest only.
+  // or Basic auth on ingest only.
   const mount = (path: string, router: Hono<AppEnv>, auth = authenticate(ctx)): void => {
     app.use(`${path}/*`, auth);
     app.route(path, router);
@@ -104,13 +105,14 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   app.route("/v1/auth", authRouter(ctx, ctx.auth, options.authRouterLimits));
   mountSession("/v1/me", meRouter(ctx));
   mountSession("/v1/workspaces", workspacesRouter());
-  mount("/v1/ingest", ingestRouter(ctx), authenticate(ctx, { allowQueryToken: true }));
+  mount("/v1/ingest", ingestRouter(ctx), authenticate(ctx, { deviceCredentials: true }));
   mount("/v1/presence", presenceRouter(ctx));
   mount("/v1/places", placesRouter(ctx));
   mount("/v1/events", eventsRouter());
   mount("/v1/privacy", privacyRouter(ctx));
   mount("/v1/webhooks", webhooksRouter(ctx));
   mount("/v1/tokens", tokensRouter(ctx));
+  mount("/v1/devices", devicesRouter(ctx));
 
   app.notFound((c) => c.json({ error: "not found" }, 404));
   app.onError((err, c) => {

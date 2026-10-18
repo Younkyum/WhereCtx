@@ -41,6 +41,7 @@ describe("step-up re-authentication", () => {
     ["add a passkey", "/v1/me/passkeys/options", {}],
     ["replace recovery codes", "/v1/me/recovery-codes", {}],
     ["mint a token", "/v1/tokens", { name: "agent", role: "agent" }],
+    ["pair a device", "/v1/devices/pair", { name: "phone", kind: "owntracks" }],
   ] as const;
 
   it.each(sensitive)("is required to %s more than 10 minutes after sign-in", async (_, path, body) => {

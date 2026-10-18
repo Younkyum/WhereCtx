@@ -39,11 +39,13 @@
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.23",
     "ngeohash": "^0.6.3",
+    "qrcode": "1.5.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/ngeohash": "^0.6.8",
     "@types/node": "^25.9.1",
+    "@types/qrcode": "1.5.6",
     "drizzle-kit": "^0.31.10",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4",

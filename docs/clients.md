@@ -11,6 +11,15 @@ using a **device** token.
 | Android Tasker | `POST /v1/ingest` | use the generic shape (v0.2 template planned) |
 | Home Assistant | `POST /v1/ingest` | use a REST/webhook automation (v0.2 example planned) |
 
+## Pairing a phone
+
+`POST /v1/devices/pair` with `{ "name": "...", "kind": "owntracks" }` mints a
+device token and returns an OwnTracks config, an `owntracks:///config?inline=`
+link and the same link as a QR code: scan it on the phone and OwnTracks is set
+up. `"kind": "shortcut"` returns the URL, token and headers for the iOS
+Shortcut. See [api.md](api.md#devices-pairing). The manual setup below still
+works.
+
 ## Authentication
 
 Prefer the header:
@@ -20,8 +29,9 @@ Authorization: Bearer DEVICE_TOKEN
 ```
 
 For clients that can't set headers, the ingest routes (only) also accept the
-token as a query parameter: `POST /v1/ingest?token=DEVICE_TOKEN`. Note that query
-strings can appear in proxy logs — use the header when you can.
+token as a query parameter: `POST /v1/ingest?token=DEVICE_TOKEN`, or as the
+password of HTTP Basic auth (any username). Query strings can appear in proxy
+logs, so prefer a header when you can.
 
 ## Generic payload
 

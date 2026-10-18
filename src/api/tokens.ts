@@ -1,7 +1,8 @@
 /**
  * Token management API (plan section 9.9 dashboard: view/regenerate tokens).
  *   GET    /v1/tokens      -> list tokens, no secrets (manage_tokens)
- *   POST   /v1/tokens      -> create; returns the plaintext secret ONCE (manage_tokens)
+ *   POST   /v1/tokens      -> create; returns the plaintext secret ONCE (manage_tokens).
+ *                             An agent token also comes with a ready MCP client config.
  *   DELETE /v1/tokens/:id  -> revoke (manage_tokens)
  *
  * A signed-in person minting a token of any role must have proved their
@@ -9,11 +10,13 @@
  * from anywhere, so creating one is as sensitive as adding a passkey.
  */
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { z } from "zod";
-import type { RouteContext } from "../app/context.js";
+import type { RouteContext, UserScope } from "../app/context.js";
+import { mcpClientConfig } from "../devices/pairing.js";
+import type { Token, TokenRole } from "../types.js";
 import { requireFreshSession, requireScope } from "./middleware.js";
-import { zodMessages } from "./validation.js";
+import { parseBody } from "./accountHttp.js";
 import type { AppEnv } from "./types.js";
 
 /** Per-user cap so one admin credential cannot mint tokens without bound. */
@@ -23,6 +26,22 @@ const CreateSchema = z.object({
   name: z.string().min(1).max(64),
   role: z.enum(["device", "agent", "admin"]),
 });
+
+/**
+ * Mint a token within the per-user cap, or return the 409 to send. Every
+ * route that hands out a credential (tokens, device pairing) goes through here.
+ */
+export async function mintToken(
+  c: Context,
+  scope: UserScope,
+  name: string,
+  role: TokenRole,
+): Promise<{ token: Token; secret: string } | Response> {
+  if ((await scope.tokens.count()) >= MAX_TOKENS) {
+    return c.json({ error: `token limit reached (${MAX_TOKENS})` }, 409);
+  }
+  return scope.tokens.create(name, role);
+}
 
 export function tokensRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -34,23 +53,14 @@ export function tokensRouter(ctx: RouteContext): Hono<AppEnv> {
   });
 
   app.post("/", requireFreshSession(ctx), async (c) => {
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: "request body must be valid JSON" }, 400);
-    }
-    const parsed = CreateSchema.safeParse(body);
-    if (!parsed.success) {
-      return c.json({ error: "invalid token request", detail: zodMessages(parsed.error) }, 400);
-    }
-    const scope = c.get("scope");
-    if ((await scope.tokens.count()) >= MAX_TOKENS) {
-      return c.json({ error: `token limit reached (${MAX_TOKENS})` }, 409);
-    }
-    const { token, secret } = await scope.tokens.create(parsed.data.name, parsed.data.role);
+    const body = await parseBody(c, CreateSchema);
+    if (body instanceof Response) return body;
+    const minted = await mintToken(c, c.get("scope"), body.name, body.role);
+    if (minted instanceof Response) return minted;
+    const { token, secret } = minted;
     // The secret is shown exactly once.
-    return c.json({ token, secret }, 201);
+    if (token.role !== "agent") return c.json({ token, secret }, 201);
+    return c.json({ token, secret, mcpConfig: mcpClientConfig(ctx.config.baseUrl, secret) }, 201);
   });
 
   app.delete("/:id", async (c) => {

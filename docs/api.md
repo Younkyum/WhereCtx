@@ -16,7 +16,11 @@ Responses: `401` (no/invalid token), `403` (missing scope), `400` (validation),
 
 ## Ingest (device)
 
-`?token=` query auth is accepted on these routes only.
+Two device-only credential forms are accepted on these routes and nowhere
+else: `?token=<secret>` in the query, and HTTP Basic with the token as the
+password (the username is ignored; this is how OwnTracks authenticates). A
+signed-in person's session also works here, so the dashboard can post a
+one-shot `"source":"manual"` reading.
 
 ```
 POST /v1/ingest             # generic JSON
@@ -135,6 +139,29 @@ GET    /v1/tokens            # manage_tokens — no secrets
 POST   /v1/tokens            # { "name":"phone", "role":"device" } -> { token, secret } (secret shown once)
 DELETE /v1/tokens/:id        # revoke
 ```
+
+Creating an `agent` token also returns `mcpConfig`, a Claude Desktop
+`mcpServers` entry pointing at `<BASE_URL>/mcp` with the secret filled in.
+Agent tokens only ever read their owner's presence.
+
+## Devices (pairing)
+
+```
+POST /v1/devices/pair        # manage_tokens (step-up from a session)
+     { "name":"Mina's phone", "kind":"owntracks" | "shortcut" }
+```
+
+Mints a `device` token (counts toward the 50-token cap) and returns it with
+what the phone needs. The secret appears only in this response.
+
+- `owntracks`: `{ token, kind, config, link, qrSvg }`. `config` is an OwnTracks
+  remote configuration (`_type:"configuration"`, `mode:3` HTTP, `url` =
+  `<BASE_URL>/v1/ingest/owntracks`, `auth:true` with the token as `password`,
+  `deviceId`/`tid` from the name, `monitoring:1` significant changes). `link` is
+  `owntracks:///config?inline=<percent-encoded base64 of config>`; `qrSvg` is
+  that link as an SVG QR code.
+- `shortcut`: `{ token, kind, url, method, headers }` for
+  `POST <BASE_URL>/v1/ingest/shortcut` with `Authorization: Bearer <token>`.
 
 ## Webhooks (admin)
 

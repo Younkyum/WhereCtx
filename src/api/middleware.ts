@@ -8,11 +8,13 @@
  * - Otherwise the session cookie of a signed-in person, subject to the CSRF
  *   Origin rule in ./session.ts.
  *
- * For device clients that cannot set headers easily (some Shortcut/OwnTracks
- * setups), a `?token=` query parameter is accepted but ONLY on ingest routes
- * (opt-in via `allowQueryToken`). It is never accepted on read/precise/admin
- * routes, because query strings leak into proxy/CDN access logs (CWE-598, review
- * finding P2).
+ * Device clients get two more forms, accepted ONLY on ingest routes (opt-in
+ * via `deviceCredentials`):
+ * - `?token=`, for clients that cannot set headers. Query strings leak into
+ *   proxy/CDN access logs (CWE-598, review finding P2), so it is never accepted
+ *   on read/precise/admin routes.
+ * - HTTP Basic with the token as the password (the username is ignored), which
+ *   is how OwnTracks authenticates in HTTP mode.
  *
  * Scope checks enforce the role boundary — notably the plan §9.3 rule that
  * device tokens (write_location only) can never read.
@@ -32,14 +34,23 @@ import type { AppEnv, SessionEnv } from "./types.js";
 
 type Presented = { via: "token"; secret: string | null } | { via: "session" };
 
-function presentedCredential(c: Context, allowQueryToken: boolean): Presented {
+/** The password of a Basic credential, or null when malformed. */
+function basicPassword(encoded: string): string | null {
+  const decoded = Buffer.from(encoded, "base64").toString("utf8");
+  const colon = decoded.indexOf(":");
+  return colon === -1 ? null : decoded.slice(colon + 1) || null;
+}
+
+function presentedCredential(c: Context, deviceCredentials: boolean): Presented {
   const header = c.req.header("authorization");
   if (header) {
-    const m = /^Bearer\s+(.+)$/i.exec(header.trim());
+    const bearer = /^Bearer\s+(.+)$/i.exec(header.trim());
+    if (bearer) return { via: "token", secret: bearer[1]!.trim() };
+    const basic = deviceCredentials ? /^Basic\s+(\S+)$/i.exec(header.trim()) : null;
     // Any other Authorization scheme is rejected (no raw-token fallback).
-    return { via: "token", secret: m ? m[1]!.trim() : null };
+    return { via: "token", secret: basic ? basicPassword(basic[1]!) : null };
   }
-  if (allowQueryToken) {
+  if (deviceCredentials) {
     const q = c.req.query("token");
     if (q) return { via: "token", secret: q };
   }
@@ -47,17 +58,17 @@ function presentedCredential(c: Context, allowQueryToken: boolean): Presented {
 }
 
 export interface AuthOptions {
-  /** Accept a `?token=` query param. Only enable for device ingest routes. */
-  allowQueryToken?: boolean;
+  /** Accept `?token=` and Basic auth. Only enable for device ingest routes. */
+  deviceCredentials?: boolean;
 }
 
 /** The request's principal, or the error response to send instead. */
 async function authenticateRequest(
   ctx: AppContext,
   c: Context,
-  allowQueryToken: boolean,
+  deviceCredentials: boolean,
 ): Promise<Principal | Response> {
-  const presented = presentedCredential(c, allowQueryToken);
+  const presented = presentedCredential(c, deviceCredentials);
   if (presented.via === "token") {
     return (
       (await resolveTokenPrincipal(ctx, presented.secret)) ??
@@ -79,9 +90,9 @@ async function authenticateRequest(
  * Mounted by `buildApp`, the only REST code that holds the full context.
  */
 export function authenticate(ctx: AppContext, options: AuthOptions = {}): MiddlewareHandler<AppEnv> {
-  const allowQueryToken = options.allowQueryToken ?? false;
+  const deviceCredentials = options.deviceCredentials ?? false;
   return async (c, next) => {
-    const principal = await authenticateRequest(ctx, c, allowQueryToken);
+    const principal = await authenticateRequest(ctx, c, deviceCredentials);
     if (principal instanceof Response) return principal;
     c.set("principal", principal);
     c.set("scope", ctx.forUser(principal.userId));
