@@ -64,6 +64,10 @@ unless the token carries the `manage_places` scope (admin). This stops an agent
 from moving the home geofence, which would mislead the home-coordinate privacy
 protections. Non-home places stay writable by agent tokens.
 
+Every tool call is recorded in the owner's access log (token name, tool,
+outcome, and the reason given for `get_precise_location`). The owner sees it
+in the dashboard's Agent access view; see [privacy.md](privacy.md#what-is-logged-for-how-long-and-who-sees-it).
+
 ## Agent usage policy
 
 Recommended system-prompt snippet (also in `examples/hermes/prompt.md`):

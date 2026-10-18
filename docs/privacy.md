@@ -131,8 +131,34 @@ cannot pin presence permanently "fresh".
 
 ## Raw history
 
-Disabled by default (`STORE_RAW_HISTORY=false`). When enabled, raw points are
-pruned past `RETENTION_HOURS`. Raw history is admin-only (`GET /v1/presence/history`).
+Disabled by default (`STORE_RAW_HISTORY=false` seeds each person's
+`storeRawHistory`; each person turns it on in Privacy). When enabled, each
+reading's coordinates are kept and pruned past that person's
+`retentionHours` (default `RETENTION_HOURS`, at most 8760). Pruning keeps
+running after history is turned off, on every reading and in the 6-hourly
+sweep, so points kept earlier still age out.
+
+Only the person reads their own history: the dashboard's History view, or
+`GET /v1/presence/history` with `manage_privacy` (their session, or their
+admin token, whose read is recorded in the access log). A location share
+gives a viewer no history.
+
+## What is logged, for how long, and who sees it
+
+| Log | What a row holds | Kept | Who can read it |
+|-----|------------------|------|-----------------|
+| Access log (`access_log`) | Every agent or token request for the person's presence data: REST presence, places and events routes and every MCP tool call. The token's id and name, REST or MCP, the action, whether it was precise, the reason given for a precise read, the outcome (allowed, denied, hidden) and why it was denied. No coordinates. | `ACCESS_LOG_RETENTION_DAYS`, default 90 days | The person, signed in (Agent access view, `GET /v1/activity/access`). No token can read it. |
+| Ingest log (`ingest_log`) | Every authenticated upload from a device: which token (none for the dashboard's "share now"), which route, accepted, rejected or ignored, and why. No coordinates: the table has no column for them, and a rejection message is redacted before it is stored. | `INGEST_LOG_RETENTION_DAYS`, default 7 days | The person, signed in (Devices view, `GET /v1/activity/ingest`, and the summary in `GET /v1/devices`). |
+| Share audit (`share_audit`) | Grants, changes, revokes, and who viewed the person's precise location. | `SHARE_AUDIT_RETENTION_DAYS`, default 365 days | The person (`GET /v1/shares/audit`). |
+| Server log | What the server reports: errors, rejected uploads, webhook failures, boot notices. Redacted as it is written: tokens, Bearer and Basic credentials, cookies, session ids, recovery, setup and access codes, signatures, and coordinates (key=value, JSON, or a lat,lon pair) are masked. | stdout/stderr (for `docker logs`) as long as the host keeps them; the last 1000 entries in memory until restart | The operator (the `USER_ID` person) in the Server logs view, `GET /v1/admin/logs`. Nobody else, no token. |
+
+The person's own reads in the dashboard are not in the access log: it
+records agents, not the owner looking at their own data. A request that fails
+authentication names no owner and lands in no person's log.
+
+The boot banners print the one-time setup code and any generated admin token
+to stdout on purpose, for the operator at the console. They never enter the
+in-memory log, so the Server logs view cannot show them.
 
 ## Webhooks & SSRF
 

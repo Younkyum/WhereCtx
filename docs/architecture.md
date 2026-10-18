@@ -90,6 +90,36 @@ accident.
   coordinates only for a `precise` share. `hideHomeExact` withholds them at or
   near home and when the owner has no `home` place.
 
+## Activity logs
+
+`src/activity/` holds two per-user logs and the one helper that writes the
+first. Neither holds coordinates.
+
+- `access_log` records every agent or token read. `accessRecorder(scope,
+  principal, surface)` turns a principal into the credential to name
+  (`credentialOf`; a session maps to none, since the owner reading their own
+  data is not an agent read) and swallows write failures into the server log.
+  REST mounts `/v1/presence`, `/v1/places` and `/v1/events` with
+  `auditAccess` (`src/api/accessAudit.ts`) after `authenticate`, so any route
+  under those prefixes is recorded, and derives the outcome from the
+  response. MCP registers every tool through one wrapper in
+  `buildMcpServer`, which records the call and its result. `ACCESS_ACTIONS`
+  names every action; tests hold both surfaces to it.
+- `ingest_log` records every authenticated upload in one middleware on the
+  ingest router, ahead of the scope check. OwnTracks always answers `200`,
+  so its handler sets the verdict (`ingestVerdict`) itself.
+- `/v1/activity/*` reads them for the signed-in person only (`requireSession`).
+
+## Server log
+
+`src/util/log.ts` is the only writer to stdout and stderr (a source test
+fails on `console.*` anywhere else under `src/`). It redacts every entry when
+it is written: values under sensitive keys, and secrets and coordinates
+inside any string. It keeps the last 1000 entries in memory for
+`GET /v1/admin/logs`, which only the operator (`USER_ID`, see
+`api/admin.ts` `isOperator`) can read. `log.banner` prints the boot banners
+and the CLI's access code as is and never keeps them.
+
 ## Accounts
 
 `src/accounts/` holds users, workspaces and memberships, invites, passkeys,
@@ -157,8 +187,9 @@ adds at runtime. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-
 | `src/store/` | Presence, places, events, history, reminders, webhooks |
 | `src/presence/` | `PresenceService` |
 | `src/api/` | Hono routers, auth middleware, rate limiting |
-| `src/mcp/` | MCP server (9 tools) and the raw-Node `/mcp` handler |
-| `src/webhooks/` | Dispatcher, SSRF guard, secret encryption |
+| `src/mcp/` | MCP server (9 tools, each recorded in the access log) and the raw-Node `/mcp` handler |
+| `src/activity/` | Access log and ingest log stores, the recording helper |
+| `src/webhooks/` | Dispatcher, delivery payload (shared with the dashboard's example), SSRF guard, secret encryption |
 | `src/dashboard/` | Serves `dist/web` |
 | `src/app/` | Context, scopes, and HTTP app assembly |
 | `src/cli.ts` | `reset-access` |
@@ -171,7 +202,8 @@ goes to the MCP handler, which writes to the Node response directly.
 Everything else goes to the Hono app through `getRequestListener`. Boot also
 prints the setup code while no passkey exists, starts the webhook dispatcher,
 the stale sweep every minute, and the prune sweep every 6 hours. The prune
-sweep removes old events, dead letters, share audit rows, sessions, invites,
+sweep removes old events, dead letters, share audit rows, access and ingest
+log rows, each person's history past their retention, sessions, invites,
 nonces, and access codes.
 
 ## Storage

@@ -242,3 +242,28 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
   leave their cursors in place, and waits for drains before closing the DB.
 - **MCP stays on bearer tokens.** Each token belongs to one person. OAuth 2.1
   for MCP clients is a later step.
+
+## 2026-10-18: activity logs and the server log
+
+- **The owner's own reads are not access-logged.** The access log answers
+  "which agent read my location". A session is the person looking at their
+  own data, so recording it would bury the agent rows. Tokens are always
+  recorded, admin tokens included.
+- **Record by structure, not by call site.** REST records in one middleware
+  mounted on the presence, places and events prefixes; MCP registers every
+  tool through one wrapper. A new route or tool is recorded without anyone
+  remembering to. The outcome comes from the response, so handlers do not
+  change.
+- **Logs hold no coordinates.** `ingest_log` has no column for them and
+  stores a redacted rejection message. The access log stores the reason an
+  agent gave, never the answer.
+- **No per-day cap on the ingest log.** A phone reporting every 5 minutes
+  writes 288 rows a day, about 2,000 per device at the 7-day default. That
+  is small for SQLite, and a cap would hide exactly the burst of rejections
+  a person needs to see.
+- **The operator is `USER_ID`.** The server log is about the whole install,
+  so only the instance owner reads it, from a session. It is redacted when
+  written, so the view shows what `docker logs` shows minus secrets and
+  coordinates, and the boot banners never enter it.
+- **History is pruned whether or not it is on.** Before, turning history off
+  left the stored points forever.

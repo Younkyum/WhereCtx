@@ -74,8 +74,22 @@ Authorization: Bearer AGENT_TOKEN
 `403 { "error":"precise location denied", "detail":"…" }` when policy/home-protection deny it.
 
 ```
-GET /v1/presence/history?limit=100   # admin (manage_privacy); empty unless STORE_RAW_HISTORY
+GET /v1/presence/history?from=&to=&limit=   # manage_privacy (a session, or an admin token)
 ```
+```json
+{ "enabled":true, "retentionHours":24,
+  "from":"2026-10-17T09:00:00.000Z", "to":"2026-10-18T09:00:00.000Z", "truncated":false,
+  "points":[{ "recordedAt":"2026-10-18T08:10:00.000Z", "lat":37.12, "lon":127.12,
+              "accuracyM":12, "source":"owntracks", "place":"home",
+              "mapUrl":"https://maps.google.com/?q=37.12,127.12" }] }
+```
+The caller's own raw history in `[from, to]` (ISO 8601; default the last 24
+hours), **oldest first**, at most `limit` points (default 1000, max 5000;
+`truncated` says the range held more). `place` names the place whose geofence
+held the point, by the places as they are now. Empty unless the person turned
+on `storeRawHistory`; `enabled` says whether they did. `400` for an unreadable
+or reversed range. `Cache-Control: no-store`. A share gives a viewer no
+history: every caller gets only their own.
 
 ## Places
 
@@ -126,7 +140,7 @@ POST /v1/auth/recover                     # { code } recovery code; ends other s
 POST /v1/auth/access-code/options|verify  # { code } from `reset-access`
 POST /v1/auth/logout
 
-GET|PATCH /v1/me                          # profile, workspaces, passkeys, sessions
+GET|PATCH /v1/me                          # profile, workspaces, passkeys, sessions, isOperator
 POST   /v1/me/reauth/options|verify       # re-prove a passkey (step-up, 10 min)
 POST   /v1/me/passkeys/options|verify     # add a passkey            (step-up)
 DELETE /v1/me/passkeys/:id                # never the last one       (step-up)
@@ -251,6 +265,7 @@ Agent tokens only ever read their owner's presence.
 ## Devices (pairing)
 
 ```
+GET  /v1/devices             # manage_tokens
 POST /v1/devices/pair        # manage_tokens (step-up from a session)
      { "name":"Mina's phone", "kind":"owntracks" | "shortcut" }
 ```
@@ -273,6 +288,61 @@ the server's public https URL.
   that link as an SVG QR code.
 - `shortcut`: `{ token, kind, url, method, headers }` for
   `POST <BASE_URL>/v1/ingest/shortcut` with `Authorization: Bearer <token>`.
+
+`GET /v1/devices` lists the caller's device tokens with what they last sent:
+
+```json
+{ "devices":[{ "id":"…", "name":"Pixel", "createdAt":"…", "lastUsedAt":"…",
+  "lastReceivedAt":"2026-10-18T08:10:00.000Z", "lastOutcome":"accepted",
+  "accepted24h":280, "rejected24h":2 }] }
+```
+`lastReceivedAt` and `lastOutcome` come from the ingest log (null before the
+first upload, or once it is pruned); the counts cover the last 24 hours.
+
+## Activity (signed-in people)
+
+The person's own record of who used their data. Session only: any token,
+an admin token included, gets `403`. Responses are `no-store`, newest first,
+and paged by keyset: pass the `next` of one page as `before` of the next.
+
+```
+GET /v1/activity/access?limit=50&before=&credential=   # agent and token reads (max 200)
+GET /v1/activity/ingest?limit=50&before=               # device uploads (max 200)
+```
+```json
+{ "entries":[{ "id":"…", "credential":{ "kind":"token", "id":"…", "name":"Claude Desktop" },
+  "surface":"mcp", "action":"get_precise_location", "precise":true,
+  "reason":"pick me up", "outcome":"denied", "denial":"precise location denied by policy",
+  "createdAt":"…" }], "next":"2026-10-18T08:10:00.000Z|…" }
+```
+- Access: one row for every agent or token request to `/v1/presence*`,
+  `/v1/places*`, `/v1/events`, and every MCP tool call. `action` is the REST
+  action (`presence.read`, `presence.precise`, `presence.history`,
+  `places.list`, `places.write`, `places.delete`, `events.list`) or the MCP
+  tool name. `outcome` is `allowed` (served, including an empty answer),
+  `hidden` (hidden mode), or `denied` (scope, precise policy, a missing
+  reason, a bad request), with `denial` saying why. `reason` is the reason an
+  agent gave for a precise read (first 256 characters). `credential` filters
+  by token id. The person's own dashboard reads are not recorded.
+- Ingest: `{ id, token:{id,name}|null, source:"generic"|"shortcut"|"owntracks",
+  outcome:"accepted"|"rejected"|"ignored", reason?, receivedAt }`. `token` is
+  null for a reading posted from the dashboard. `ignored` is an OwnTracks
+  message that is not a location. No coordinates.
+
+## Server logs (operator)
+
+```
+GET /v1/admin/logs?level=info&limit=200   # the operator's session only
+```
+```json
+{ "entries":[{ "level":"warn", "time":"…", "msg":"owntracks ingest rejected",
+  "fields":{ "error":"OwnTracks location missing lat/lon" } }] }
+```
+The server's last 1000 log entries since it started, newest first, at or
+above `level` (`debug`, `info`, `warn`, `error`). The operator is the person
+whose id is `USER_ID`; `GET /v1/me` says `isOperator`. Everyone else, and
+every token, gets `403`. Entries are redacted when they are written, and the
+boot banners (setup code, generated admin token) are never kept.
 
 ## Webhooks (admin)
 
