@@ -68,6 +68,7 @@ function AccessRows({ entries }: { entries: AccessEntry[] }) {
               <Text weight="semibold">{oneOf(ACCESS_ACTIONS, e.action) ? t(`access.action.${e.action}`) : e.action}</Text>
               <Badge variant={OUTCOME_BADGE[e.outcome] ?? "neutral"} label={t(`access.outcome.${e.outcome}`)} />
               {e.precise ? <Badge variant="warning" label={t("access.precise")} /> : null}
+              {e.count > 1 ? <Badge variant="neutral" label={t("access.count", { n: e.count })} /> : null}
             </HStack>
           }
           subtitle={
@@ -75,6 +76,7 @@ function AccessRows({ entries }: { entries: AccessEntry[] }) {
               <Text type="supporting">
                 {[e.credential.name, t(`access.surface.${e.surface}`), format.time(e.createdAt)].join(" · ")}
               </Text>
+              {e.count > 1 ? <Text type="supporting">{t("access.repeated", { n: e.count, last: format.time(e.lastAt) })}</Text> : null}
               {e.reason ? <Text type="supporting">{t("access.reason", { reason: e.reason })}</Text> : null}
               {e.denial ? <Text type="supporting">{t("access.denial", { denial: e.denial })}</Text> : null}
             </VStack>

@@ -7,6 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AppContext } from "../app/context.js";
 import { resolveTokenPrincipal } from "../auth/principal.js";
 import { REST_ACTIONS } from "../api/accessAudit.js";
+import { ACCESS_COALESCE_MS } from "./accessLogStore.js";
 import { ACCESS_ACTIONS } from "./types.js";
 import { log } from "../util/log.js";
 import { buildMcpServer } from "../mcp/server.js";
@@ -117,6 +118,7 @@ describe("REST access log", () => {
     expect(unique.length).toBeGreaterThan(40);
     for (const route of unique) {
       const [method, pattern] = route.split(" ") as [string, string];
+      clock.advance(ACCESS_COALESCE_MS);
       const res = await asToken(pattern.replace(/:[^/]+/g, "x"), admin, { method });
       expect(res.status, route).toBeLessThan(500);
     }
@@ -153,6 +155,7 @@ describe("REST access log", () => {
 
   it("names a request no route matched unknown and denied, and never stores its path", async () => {
     expect((await asToken("/v1/presence/secret-probe-path", agent)).status).toBe(404);
+    clock.advance(ACCESS_COALESCE_MS);
     expect((await asToken("/v1/presence", agent, { method: "POST" })).status).toBe(404);
     const { entries } = await accessOf(owner.browser);
     expect(entries.map((e: any) => [e.action, e.outcome])).toEqual([
@@ -281,7 +284,7 @@ describe("MCP requests the SDK or the endpoint refuses", () => {
       ["list_recent_presence_events", { limit: 1000 }],
     ];
     for (const [name, args] of calls) {
-      clock.advance(1);
+      clock.advance(ACCESS_COALESCE_MS + 1);
       const result = await client.callTool({ name, arguments: args });
       expect(result.isError, name).toBe(true);
     }
@@ -373,7 +376,10 @@ describe("GET /v1/activity/access", () => {
 
   it("pages with the next cursor and filters by credential", async () => {
     const other = await mint(owner.browser, "Other bot");
-    for (let i = 0; i < 3; i++) await asToken("/v1/presence", agent);
+    for (let i = 0; i < 3; i++) {
+      clock.advance(ACCESS_COALESCE_MS);
+      await asToken("/v1/presence", agent);
+    }
     await asToken("/v1/presence", other.secret);
     const first = await accessOf(owner.browser, "?limit=2");
     expect(first.entries).toHaveLength(2);
@@ -384,6 +390,49 @@ describe("GET /v1/activity/access", () => {
     expect(new Set(ids).size).toBe(4);
     const filtered = await accessOf(owner.browser, `?credential=${other.id}`);
     expect(filtered.entries.map((e: any) => e.credential.name)).toEqual(["Other bot"]);
+  });
+});
+
+describe("flood control", () => {
+  it("folds identical requests within a minute into one row with a count", async () => {
+    for (let i = 0; i < 5; i++) await asToken("/v1/presence", agent);
+    const [entry, ...rest] = (await accessOf(owner.browser)).entries;
+    expect(rest).toEqual([]);
+    expect(entry).toMatchObject({ action: "presence.read", outcome: "allowed", count: 5 });
+    expect(Date.parse(entry.lastAt) - Date.parse(entry.createdAt)).toBe(4);
+  });
+
+  it("keeps the window sliding from the latest request, and starts a new row after a quiet minute", async () => {
+    await asToken("/v1/presence", agent);
+    clock.advance(ACCESS_COALESCE_MS - 10);
+    await asToken("/v1/presence", agent);
+    clock.advance(ACCESS_COALESCE_MS - 10);
+    await asToken("/v1/presence", agent);
+    clock.advance(ACCESS_COALESCE_MS + 1);
+    await asToken("/v1/presence", agent);
+    expect((await accessOf(owner.browser)).entries.map((e: any) => e.count)).toEqual([1, 3]);
+  });
+
+  it("keeps separate rows for a different outcome, denial, action or credential", async () => {
+    const other = (await mint(owner.browser, "Other bot")).secret;
+    const device = (await mint(owner.browser, "Phone", "device")).secret;
+    await asToken("/v1/presence", agent);
+    await asToken("/v1/presence", other);
+    await asToken("/v1/places", agent);
+    await asToken("/v1/presence", device);
+    await asToken("/v1/presence/precise?reason=a", device);
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { defaultAgentAccess: "hidden" } });
+    await asToken("/v1/presence", agent);
+    await asToken("/v1/presence", agent);
+    const { entries } = await accessOf(owner.browser);
+    expect(entries.map((e: any) => [e.credential.name, e.action, e.outcome, e.count])).toEqual([
+      ["Claude Desktop", "presence.read", "hidden", 2],
+      ["Phone", "presence.precise", "denied", 1],
+      ["Phone", "presence.read", "denied", 1],
+      ["Claude Desktop", "places.list", "allowed", 1],
+      ["Other bot", "presence.read", "allowed", 1],
+      ["Claude Desktop", "presence.read", "allowed", 1],
+    ]);
   });
 });
 

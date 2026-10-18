@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "1ae1fd1c-2544-4c6b-ab40-549eb3d68383",
-  "prevId": "977e5677-5420-4952-bb85-4a715f62dd1b",
+  "id": "080155a5-efdb-45cf-85e9-24e5ed2603d1",
+  "prevId": "ce75bf14-5a5b-4d06-95fb-31994b0ddcd0",
   "tables": {
     "access_codes": {
       "name": "access_codes",
@@ -130,8 +130,23 @@
           "notNull": false,
           "autoincrement": false
         },
+        "count": {
+          "name": "count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
         "created_at": {
           "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_at": {
+          "name": "last_at",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -152,6 +167,15 @@
           "name": "access_log_created_at_idx",
           "columns": [
             "created_at"
+          ],
+          "isUnique": false
+        },
+        "access_log_coalesce_idx": {
+          "name": "access_log_coalesce_idx",
+          "columns": [
+            "user_id",
+            "credential_id",
+            "last_at"
           ],
           "isUnique": false
         }

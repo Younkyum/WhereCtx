@@ -406,6 +406,8 @@ export const EN = {
   "access.outcome.error": "Server error",
   "access.surface.rest": "REST API",
   "access.surface.mcp": "MCP",
+  "access.count": "×{n}",
+  "access.repeated": "Asked {n} times within a minute of each other, last {last}",
   "access.reason": "Reason given: {reason}",
   "access.denial": "Why refused: {denial}",
   "access.action.presence.read": "Read your status",

@@ -98,7 +98,10 @@ export interface AccessRecord {
 
 export interface AccessEntry extends AccessRecord {
   id: string;
+  /** Identical requests within a minute of each other, from createdAt to lastAt. */
+  count: number;
   createdAt: string;
+  lastAt: string;
 }
 
 /** A keyset page: `next` is the `before` cursor for the following page, absent on the last. */

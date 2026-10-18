@@ -210,7 +210,9 @@ describe("log views", () => {
       action: "get_presence",
       precise: false,
       outcome: "allowed",
+      count: 1,
       createdAt: "2026-10-18T01:00:00.000Z",
+      lastAt: "2026-10-18T01:00:00.000Z",
       ...over,
     });
     route("GET /v1/tokens", () => ({ status: 200, body: { tokens: [{ id: "t1", name: "Claude Desktop", role: "agent", lastUsedAt: null }] } }));
@@ -221,7 +223,10 @@ describe("log views", () => {
         next: "cursor-1",
       },
     }));
-    route("GET /v1/activity/access?limit=50&before=cursor-1", () => ({ status: 200, body: { entries: [entry("b", { action: "presence.read", surface: "rest" })] } }));
+    route("GET /v1/activity/access?limit=50&before=cursor-1", () => ({
+      status: 200,
+      body: { entries: [entry("b", { action: "presence.read", surface: "rest", count: 7, lastAt: "2026-10-18T01:00:50.000Z" })] },
+    }));
     await open("#activity");
     expect(host.textContent).toContain("Asked for your exact location");
     expect(host.textContent).toContain("Refused");
@@ -232,6 +237,8 @@ describe("log views", () => {
     await settle();
     expect(host.textContent).toContain("Read your status");
     expect(host.textContent).toContain("Claude Desktop · REST API");
+    expect(host.textContent).toContain("×7");
+    expect(host.textContent).toContain("Asked 7 times within a minute of each other");
     expect(() => button("Show older")).toThrow();
   });
 

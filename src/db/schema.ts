@@ -479,9 +479,11 @@ export const schema = {
 // `updatedAgoSec` math and lexical sorting.
 
 /**
- * Every agent or token read of a user's presence data, on REST and MCP.
- * Sessions (the owner in the dashboard) are not recorded. No coordinates.
- * Pruned after ACCESS_LOG_RETENTION_DAYS.
+ * Every agent or token request for a user's data, on REST and MCP. Sessions
+ * (the owner in the dashboard) are not recorded. No coordinates. Identical
+ * requests within a minute share a row: `count` of them, the first at
+ * `created_at` and the latest at `last_at`. Pruned after
+ * ACCESS_LOG_RETENTION_DAYS.
  */
 export const accessLog = sqliteTable(
   "access_log",
@@ -497,11 +499,14 @@ export const accessLog = sqliteTable(
     reason: text("reason"),
     outcome: text("outcome").$type<AccessOutcome>().notNull(),
     denial: text("denial"),
+    count: integer("count").notNull().default(1),
     createdAt: text("created_at").notNull(),
+    lastAt: text("last_at").notNull(),
   },
   (t) => ({
     userCreatedIdx: index("access_log_user_created_idx").on(t.userId, t.createdAt, t.id),
     createdAtIdx: index("access_log_created_at_idx").on(t.createdAt),
+    coalesceIdx: index("access_log_coalesce_idx").on(t.userId, t.credentialId, t.lastAt),
   }),
 );
 

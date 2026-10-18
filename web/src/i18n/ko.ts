@@ -408,6 +408,8 @@ export const KO: Record<I18nKey, string> = {
   "access.outcome.error": "서버 오류",
   "access.surface.rest": "REST API",
   "access.surface.mcp": "MCP",
+  "access.count": "×{n}",
+  "access.repeated": "1분 안팎 간격으로 {n}번 요청, 마지막 {last}",
   "access.reason": "요청 사유: {reason}",
   "access.denial": "거부 사유: {denial}",
   "access.action.presence.read": "상태 조회",
