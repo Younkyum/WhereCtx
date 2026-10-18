@@ -273,6 +273,34 @@ export class WebhooksStore {
     return rows[0]?.c ?? 0;
   }
 
+  /**
+   * Change an owned hook's event selection or pause it. Turning a paused hook
+   * back on moves its cursor to now, so it does not replay what happened while
+   * it was off. Returns the hook, or null when the user has no such hook.
+   */
+  async update(
+    userId: UserId,
+    id: string,
+    patch: { events?: string[]; active?: boolean },
+  ): Promise<Webhook | null> {
+    const owned = and(eq(webhooks.userId, userId), eq(webhooks.id, id));
+    const fresh = formatCursor(nowIso(this.clock), MAX_ID);
+    const result = await this.db
+      .update(webhooks)
+      .set({
+        ...(patch.events ? { events: patch.events.length > 0 ? patch.events : ["*"] } : {}),
+        ...(patch.active === undefined ? {} : { active: patch.active }),
+        // SET reads the row as it was, so this sees whether the hook was off.
+        ...(patch.active
+          ? { cursor: sql`CASE WHEN ${webhooks.active} THEN ${webhooks.cursor} ELSE ${fresh} END` }
+          : {}),
+      })
+      .where(owned);
+    if ((result.rowsAffected ?? 0) === 0) return null;
+    const rows = (await this.db.select().from(webhooks).where(owned)) as WebhookRow[];
+    return rows[0] ? this.rowToWebhook(rows[0]) : null;
+  }
+
   /** Delete an owned hook together with its dead letters, atomically. */
   async delete(userId: UserId, id: string): Promise<boolean> {
     const owned = and(eq(webhooks.userId, userId), eq(webhooks.id, id));

@@ -111,6 +111,7 @@ function scopeFor(system: SystemStores, userId: UserId) {
       "list",
       "count",
       "create",
+      "update",
       "delete",
       "listDeadLetters",
     ]),
