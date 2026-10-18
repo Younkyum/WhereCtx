@@ -140,14 +140,20 @@ describe("PasskeysStore.recordUse", () => {
 describe("passkeyBaseUrlProblem", () => {
   it.each([
     ["http://localhost:8787", null],
-    ["http://127.0.0.1:8787", null],
     ["http://app.localhost", null],
     ["https://where.example.com", null],
-    ["https://192.168.1.10", "IP address"],
+    ["http://127.0.0.1:8787", "IP address"],
+    ["http://[::1]:8787", "IP address"],
+    ["http://192.168.1.10:8787", "IP address"],
+    ["https://203.0.113.7", "IP address"],
     ["http://where.example.com", "not https"],
   ])("%s", (baseUrl, problem) => {
     const found = passkeyBaseUrlProblem(baseUrl);
     if (problem === null) expect(found).toBeNull();
     else expect(found).toContain(problem);
+  });
+
+  it("points the operator at localhost on the same port", () => {
+    expect(passkeyBaseUrlProblem("http://127.0.0.1:8787")).toContain("http://localhost:8787");
   });
 });

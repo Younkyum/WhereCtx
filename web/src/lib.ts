@@ -130,12 +130,20 @@ export function authenticationToJSON(cred: CredentialLike): CredentialJSON {
   return { ...credentialBase(cred), response };
 }
 
-/** Why passkeys cannot work on this page, or null when they can. */
+/**
+ * Why passkeys cannot work on this page, or null when they can. WebAuthn
+ * rejects an IP-address host even when the page is a secure context, as
+ * http://127.0.0.1 is. The URL parser normalizes IPv4 to dotted decimal and
+ * brackets IPv6, so two shapes cover every IP literal.
+ */
 export function webauthnProblem(win: {
   isSecureContext: boolean;
+  location: { hostname: string };
   PublicKeyCredential?: unknown;
   navigator?: { credentials?: unknown };
-}): "insecure" | "unsupported" | null {
+}): "ip-host" | "insecure" | "unsupported" | null {
+  const host = win.location.hostname;
+  if (host.startsWith("[") || /^\d+\.\d+\.\d+\.\d+$/.test(host)) return "ip-host";
   if (!win.isSecureContext) return "insecure";
   if (!win.PublicKeyCredential || !win.navigator?.credentials) return "unsupported";
   return null;

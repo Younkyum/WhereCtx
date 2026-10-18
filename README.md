@@ -61,7 +61,8 @@ Browsers allow passkeys only in a secure context. WhereCtx binds each passkey
 to the host name in `BASE_URL`. So:
 
 - Open the dashboard at exactly the `BASE_URL` origin.
-- On one machine, `http://localhost:8787` works.
+- On one machine, `http://localhost:8787` works. `http://127.0.0.1:8787`
+  does not: WebAuthn refuses any IP-address host, loopback included.
 - From other devices, serve WhereCtx over https on a domain name, for example
   behind Caddy, nginx, or a Cloudflare Tunnel
   ([deploy/README.md](deploy/README.md)), and set `BASE_URL` to that https

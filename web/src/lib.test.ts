@@ -40,9 +40,14 @@ describe("dashboard helpers", () => {
 
   it("reports why passkeys cannot work on a page", () => {
     const pk = { PublicKeyCredential: function () {}, navigator: { credentials: {} } };
-    expect(lib.webauthnProblem({ isSecureContext: false, ...pk })).toBe("insecure");
-    expect(lib.webauthnProblem({ isSecureContext: true, navigator: {} })).toBe("unsupported");
-    expect(lib.webauthnProblem({ isSecureContext: true, ...pk })).toBeNull();
+    const at = (hostname: string) => ({ location: { hostname } });
+    expect(lib.webauthnProblem({ isSecureContext: false, ...at("where.example.com"), ...pk })).toBe("insecure");
+    expect(lib.webauthnProblem({ isSecureContext: true, ...at("localhost"), navigator: {} })).toBe("unsupported");
+    expect(lib.webauthnProblem({ isSecureContext: true, ...at("localhost"), ...pk })).toBeNull();
+    expect(lib.webauthnProblem({ isSecureContext: true, ...at("where.example.com"), ...pk })).toBeNull();
+    for (const ip of ["127.0.0.1", "[::1]", "192.168.1.10", "203.0.113.7"]) {
+      expect(lib.webauthnProblem({ isSecureContext: true, ...at(ip), ...pk })).toBe("ip-host");
+    }
   });
 
   it("reads invite tokens from the fragment only", () => {

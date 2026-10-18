@@ -230,11 +230,13 @@ function PasskeyProblem() {
   return (
     <Banner
       status="warning"
-      title={t(problem === "insecure" ? "gate.insecure.title" : "gate.unsupported.title")}
+      title={t(problem === "unsupported" ? "gate.unsupported.title" : "gate.insecure.title")}
       description={
-        problem === "insecure" ? (
+        problem !== "unsupported" ? (
           <>
-            {t("gate.insecure", { origin: location.origin })}{" "}
+            {problem === "ip-host"
+              ? t("gate.ipHost", { origin: location.origin, local: `http://localhost${location.port ? `:${location.port}` : ""}` })
+              : t("gate.insecure", { origin: location.origin })}{" "}
             <Link href={PASSKEY_HTTPS_HELP} isExternalLink>
               {t("gate.insecure.help")}
             </Link>

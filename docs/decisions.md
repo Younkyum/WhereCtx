@@ -225,5 +225,12 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
   devDependencies. Vite builds `web/` into `dist/web`, and the runtime image
   ships the built files and no React. The product UI never names the design
   system.
+- **An IP-address host never counts as local for passkeys.** WebAuthn
+  requires the caller's effective domain to be a valid domain and throws
+  `SecurityError` otherwise (WebAuthn L3, section 5.1.3). That covers
+  `127.0.0.1` and `[::1]` even though browsers treat them as secure contexts.
+  Boot warns on any IP `BASE_URL`, and the sign-in page says so on an IP
+  origin, both pointing at `http://localhost:<port>` or an https domain.
+  Phone pairing keeps its own rule, which rejects every loopback host.
 - **MCP stays on bearer tokens.** Each token belongs to one person. OAuth 2.1
   for MCP clients is a later step.

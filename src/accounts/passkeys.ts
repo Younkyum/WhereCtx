@@ -132,21 +132,22 @@ export class SimpleWebAuthnCeremony implements PasskeyCeremony {
   }
 }
 
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
-
 /**
- * Why passkeys cannot work at `baseUrl`, or null. Browsers refuse WebAuthn on
- * an IP-address RP id and outside a secure context (https, or localhost).
+ * Why passkeys cannot work at `baseUrl`, or null. WebAuthn needs the origin's
+ * host to be a domain: an IP literal, loopback included, fails with
+ * SecurityError (WebAuthn L3, section 5.1.3). Browsers also need a secure
+ * context, which plain http has only on localhost.
  */
 export function passkeyBaseUrlProblem(baseUrl: string): string | null {
   const url = new URL(baseUrl);
   const host = url.hostname;
-  if (LOCAL_HOSTS.has(host) || host.endsWith(".localhost")) return null;
+  const local = `http://localhost${url.port ? `:${url.port}` : ""}`;
   if (isIP(host.replace(/^\[|\]$/g, "")) !== 0) {
-    return `BASE_URL host ${host} is an IP address; passkeys need a domain name`;
+    return `BASE_URL host ${host} is an IP address, and browsers refuse passkeys on IP addresses (127.0.0.1 and [::1] included). Use ${local} on this machine, or an https domain name.`;
   }
+  if (host === "localhost" || host.endsWith(".localhost")) return null;
   if (url.protocol !== "https:") {
-    return `BASE_URL ${url.origin} is not https; browsers allow passkeys only on https (or localhost)`;
+    return `BASE_URL ${url.origin} is not https, and browsers allow passkeys only on https or localhost. Use ${local} on this machine, or an https domain name.`;
   }
   return null;
 }
