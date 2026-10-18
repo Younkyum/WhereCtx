@@ -47,6 +47,7 @@ import { WorkspacesStore } from "../accounts/workspacesStore.js";
 import { SharesStore } from "../sharing/sharesStore.js";
 import { SharingService } from "../sharing/sharingService.js";
 import { AccessLogStore } from "../activity/accessLogStore.js";
+import { IngestLogStore } from "../activity/ingestLogStore.js";
 import type { PresenceEvent, UserId } from "../types.js";
 
 export interface SystemStores {
@@ -70,6 +71,7 @@ export interface SystemStores {
   nonces: NoncesStore;
   shares: SharesStore;
   accessLog: AccessLogStore;
+  ingestLog: IngestLogStore;
 }
 
 type Unbound<F, A> = F extends (first: A, ...args: infer P) => infer R ? (...args: P) => R : never;
@@ -104,6 +106,7 @@ function scopeFor(system: SystemStores, userId: UserId) {
     history: bindFirst(system.history, userId, ["listRecent"]),
     reminders: bindFirst(system.reminders, userId, ["create", "countActive", "listActive"]),
     accessLog: bindFirst(system.accessLog, userId, ["record", "list"]),
+    ingestLog: bindFirst(system.ingestLog, userId, ["record", "list", "deviceSummaries"]),
     webhooks: bindFirst(system.webhooks, userId, [
       "list",
       "count",
@@ -237,6 +240,7 @@ export async function createAppContext(
     nonces: new NoncesStore(db, clock),
     shares: new SharesStore(db, clock),
     accessLog: new AccessLogStore(db, clock),
+    ingestLog: new IngestLogStore(db, clock),
   };
   const system: SystemStores = {
     ...stores,

@@ -34,6 +34,8 @@ describe("redaction", () => {
     ["a token in a query", "GET /v1/ingest/owntracks?token=supersecret&x=1", "supersecret"],
     ["a coordinate pair", "at 37.56651, 126.97800 now", "37.56651"],
     ["a coordinate pair with a space", "at 37.56651 126.97800", "126.97800"],
+    ["named coordinates", "coordinates out of range (lat=37.5, lon=200)", "37.5"],
+    ["named coordinates in JSON", '{"latitude": -33.9}', "33.9"],
     ["a long opaque run", "session " + "x".repeat(48), "x".repeat(48)],
   ])("masks %s in a string", (_name, input, leaked) => {
     expect(redactString(input)).not.toContain(leaked);

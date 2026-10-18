@@ -36,7 +36,13 @@ import type {
   TokenScope,
 } from "../types.js";
 import type { WorkspaceRole } from "../accounts/types.js";
-import type { AccessOutcome, AccessSurface, CredentialKind } from "../activity/types.js";
+import type {
+  AccessOutcome,
+  AccessSurface,
+  CredentialKind,
+  IngestOutcome,
+  IngestRoute,
+} from "../activity/types.js";
 import type { AuthenticatorTransportFuture } from "@simplewebauthn/server";
 
 export const tokens = sqliteTable(
@@ -495,5 +501,28 @@ export const accessLog = sqliteTable(
   (t) => ({
     userCreatedIdx: index("access_log_user_created_idx").on(t.userId, t.createdAt, t.id),
     createdAtIdx: index("access_log_created_at_idx").on(t.createdAt),
+  }),
+);
+
+/**
+ * What each device sent and what became of it, without the reading itself:
+ * there is no coordinate column. Pruned after INGEST_LOG_RETENTION_DAYS.
+ */
+export const ingestLog = sqliteTable(
+  "ingest_log",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    tokenId: text("token_id"),
+    tokenName: text("token_name"),
+    source: text("source").$type<IngestRoute>().notNull(),
+    outcome: text("outcome").$type<IngestOutcome>().notNull(),
+    reason: text("reason"),
+    receivedAt: text("received_at").notNull(),
+  },
+  (t) => ({
+    userReceivedIdx: index("ingest_log_user_received_idx").on(t.userId, t.receivedAt, t.id),
+    tokenReceivedIdx: index("ingest_log_token_received_idx").on(t.tokenId, t.receivedAt),
+    receivedAtIdx: index("ingest_log_received_at_idx").on(t.receivedAt),
   }),
 );

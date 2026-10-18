@@ -1,5 +1,6 @@
 import type { AccountScope, UserScope } from "../app/context.js";
 import type { Principal } from "../auth/principal.js";
+import type { IngestVerdict } from "../activity/types.js";
 
 /**
  * Hono environment, filled by `authenticate`: the principal for scope checks
@@ -9,6 +10,8 @@ export type AppEnv = {
   Variables: {
     principal: Principal;
     scope: UserScope;
+    /** Set by an ingest handler whose response alone does not tell (OwnTracks always answers 200). */
+    ingestVerdict?: IngestVerdict;
   };
 };
 

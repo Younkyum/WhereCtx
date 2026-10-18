@@ -42,7 +42,7 @@ function config(defaultUserId: string): WhereCtxConfig {
     webhooks: { allowPrivateTargets: true },
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
-    activity: { accessLogRetentionDays: 90 },
+    activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
   };
 }
 

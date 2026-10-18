@@ -37,6 +37,7 @@ const STRING_RULES: Array<[RegExp, string]> = [
   [/([?&](?:token|code|secret|password)=)[^&\s"']+/gi, `$1${REDACTED}`],
   [/\b(wctx_session|__Host-wctx_session)=[^;\s"']+/g, `$1=${REDACTED}`],
   [/\bwctx_[A-Za-z0-9_-]+/g, `wctx_${REDACTED}`],
+  [/\b(lat|lon|lng|latitude|longitude)(["']?\s*[=:]\s*)-?[\d.]+/gi, `$1$2${REDACTED}`],
   // A lat/lon pair: two decimals with at least 3 fractional digits.
   [/-?\d{1,3}\.\d{3,}\s*[,/ ]\s*-?\d{1,3}\.\d{3,}/g, "[coords]"],
   // Long opaque runs (random secrets, session ids); 32-hex row ids stay readable.

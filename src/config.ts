@@ -115,6 +115,8 @@ export interface Config {
   activity: {
     /** How long the record of agent reads (access_log) is kept (days). */
     accessLogRetentionDays: number;
+    /** How long the record of device uploads (ingest_log) is kept (days). */
+    ingestLogRetentionDays: number;
   };
   geofence: {
     nearRadiusMultiplier: number;
@@ -173,6 +175,7 @@ export function loadConfig(): Config {
     },
     activity: {
       accessLogRetentionDays: Math.max(1, envInt("ACCESS_LOG_RETENTION_DAYS", 90)),
+      ingestLogRetentionDays: Math.max(1, envInt("INGEST_LOG_RETENTION_DAYS", 7)),
     },
     geofence: {
       nearRadiusMultiplier,

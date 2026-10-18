@@ -49,3 +49,44 @@ export interface Page<T> {
   entries: T[];
   next?: string;
 }
+
+/** Which ingest route a reading arrived on. */
+export const INGEST_ROUTES = ["generic", "shortcut", "owntracks"] as const;
+export type IngestRoute = (typeof INGEST_ROUTES)[number];
+
+/**
+ * accepted: the reading updated presence.
+ * rejected: the payload could not be read, or the credential may not write.
+ * ignored: an OwnTracks message that is not a location (a waypoint, a status).
+ */
+export const INGEST_OUTCOMES = ["accepted", "rejected", "ignored"] as const;
+export type IngestOutcome = (typeof INGEST_OUTCOMES)[number];
+
+export interface IngestVerdict {
+  outcome: IngestOutcome;
+  reason?: string;
+}
+
+export interface IngestRecord extends IngestVerdict {
+  /** The device token, or null for a reading posted from the dashboard session. */
+  token: { id: string; name: string } | null;
+  source: IngestRoute;
+}
+
+export interface IngestEntry extends IngestVerdict {
+  id: string;
+  token: { id: string; name: string } | null;
+  source: IngestRoute;
+  receivedAt: string;
+}
+
+export interface DeviceSummary {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  lastReceivedAt: string | null;
+  lastOutcome: IngestOutcome | null;
+  accepted24h: number;
+  rejected24h: number;
+}

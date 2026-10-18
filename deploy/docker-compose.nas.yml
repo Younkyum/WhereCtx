@@ -41,6 +41,7 @@ services:
       EVENT_RETENTION_HOURS: "${EVENT_RETENTION_HOURS:-720}"
       SHARE_AUDIT_RETENTION_DAYS: "${SHARE_AUDIT_RETENTION_DAYS:-365}"
       ACCESS_LOG_RETENTION_DAYS: "${ACCESS_LOG_RETENTION_DAYS:-90}"
+      INGEST_LOG_RETENTION_DAYS: "${INGEST_LOG_RETENTION_DAYS:-7}"
     volumes:
       # Named volume — Docker initializes it owned by the container's non-root
       # user (uid 10001), so no manual chown is needed.

@@ -102,6 +102,7 @@ async function main(): Promise<void> {
       ctx.system.webhooks.pruneDeadLetters(config.events.retentionHours),
       ctx.system.shares.pruneAudit(config.sharing.auditRetentionDays),
       ctx.system.accessLog.prune(config.activity.accessLogRetentionDays),
+      ctx.system.ingestLog.prune(config.activity.ingestLogRetentionDays),
       ctx.system.sessions.prune(),
       ctx.system.invites.pruneExpired(config.events.retentionHours),
       ctx.system.nonces.prune(),
