@@ -78,18 +78,24 @@ GET /v1/presence/history?from=&to=&limit=   # manage_privacy (a session, or an a
 ```
 ```json
 { "enabled":true, "retentionHours":24,
-  "from":"2026-10-17T09:00:00.000Z", "to":"2026-10-18T09:00:00.000Z", "truncated":false,
-  "points":[{ "recordedAt":"2026-10-18T08:10:00.000Z", "lat":37.12, "lon":127.12,
-              "accuracyM":12, "source":"owntracks", "place":"home",
-              "mapUrl":"https://maps.google.com/?q=37.12,127.12" }] }
+  "from":"2026-10-17T09:00:00.000Z", "to":"2026-10-18T09:05:00.000Z", "truncated":false,
+  "points":[{ "id":"…", "recordedAt":"2026-10-18T08:10:00.000Z", "lat":37.12, "lon":127.12,
+              "accuracyM":12, "source":"owntracks", "place":"home" }] }
 ```
-The caller's own raw history in `[from, to]` (ISO 8601; default the last 24
-hours), **oldest first**, at most `limit` points (default 1000, max 5000;
-`truncated` says the range held more). `place` names the place whose geofence
-held the point, by the places as they are now. Empty unless the person turned
-on `storeRawHistory`; `enabled` says whether they did. `400` for an unreadable
-or reversed range. `Cache-Control: no-store`. A share gives a viewer no
-history: every caller gets only their own.
+The caller's own raw history in `[from, to]`, **oldest first**. `from` and
+`to` are ISO 8601 date-times with an offset (`2026-10-18T09:00:00Z` or
+`2026-10-18T18:00:00+09:00`); a bare date, a time without an offset, or
+anything else is `400`, as is a reversed range. The default range is the last
+24 hours, reaching 5 minutes past now so a point from a phone whose clock runs
+a little fast is included. At most `limit` points (default 1000, max 5000):
+when the range holds more, `truncated` is true and the response holds the
+**newest** `limit` of them; ask for a shorter or earlier range to see the
+rest. `id` is the point's row id. `place` names the place whose geofence held
+the point, by the places as they are now. There is no `mapUrl`; build a map
+link from `lat` and `lon`. Empty unless the person turned on
+`storeRawHistory`; `enabled` says whether they did. `Cache-Control:
+no-store`. A share gives a viewer no history: every caller gets only their
+own.
 
 ## Places
 
@@ -312,22 +318,45 @@ GET /v1/activity/ingest?limit=50&before=               # device uploads (max 200
 ```json
 { "entries":[{ "id":"…", "credential":{ "kind":"token", "id":"…", "name":"Claude Desktop" },
   "surface":"mcp", "action":"get_precise_location", "precise":true,
-  "reason":"pick me up", "outcome":"denied", "denial":"precise location denied by policy",
-  "createdAt":"…" }], "next":"2026-10-18T08:10:00.000Z|…" }
+  "reason":"pick me up", "outcome":"denied", "denial":"precise location is disabled by policy (allowPreciseLocation=false)",
+  "count":1, "createdAt":"…", "lastAt":"…" }], "next":"2026-10-18T08:10:00.000Z|…" }
 ```
-- Access: one row for every agent or token request to `/v1/presence*`,
-  `/v1/places*`, `/v1/events`, and every MCP tool call. `action` is the REST
-  action (`presence.read`, `presence.precise`, `presence.history`,
-  `places.list`, `places.write`, `places.delete`, `events.list`) or the MCP
-  tool name. `outcome` is `allowed` (served, including an empty answer),
-  `hidden` (hidden mode), or `denied` (scope, precise policy, a missing
-  reason, a bad request), with `denial` saying why. `reason` is the reason an
-  agent gave for a precise read (first 256 characters). `credential` filters
-  by token id. The person's own dashboard reads are not recorded.
+- Access: one row for every token request to a `/v1` route other than
+  `/v1/ingest*` (which has the ingest log) and `/v1/auth*` (which takes no
+  token), and for every MCP `tools/call`, including calls refused before a
+  tool runs.
+  - `action` names what was asked: `presence.read`, `presence.precise`,
+    `presence.history`, `places.list`, `places.write`, `places.delete`,
+    `events.list`, `privacy.read`, `privacy.update`, `webhooks.list`,
+    `webhooks.create`, `webhooks.update`, `webhooks.delete`,
+    `webhooks.dead_letters`, `tokens.list`, `tokens.create`, `tokens.revoke`,
+    `devices.list`, `devices.pair`, `activity.read`, `admin.logs`; `account`
+    for any `/v1/me`, `/v1/workspaces`, `/v1/shares` or `/v1/people` route
+    (a token is always refused there); an MCP tool name; `mcp.request` for an
+    MCP request refused before any tool (a token without `read_presence`, or
+    a batch over the cap); or `unknown` for a path no route matched or a tool
+    that does not exist. The path or tool name itself is never stored. A
+    `HEAD` request is named as its `GET` route.
+  - `outcome` is `allowed` (served, including an empty answer such as a
+    `404` on a known route), `hidden` (hidden mode, a precise request
+    included), `denied` (scope, precise policy, a missing reason, invalid
+    MCP arguments, a bad request, an unknown route or tool), or `error` (the
+    server failed, `5xx`). `denial` says why a request was denied.
+  - `precise` is true when the request sought or returned coordinates: a
+    precise read, history, and a place list for a `manage_places` token.
+    `reason` is the reason an agent gave for a precise request (first 256
+    characters, redacted like an ingest rejection).
+  - Identical requests (same token, surface, action, outcome and denial)
+    within a minute of the previous one fold into one row: `count` of them,
+    the first at `createdAt`, the latest at `lastAt`. The row keeps the first
+    reason.
+  - `credential` filters by token id. The person's own dashboard reads are
+    not recorded.
 - Ingest: `{ id, token:{id,name}|null, source:"generic"|"shortcut"|"owntracks",
-  outcome:"accepted"|"rejected"|"ignored", reason?, receivedAt }`. `token` is
-  null for a reading posted from the dashboard. `ignored` is an OwnTracks
-  message that is not a location. No coordinates.
+  outcome:"accepted"|"rejected"|"ignored"|"error", reason?, receivedAt }`.
+  `token` is null for a reading posted from the dashboard. `ignored` is an
+  OwnTracks message that is not a location; `error` is a server failure. No
+  coordinates.
 
 ## Server logs (operator)
 
@@ -335,14 +364,20 @@ GET /v1/activity/ingest?limit=50&before=               # device uploads (max 200
 GET /v1/admin/logs?level=info&limit=200   # the operator's session only
 ```
 ```json
-{ "entries":[{ "level":"warn", "time":"…", "msg":"owntracks ingest rejected",
-  "fields":{ "error":"OwnTracks location missing lat/lon" } }] }
+{ "entries":[{ "level":"error", "time":"…", "msg":"request failed",
+  "fields":{ "method":"POST", "path":"/v1/webhooks",
+    "err":{ "name":"DrizzleQueryError", "message":"Failed query: insert into …",
+      "stack":["at …"], "cause":{ "name":"LibsqlError", "message":"…", "code":"SQLITE_BUSY" } } } }] }
 ```
 The server's last 1000 log entries since it started, newest first, at or
-above `level` (`debug`, `info`, `warn`, `error`). The operator is the person
-whose id is `USER_ID`; `GET /v1/me` says `isOperator`. Everyone else, and
-every token, gets `403`. Entries are redacted when they are written, and the
-boot banners (setup code, generated admin token) are never kept.
+above `level` (`debug`, `info`, `warn`, `error`). An error in `fields` is
+always the same few fields: `name`, the first line of its `message` (for a
+failed database query, the SQL with `?` placeholders, never the values),
+`code`, `stack` frames, and its `cause` the same way, three levels deep.
+The operator is the person whose id is `USER_ID`; `GET /v1/me` says
+`isOperator`. Everyone else, and every token, gets `403`. Entries are
+redacted when they are written, and the boot banners (setup code, generated
+admin token) are never kept.
 
 ## Webhooks (admin)
 
@@ -354,9 +389,13 @@ GET    /v1/webhooks/dead-letters    # undeliverable events
 DELETE /v1/webhooks/:id
 ```
 `events` is a non-empty list of the event types below, or `["*"]` for all of
-them (including any added later). `PATCH` changes a hook's selection or
-pauses it; another person's hook id answers `404`. Turning a paused hook back
-on starts it from now, so it does not replay what happened while it was off.
+them (including any added later). The server stores each type once, in the
+order given, and stores `["*"]` alone when the list includes `"*"`; an
+unknown type is `400`. `PATCH` changes a hook's selection or pauses it;
+another person's hook id answers `404`. Turning a paused hook back on starts
+it from now, so it does not replay what happened while it was off, even when
+a delivery was in flight across the pause. A delivery in flight when the
+selection changes is the last one sent under the old selection.
 The dashboard creates hooks for `presence.entered_place` and
 `presence.left_place` unless the person picks otherwise.
 `POST` answers `400` when the URL's host does not resolve, or resolves to a
@@ -411,3 +450,6 @@ GET /healthz     # { status:"ok" }
 GET /dashboard   # web UI: passkey sign-in, people, sharing, devices, agents
 POST /mcp        # MCP endpoint (see docs/mcp.md)
 ```
+
+`/mcp` refuses a JSON-RPC batch of more than 10 messages with `400` and a
+JSON-RPC error (`-32600`, "batch too large").

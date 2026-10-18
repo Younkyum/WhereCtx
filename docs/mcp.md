@@ -64,9 +64,17 @@ unless the token carries the `manage_places` scope (admin). This stops an agent
 from moving the home geofence, which would mislead the home-coordinate privacy
 protections. Non-home places stay writable by agent tokens.
 
-Every tool call is recorded in the owner's access log (token name, tool,
-outcome, and the reason given for `get_precise_location`). The owner sees it
+Every `tools/call` request is recorded in the owner's access log (token
+name, tool, outcome, and the reason given for `get_precise_location`), one
+row per call, including calls refused before a tool runs: arguments that
+fail the tool's schema are recorded as denied with "invalid arguments", and a
+tool name that does not exist as `unknown` (the name is not stored). A token
+without `read_presence` is refused with `403` and recorded as `mcp.request`.
+Identical calls within a minute share a row with a count. The owner sees it
 in the dashboard's Agent access view; see [privacy.md](privacy.md#what-is-logged-for-how-long-and-who-sees-it).
+
+A POST may batch at most 10 JSON-RPC messages; a larger batch is refused with
+`400` and JSON-RPC error `-32600`.
 
 ## Agent usage policy
 

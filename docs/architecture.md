@@ -95,30 +95,51 @@ accident.
 `src/activity/` holds two per-user logs and the one helper that writes the
 first. Neither holds coordinates.
 
-- `access_log` records every agent or token read. `accessRecorder(scope,
+- `access_log` records every agent or token request. `accessRecorder(scope,
   principal, surface)` turns a principal into the credential to name
   (`credentialOf`; a session maps to none, since the owner reading their own
   data is not an agent read) and swallows write failures into the server log.
-  REST mounts `/v1/presence`, `/v1/places` and `/v1/events` with
-  `auditAccess` (`src/api/accessAudit.ts`) after `authenticate`, so any route
-  under those prefixes is recorded, and derives the outcome from the
-  response. MCP registers every tool through one wrapper in
-  `buildMcpServer`, which records the call and its result. `ACCESS_ACTIONS`
-  names every action; tests hold both surfaces to it.
+  The store folds an identical request within a minute into the previous row
+  (`count`, `last_at`).
+- What a request came to is an `AccessDecision` (`outcome`, `denial`,
+  `precise`) set by the code that decided it, never read back from a body.
+  REST: the scope guards refuse through `refuse`, and handlers call `decide`
+  (hidden mode, a precise refusal, a place list with coordinates); `settle`
+  fills in the rest from the status, with any `5xx` an `error`. MCP: each tool
+  returns a `Reply` holding its decision next to its answer.
+- REST: `buildApp` mounts `auditAccess` (`src/api/accessAudit.ts`) ahead of
+  the credential check on every `/v1` prefix but `/v1/ingest` and
+  `/v1/auth`. It names the action from the matched route pattern
+  (`REST_ACTIONS`; `account` for the session-only prefixes; `unknown` when
+  no route matched). A test sends a token request to every mounted route.
+- MCP: `buildMcpServer` watches the transport its server connects to and
+  writes one row per `tools/call` when the response goes out, so calls the
+  SDK refuses before a tool runs are recorded too. `/mcp` records a token
+  without `read_presence`, and caps a batch at 10 messages.
+- `ACCESS_ACTIONS` names every action; tests hold both surfaces to it, and
+  the dashboard has copy for each.
 - `ingest_log` records every authenticated upload in one middleware on the
-  ingest router, ahead of the scope check. OwnTracks always answers `200`,
-  so its handler sets the verdict (`ingestVerdict`) itself.
+  ingest router, ahead of the scope check. Handlers set the verdict
+  (`ingestVerdict`) for a payload they could not read, OwnTracks included,
+  which always answers `200`; a scope refusal comes from the access
+  decision, and a `5xx` is `error`.
 - `/v1/activity/*` reads them for the signed-in person only (`requireSession`).
 
 ## Server log
 
 `src/util/log.ts` is the only writer to stdout and stderr (a source test
-fails on `console.*` anywhere else under `src/`). It redacts every entry when
-it is written: values under sensitive keys, and secrets and coordinates
-inside any string. It keeps the last 1000 entries in memory for
-`GET /v1/admin/logs`, which only the operator (`USER_ID`, see
-`api/admin.ts` `isOperator`) can read. `log.banner` prints the boot banners
-and the CLI's access code as is and never keeps them.
+fails on `console.*` anywhere else under `src/`). A log call never throws. It
+redacts every entry when it is written: values under keys whose last word is
+sensitive, and credentials and coordinates inside any string. An error is
+serialized as name, first message line, code, stack frames and cause, so a
+`DrizzleQueryError` shows its SQL but never its parameters. It keeps the last
+1000 entries in memory for `GET /v1/admin/logs`, which only the operator
+(`USER_ID`, see `api/admin.ts` `isOperator`) can read.
+
+The setup code, access codes and a generated admin token are a `Secret`
+(`src/util/secret.ts`), which prints as `[secret]` and which `log.info`,
+`warn`, `error` and `debug` refuse at the type level. `log.banner`, a tagged
+template, is the one writer that reveals one, to stdout only.
 
 ## Accounts
 
@@ -197,14 +218,16 @@ adds at runtime. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-
 
 ## Composition
 
-`src/index.ts` creates one Node `http.Server`. A request whose path is `/mcp`
-goes to the MCP handler, which writes to the Node response directly.
-Everything else goes to the Hono app through `getRequestListener`. Boot also
-prints the setup code while no passkey exists, starts the webhook dispatcher,
-the stale sweep every minute, and the prune sweep every 6 hours. The prune
-sweep removes old events, dead letters, share audit rows, access and ingest
-log rows, each person's history past their retention, sessions, invites,
-nonces, and access codes.
+`src/app/boot.ts` (`startServer`, called by `src/index.ts`) creates one Node
+`http.Server`. A request whose path is `/mcp` goes to the MCP handler, which
+writes to the Node response directly. Everything else goes to the Hono app
+through `getRequestListener`. Boot also prints the setup code while no
+passkey exists, starts the webhook dispatcher, the stale sweep every minute,
+and the prune sweep (`src/app/prune.ts`) every 6 hours. The prune sweep
+removes old events, dead letters, share audit rows, access and ingest log
+rows, each person's history past their retention (the server default for a
+person with no settings row, in batches), sessions, invites, nonces, and
+access codes.
 
 ## Storage
 
