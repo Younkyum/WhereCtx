@@ -26,14 +26,16 @@ const config: WhereCtxConfig = {
     storeRawHistory: false,
   },
   geofence: { nearRadiusMultiplier: 3 },
+  trustProxy: "none",
+  allowMemberWorkspaces: true,
   webhooks: { allowPrivateTargets: false },
   events: { retentionHours: 720 },
 };
 
 const USER = asUserId("default");
 
-const agentToken: Principal = { userId: USER, scopes: ROLE_SCOPES.agent };
-const adminToken: Principal = { userId: USER, scopes: ROLE_SCOPES.admin };
+const agentToken: Principal = { via: "token", userId: USER, scopes: ROLE_SCOPES.agent };
+const adminToken: Principal = { via: "token", userId: USER, scopes: ROLE_SCOPES.admin };
 
 function reading(lat: number, lon: number): NormalizedReading {
   return {

@@ -87,6 +87,47 @@ Body keys: `defaultAgentAccess`, `allowPreciseLocation`, `preciseRequiresReason`
 `preciseRequiresApproval`, `hideHomeExactCoordinates`, `protectHomePlace`,
 `retentionHours`, `storeRawHistory` (all optional).
 
+## Accounts (signed-in people)
+
+People sign in with a passkey and get a session cookie (`__Host-wctx_session`
+on https, `wctx_session` on http). Cookie-authenticated writes must send this
+server's `Origin`. Each WebAuthn flow is two calls: `options` returns
+`{ ceremony, options }`; pass `options` to `navigator.credentials`, then send
+`ceremony` back unchanged with the credential to `verify`. Ceremonies expire
+after 5 minutes and work once. Account errors carry `{ error, code }`.
+
+```
+POST /v1/auth/setup/options|verify        # first owner: { code } from the boot log
+POST /v1/auth/login/options|verify        # discoverable passkey sign-in
+POST /v1/auth/invite/preview              # { token } -> workspace name, role, expiry
+POST /v1/auth/invite/options|verify       # { token, displayName } -> sign up
+POST /v1/auth/recover                     # { code } recovery code; ends other sessions
+POST /v1/auth/access-code/options|verify  # { code } from `reset-access`
+POST /v1/auth/logout
+
+GET|PATCH /v1/me                          # profile, workspaces, passkeys, sessions
+POST   /v1/me/reauth/options|verify       # re-prove a passkey (step-up, 10 min)
+POST   /v1/me/passkeys/options|verify     # add a passkey            (step-up)
+DELETE /v1/me/passkeys/:id                # never the last one       (step-up)
+POST   /v1/me/recovery-codes              # replace all 8 codes      (step-up)
+DELETE /v1/me/sessions/:id
+POST   /v1/me/sessions/revoke-others
+
+GET|POST /v1/workspaces                   # list mine / create
+POST   /v1/workspaces/invites/accept      # { token } join while signed in
+PATCH  /v1/workspaces/:id                 # rename
+GET    /v1/workspaces/:id/members
+PATCH|DELETE /v1/workspaces/:id/members/:userId
+GET|POST /v1/workspaces/:id/invites       # POST { role } -> { url } shown once
+DELETE /v1/workspaces/:id/invites/:inviteId
+```
+
+Step-up operations (and `POST /v1/tokens` from a session) answer `403` with
+`code: "reauth_required"` when the session last proved a passkey more than 10
+minutes ago. Unknown setup, invite, recovery, or access codes and failed
+ceremonies answer `401` and count toward the auth-failure limit; expired or used
+invites answer `410`.
+
 ## Tokens (admin)
 
 ```

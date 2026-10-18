@@ -57,10 +57,30 @@ function envPrivacy(key: string, fallback: PrivacyMode): PrivacyMode {
   );
 }
 
+/**
+ * Which proxy headers name the client, for rate limiting. `none` uses the TCP
+ * peer address; `cloudflare` trusts `cf-connecting-ip` (Cloudflare Tunnel);
+ * `xff` trusts the first `x-forwarded-for` hop. Trust a header only when every
+ * request reaches the server through that proxy, or clients can spoof it.
+ */
+export type TrustProxy = "none" | "cloudflare" | "xff";
+
+function envTrustProxy(key: string): TrustProxy {
+  const v = envStr(key, "none");
+  if (v === "none" || v === "cloudflare" || v === "xff") return v;
+  throw new Error(`Invalid value for env ${key}: "${v}" (expected none|cloudflare|xff)`);
+}
+
 export interface Config {
   port: number;
   host: string;
   baseUrl: string;
+  trustProxy: TrustProxy;
+  /**
+   * Whether any signed-in person may create workspaces. When false, only
+   * USER_ID and people who own or administer a workspace may.
+   */
+  allowMemberWorkspaces: boolean;
   databaseUrl: string;
   /**
    * Owner of bootstrap tokens and the first-boot settings row. Read only by
@@ -116,6 +136,8 @@ export function loadConfig(): Config {
     port: envInt("PORT", 8787),
     host: envStr("HOST", "0.0.0.0"),
     baseUrl,
+    trustProxy: envTrustProxy("TRUST_PROXY"),
+    allowMemberWorkspaces: envBool("ALLOW_MEMBER_WORKSPACES", true),
     databaseUrl: normalizeDatabaseUrl(envStr("DATABASE_URL", "file:./data/wherectx.db")),
     defaultUserId: asUserId(envStr("USER_ID", "default")),
     bootstrapTokens: {

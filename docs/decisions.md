@@ -52,6 +52,99 @@ generated for it. Changing `USER_ID` after first boot does not move any data:
 existing rows and env tokens keep their original owner (boot warns when an env
 token belongs to someone else).
 
+## Accounts, workspaces, passkeys
+
+People sign in with passkeys and hold a browser session; tokens stay the
+credential of agents, devices, and automation. Sessions and passkeys are
+implemented in-house on `@simplewebauthn/server` rather than an auth framework:
+the surface is small (no passwords, no email, no OAuth) and keeping it in the
+codebase keeps the per-user scoping model in one place.
+
+- **Workspaces group people, not data.** Every location row still belongs to
+  one user. A workspace role grants rights over the workspace itself (name,
+  members, invites), never over another member's location.
+- **Roles are a registry** (`src/accounts/types.ts`): what each role may do,
+  and which roles it may grant or act on. Admins cannot create or touch owners.
+  Non-members get 404 for a workspace, never 403. The service checks the
+  registry before a write, and the write re-checks it in SQL
+  (`src/accounts/roleSql.ts`): an UPDATE or DELETE on a membership only lands
+  if the actor's *current* role may act on the target's *current* role (and on
+  the role being granted), next to the guard that a workspace keeps an owner.
+  A role that changes between the check and the write cannot be exceeded.
+- **Account scope.** Like `forUser(userId)` for location data,
+  `forSession(actor)` hands `/v1/me` and `/v1/workspaces` handlers an
+  `AccountScope` whose methods are pre-bound to the signed-in session. The
+  sign-in ceremonies get only `PasskeyAuth`, built from exactly the stores it
+  uses.
+- **First owner.** While no passkey exists, boot prints a one-time setup code
+  and stores its hash in `server_secrets`, so any instance sharing the
+  database can check it; a restart replaces it. Only someone who can read the
+  server log can register the first passkey, which goes to `USER_ID`.
+  Migration 0005 made every pre-existing user the owner of their own
+  "Default" workspace; boot does the same for `USER_ID` on a fresh install.
+- **Operator break-glass.** `node dist/cli.js reset-access <userId>` (or
+  `npm run reset-access -- <userId>`) stores a one-time access code for that
+  user (hashed, valid 1 hour) and prints it. `POST
+  /v1/auth/access-code/options|verify` registers a passkey with it, signs the
+  user out everywhere else, and issues new recovery codes. It is the way back
+  for someone with no passkey and no recovery code, and how migrated users
+  other than `USER_ID` claim their accounts. Shell access to the server is the
+  same trust as reading the setup code.
+- **Invites, not email.** An owner or admin creates a 7-day, single-use link
+  (`/dashboard/#invite=<token>`; the token always travels in JSON bodies,
+  never URL paths). An invite is only as good as its creator's current
+  standing: claiming it requires that the creator still holds a role allowed to
+  issue its role, and removing or demoting a member deletes their pending
+  invites that the new role cannot issue, in the same batch. Redeeming creates
+  the user, their first passkey, and the membership in one batch conditioned on
+  claiming the invite, so a race or crash cannot leave a half-joined account.
+  Caps (20 workspaces per user, 50 pending invites per workspace) are part of
+  the insert's own WHERE clause.
+- **Creating workspaces.** `ALLOW_MEMBER_WORKSPACES=true` (default) lets anyone
+  signed in create one. When false, only `USER_ID` and people who already own
+  or administer some workspace may; someone invited as a plain member cannot.
+- **Ceremonies are stateless.** Between the options and verify calls the
+  client carries a signed state: `{purpose, binding, challenge, exp, nonce}`
+  HMAC-SHA256-signed with a per-install key generated on first boot
+  (`server_secrets`). Verify checks the signature, the 5-minute expiry, the
+  purpose, and the binding (the signed-in user, the invite token, the access
+  code), then spends the nonce in `used_nonces` (insert-or-fail, pruned by the
+  sweep). Nothing is held in memory, so `/options` floods cannot evict real
+  ceremonies and any instance can finish a ceremony another started.
+- **User verification is required** for registration and sign-in: a passkey
+  is the only credential a person has. The WebAuthn user handle is 32 random
+  bytes per user (`users.webauthn_handle`), not the internal user id. A stored
+  signature counter only moves forward, and the write re-checks it.
+- **Recovery** is 8 single-use codes shown once at sign-up and regenerable.
+  Each is `LOOKUP-SECRET`: 6 public characters that find the row, then 24
+  secret characters (~117 bits) stored only as SHA-256 and compared in
+  constant time. Signing in with one ends every other session of the account.
+- **Step-up.** A session records when it last proved a passkey (`reauth_at`;
+  sign-in, setup, invite sign-up, recovery, and access codes all count).
+  Adding or deleting a passkey, replacing recovery codes, and minting any token
+  from a session need that proof within 10 minutes; `POST
+  /v1/me/reauth/options|verify` renews it. Tokens are minted only with a fresh
+  proof because a token outlives the session and works from anywhere; requests
+  authenticated by a token are not affected. Changing member roles or removing
+  members does not need step-up. Deleting a passkey or replacing recovery
+  codes also signs out every other session.
+- **Session cookie** `__Host-wctx_session` on https (Secure, Path=/, no
+  Domain, so a sibling subdomain cannot plant it), `wctx_session` on plain
+  http. HttpOnly, SameSite=Lax, 30 days sliding (refreshed at most daily) and
+  never more than 90 days from sign-in. Only its SHA-256 is stored. Signing in
+  again replaces the session the browser already had.
+  Cookie-authenticated writes, and every `/v1/auth` POST, must carry this
+  server's `Origin`. A Bearer header wins over a cookie.
+- **Rate limits.** Failed authentications are counted per client across REST
+  and MCP; the `/v1/auth/*/options` starters and `/v1/auth/recover` are also
+  limited by request count, and recovery attempts per lookup id. The client is
+  the socket peer unless `TRUST_PROXY` says every request comes through
+  Cloudflare (`cf-connecting-ip`) or a proxy that sets `x-forwarded-for`.
+  When the limiter's table is full, new keys share one overflow counter rather
+  than going uncounted.
+- **Tokens have no account rights.** `/v1/me` and `/v1/workspaces` require a
+  session. MCP stays token-only.
+
 ## Label fallback
 
 `PresenceContext.label` and the DB `label` column are nullable, but the agent-

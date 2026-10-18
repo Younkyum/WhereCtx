@@ -10,7 +10,8 @@
 import { createServer } from "node:http";
 import { getRequestListener } from "@hono/node-server";
 import { loadConfig } from "./config.js";
-import { AuthFailureLimiter } from "./api/rateLimit.js";
+import { RateLimiter } from "./api/rateLimit.js";
+import { passkeyBaseUrlProblem } from "./accounts/passkeys.js";
 import { createAppContext, closeAppContext } from "./app/context.js";
 import { buildApp } from "./app/server.js";
 import { mcpNodeHandler } from "./mcp/http.js";
@@ -34,6 +35,23 @@ async function main(): Promise<void> {
         `  USER_ID "${config.defaultUserId}" had no admin token, so one was generated.\n` +
         "  Save it now — it will not be shown again:\n\n" +
         `    ${bootstrap.seed.generatedAdminSecret}\n` +
+        "──────────────────────────────────────────────────────────────\n",
+    );
+  }
+
+  const passkeyProblem = passkeyBaseUrlProblem(config.baseUrl);
+  if (passkeyProblem) console.warn(`⚠️  ${passkeyProblem}`);
+
+  if (bootstrap.setupCode) {
+    console.log(
+      "\n──────────────────────────────────────────────────────────────\n" +
+        "  No passkey is registered yet. This one-time setup code lets\n" +
+        "  you register the owner's passkey:\n\n" +
+        `    ${bootstrap.setupCode}\n\n` +
+        "  The dashboard sign-in screens arrive in a later release; for now\n" +
+        "  use the API: POST /v1/auth/setup/options, then /v1/auth/setup/verify\n" +
+        "  (see docs/api.md). The code works until the first passkey is\n" +
+        "  registered; a restart replaces it.\n" +
         "──────────────────────────────────────────────────────────────\n",
     );
   }
@@ -73,11 +91,16 @@ async function main(): Promise<void> {
   staleSweep.unref?.();
 
   // Retention pruning for the append-only tables (events + webhook dead-letters,
-  // review P3/L5). Runs at boot and then every few hours.
+  // review P3/L5), expired sessions, long-expired invites, spent ceremony
+  // nonces, and expired access codes. Runs at boot and then every few hours.
   const pruneOnce = (): void => {
     void Promise.all([
       ctx.system.events.prune(config.events.retentionHours),
       ctx.system.webhooks.pruneDeadLetters(config.events.retentionHours),
+      ctx.system.sessions.prune(),
+      ctx.system.invites.pruneExpired(config.events.retentionHours),
+      ctx.system.nonces.prune(),
+      ctx.system.accessCodes.prune(),
     ]).catch((e) => console.error("prune sweep error:", e));
   };
   pruneOnce();
@@ -85,7 +108,7 @@ async function main(): Promise<void> {
   pruneSweep.unref?.();
 
   // One shared limiter so REST and MCP auth failures count together.
-  const authLimiter = new AuthFailureLimiter();
+  const authLimiter = new RateLimiter();
   const app = buildApp(ctx, { authLimiter });
   const honoListener = getRequestListener(app.fetch);
   const mcp = mcpNodeHandler(ctx, authLimiter);

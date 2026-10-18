@@ -8,7 +8,8 @@
     "node": ">=20"
   },
   "bin": {
-    "wherectx": "dist/index.js"
+    "wherectx": "dist/index.js",
+    "wherectx-admin": "dist/cli.js"
   },
   "scripts": {
     "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
@@ -18,7 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts"
+    "db:migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
+    "reset-access": "tsx --env-file-if-exists=.env src/cli.ts reset-access"
   },
   "keywords": [
     "mcp",
@@ -33,6 +35,7 @@
     "@hono/node-server": "^2.0.4",
     "@libsql/client": "^0.17.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@simplewebauthn/server": "13.3.3",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.23",
     "ngeohash": "^0.6.3",

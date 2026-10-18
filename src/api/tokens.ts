@@ -3,11 +3,16 @@
  *   GET    /v1/tokens      -> list tokens, no secrets (manage_tokens)
  *   POST   /v1/tokens      -> create; returns the plaintext secret ONCE (manage_tokens)
  *   DELETE /v1/tokens/:id  -> revoke (manage_tokens)
+ *
+ * A signed-in person minting a token of any role must have proved their
+ * passkey within the step-up window: a token outlives the session and works
+ * from anywhere, so creating one is as sensitive as adding a passkey.
  */
 
 import { Hono } from "hono";
 import { z } from "zod";
-import { requireScope } from "./middleware.js";
+import type { RouteContext } from "../app/context.js";
+import { requireFreshSession, requireScope } from "./middleware.js";
 import { zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
 
@@ -19,7 +24,7 @@ const CreateSchema = z.object({
   role: z.enum(["device", "agent", "admin"]),
 });
 
-export function tokensRouter(): Hono<AppEnv> {
+export function tokensRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   app.use("*", requireScope("manage_tokens"));
 
@@ -28,7 +33,7 @@ export function tokensRouter(): Hono<AppEnv> {
     return c.json({ tokens });
   });
 
-  app.post("/", async (c) => {
+  app.post("/", requireFreshSession(ctx), async (c) => {
     let body: unknown;
     try {
       body = await c.req.json();

@@ -12,7 +12,7 @@
  * caller's user so one tenant can never see or revoke another's credentials.
  */
 
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { tokens } from "../db/schema.js";
@@ -26,6 +26,7 @@ import {
 } from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 import { scopesForRole } from "./scopes.js";
+import { hashToken, newId, secretsEqual } from "./secrets.js";
 
 export interface VerifiedToken extends Token {
   /** Present so callers can scope-check without another lookup. */
@@ -44,10 +45,6 @@ const TOKEN_PREFIX = "wctx";
 /** Minimum interval between lastUsedAt writes for the same token (ms). */
 const LAST_USED_THROTTLE_MS = 60_000;
 
-export function hashToken(secret: string): string {
-  return createHash("sha256").update(secret, "utf8").digest("hex");
-}
-
 /** Generate a strong opaque token secret, e.g. `wctx_<43 base64url chars>`. */
 export function generateTokenSecret(): string {
   return `${TOKEN_PREFIX}_${randomBytes(32).toString("base64url")}`;
@@ -56,10 +53,6 @@ export function generateTokenSecret(): string {
 /** A token is too weak to seed if it's a known placeholder or short. */
 export function isWeakSecret(secret: string): boolean {
   return /^change-me/i.test(secret.trim()) || secret.trim().length < 24;
-}
-
-function newId(): string {
-  return randomBytes(16).toString("hex");
 }
 
 interface TokenRow {
@@ -111,7 +104,7 @@ export class TokenStore {
       .limit(1)) as TokenRow[];
     const row = rows[0];
     if (!row) return null;
-    if (!constantTimeEqualHex(row.tokenHash, hash)) return null;
+    if (!secretsEqual(row.tokenHash, hash)) return null;
 
     // Throttle the lastUsedAt write so auth stays read-mostly on the hot path
     // (avoid a DB write on every authenticated request; review finding P3).
@@ -248,19 +241,5 @@ export class TokenStore {
     }
 
     return result;
-  }
-}
-
-/**
- * Constant-time compare of two hex digests. Compares the raw UTF-8 bytes of the
- * hex strings (not the decoded bytes) so malformed/odd-length hex cannot be
- * silently truncated by Buffer.from(_, "hex") (review finding F4).
- */
-function constantTimeEqualHex(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  try {
-    return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
-  } catch {
-    return false;
   }
 }

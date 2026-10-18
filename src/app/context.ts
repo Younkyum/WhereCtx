@@ -3,10 +3,15 @@
  *
  * Two handles, split by who may cross user boundaries:
  * - `system` holds the raw stores and service. Only boot, the dispatcher, the
- *   periodic sweeps, and the auth boundary (`resolvePrincipal`) receive it.
+ *   periodic sweeps, and the auth boundary (src/auth/principal.ts) receive it.
  * - `forUser(userId)` returns a `UserScope` whose methods are already bound to
  *   one user. Route handlers and MCP tools see only a scope, so calling another
  *   user's data or a cross-user method is a type error rather than a review item.
+ *
+ * Account routes mirror this: `forSession(actor)` returns an `AccountScope`
+ * pre-bound to one signed-in session (its own account, and workspace actions
+ * checked against the actor's role), and `auth` is the narrow handle for the
+ * unauthenticated sign-in ceremonies.
  */
 
 import type { WhereCtxConfig } from "../config.js";
@@ -24,6 +29,21 @@ import {
 import { PresenceService } from "../presence/service.js";
 import { SecretBox } from "../webhooks/secretBox.js";
 import { systemClock, type Clock } from "../util/time.js";
+import { AccessCodesStore } from "../accounts/accessCodesStore.js";
+import { PasskeyAuth, generateSetupCode, setupCodeHash } from "../accounts/authService.js";
+import { Ceremonies } from "../accounts/ceremonies.js";
+import { InvitesStore } from "../accounts/invitesStore.js";
+import { NoncesStore } from "../accounts/noncesStore.js";
+import { SimpleWebAuthnCeremony, type PasskeyCeremony } from "../accounts/passkeys.js";
+import { PasskeysStore } from "../accounts/passkeysStore.js";
+import { RecoveryStore } from "../accounts/recoveryStore.js";
+import { SelfService } from "../accounts/selfService.js";
+import { ServerSecretsStore } from "../accounts/serverSecretsStore.js";
+import { SessionsStore } from "../accounts/sessionsStore.js";
+import type { Actor } from "../accounts/types.js";
+import { UsersStore } from "../accounts/usersStore.js";
+import { WorkspaceService } from "../accounts/workspaceService.js";
+import { WorkspacesStore } from "../accounts/workspacesStore.js";
 import type { PresenceEvent, UserId } from "../types.js";
 
 export interface SystemStores {
@@ -36,46 +56,49 @@ export interface SystemStores {
   reminders: RemindersStore;
   webhooks: WebhooksStore;
   service: PresenceService;
+  users: UsersStore;
+  workspaces: WorkspacesStore;
+  invites: InvitesStore;
+  passkeys: PasskeysStore;
+  sessions: SessionsStore;
+  recovery: RecoveryStore;
+  accessCodes: AccessCodesStore;
+  serverSecrets: ServerSecretsStore;
+  nonces: NoncesStore;
 }
 
-type Unbound<F> = F extends (userId: UserId, ...args: infer A) => infer R
-  ? (...args: A) => R
-  : never;
-type Bound<T, K extends keyof T> = { readonly [P in K]: Unbound<T[P]> };
+type Unbound<F, A> = F extends (first: A, ...args: infer P) => infer R ? (...args: P) => R : never;
+type Bound<T, K extends keyof T, A> = { readonly [P in K]: Unbound<T[P], A> };
 
-/** Pick `keys` of `target` with their leading userId argument fixed. */
-function bindUser<T, K extends keyof T>(
-  target: T,
-  userId: UserId,
-  keys: readonly K[],
-): Bound<T, K> {
+/** Pick `keys` of `target` with their leading argument (a user or an actor) fixed. */
+function bindFirst<T, A, K extends keyof T>(target: T, first: A, keys: readonly K[]): Bound<T, K, A> {
   const bound = {} as Record<K, unknown>;
   for (const key of keys) {
     const fn = target[key] as (...args: unknown[]) => unknown;
-    bound[key] = (...args: unknown[]) => fn.call(target, userId, ...args);
+    bound[key] = (...args: unknown[]) => fn.call(target, first, ...args);
   }
-  return bound as Bound<T, K>;
+  return bound as Bound<T, K, A>;
 }
 
 function scopeFor(system: SystemStores, userId: UserId) {
   return {
     userId,
-    tokens: bindUser(system.tokens, userId, ["list", "count", "create", "revoke"]),
-    settings: bindUser(system.settings, userId, ["getOrSeed"]),
-    places: bindUser(system.places, userId, ["list", "count", "get", "upsert", "deleteByName"]),
+    tokens: bindFirst(system.tokens, userId, ["list", "count", "create", "revoke"]),
+    settings: bindFirst(system.settings, userId, ["getOrSeed"]),
+    places: bindFirst(system.places, userId, ["list", "count", "get", "upsert", "deleteByName"]),
     presence: {
-      ...bindUser(system.presence, userId, ["getCurrent"]),
-      ...bindUser(system.service, userId, [
+      ...bindFirst(system.presence, userId, ["getCurrent"]),
+      ...bindFirst(system.service, userId, [
         "processReading",
         "checkStale",
         "reevaluateCurrent",
         "changePrivacySettings",
       ]),
     },
-    events: bindUser(system.events, userId, ["listRecent"]),
-    history: bindUser(system.history, userId, ["listRecent"]),
-    reminders: bindUser(system.reminders, userId, ["create", "countActive", "listActive"]),
-    webhooks: bindUser(system.webhooks, userId, [
+    events: bindFirst(system.events, userId, ["listRecent"]),
+    history: bindFirst(system.history, userId, ["listRecent"]),
+    reminders: bindFirst(system.reminders, userId, ["create", "countActive", "listActive"]),
+    webhooks: bindFirst(system.webhooks, userId, [
       "list",
       "count",
       "create",
@@ -84,6 +107,42 @@ function scopeFor(system: SystemStores, userId: UserId) {
     ]),
   };
 }
+
+function accountScopeFor(self: SelfService, workspaces: WorkspaceService, actor: Actor) {
+  return {
+    sessionId: actor.sessionId,
+    me: bindFirst(self, actor, [
+      "profile",
+      "rename",
+      "reauthOptions",
+      "reauthVerify",
+      "addPasskeyOptions",
+      "addPasskeyVerify",
+      "deletePasskey",
+      "regenerateRecoveryCodes",
+      "revokeSession",
+      "revokeOtherSessions",
+    ]),
+    workspaces: bindFirst(workspaces, actor, [
+      "list",
+      "create",
+      "rename",
+      "listMembers",
+      "changeRole",
+      "removeMember",
+      "createInvite",
+      "listInvites",
+      "revokeInvite",
+      "acceptInvite",
+    ]),
+  };
+}
+
+/**
+ * What one signed-in person may do to their account and workspaces; every
+ * method is pre-bound to their session, like UserScope is to a user.
+ */
+export type AccountScope = ReturnType<typeof accountScopeFor>;
 
 /** Everything one user may do; every method is pre-bound to that user. */
 export type UserScope = ReturnType<typeof scopeFor>;
@@ -94,6 +153,9 @@ export interface AppContext {
   clock: Clock;
   system: SystemStores;
   forUser(userId: UserId): UserScope;
+  forSession(actor: Actor): AccountScope;
+  /** Sign-in ceremonies for people without a session yet. */
+  auth: PasskeyAuth;
   /**
    * Optional sink for freshly-emitted presence events. Wired by the webhook
    * dispatcher (Phase 4); ingest/privacy routes call it after producing events.
@@ -107,6 +169,14 @@ export type RouteContext = Pick<AppContext, "config" | "clock" | "onEvents">;
 
 export interface BootstrapInfo {
   seed: SeedResult;
+  /** One-time code for registering the first passkey; set while none exists. */
+  setupCode?: string;
+}
+
+export interface AppContextOptions {
+  clock?: Clock;
+  /** Replaces the SimpleWebAuthn-backed ceremony (tests). */
+  ceremony?: PasskeyCeremony;
 }
 
 /**
@@ -117,8 +187,9 @@ export interface BootstrapInfo {
  */
 export async function createAppContext(
   config: WhereCtxConfig,
-  clock: Clock = systemClock,
+  options: AppContextOptions = {},
 ): Promise<{ ctx: AppContext; bootstrap: BootstrapInfo }> {
+  const clock = options.clock ?? systemClock;
   const handle = createDb(config.databaseUrl);
   await ensureSchema(handle);
   const db = handle.db;
@@ -126,6 +197,13 @@ export async function createAppContext(
   const secretBox = config.webhooks.encryptionKey
     ? new SecretBox(config.webhooks.encryptionKey)
     : undefined;
+  const users = new UsersStore(db, clock);
+  const passkeys = new PasskeysStore(db, clock);
+  const workspaces = new WorkspacesStore(
+    db,
+    { allowMemberWorkspaces: config.allowMemberWorkspaces, ownerId: config.defaultUserId },
+    clock,
+  );
   const stores = {
     tokens: new TokenStore(db, clock),
     settings: new SettingsStore(db, config, clock),
@@ -135,6 +213,15 @@ export async function createAppContext(
     history: new HistoryStore(db, clock),
     reminders: new RemindersStore(db, clock),
     webhooks: new WebhooksStore(db, clock, secretBox),
+    users,
+    workspaces,
+    invites: new InvitesStore(db, { users, passkeys, workspaces }, clock),
+    passkeys,
+    sessions: new SessionsStore(db, clock),
+    recovery: new RecoveryStore(db, clock),
+    accessCodes: new AccessCodesStore(db, passkeys, clock),
+    serverSecrets: new ServerSecretsStore(db, clock),
+    nonces: new NoncesStore(db, clock),
   };
   const system: SystemStores = {
     ...stores,
@@ -150,10 +237,25 @@ export async function createAppContext(
     }),
   };
 
-  // `defaultUserId` is read only here: it owns the env-configured tokens and
-  // the first settings row. Request paths take their user from the credential.
-  await system.settings.getOrSeed(config.defaultUserId);
-  const seed = await system.tokens.seedBootstrap(config.defaultUserId, config.bootstrapTokens);
+  // `defaultUserId` is read only here: it owns the env-configured tokens, the
+  // first settings row, the Default workspace, and the setup passkey. Request
+  // paths take their user from the credential.
+  const owner = config.defaultUserId;
+  await system.settings.getOrSeed(owner);
+  await system.users.ensure(owner, owner);
+  await system.workspaces.ensureDefault(owner);
+  const seed = await system.tokens.seedBootstrap(owner, config.bootstrapTokens);
+  const setupCode = await rotateSetupCode(system);
+
+  const ceremonies = new Ceremonies(await system.serverSecrets.ceremonyKey(), system.nonces, clock);
+  const webauthn = options.ceremony ?? new SimpleWebAuthnCeremony(config);
+  const self = new SelfService({
+    ...pick(system, ["users", "workspaces", "passkeys", "sessions", "recovery"]),
+    ceremonies,
+    webauthn,
+    clock,
+  });
+  const workspaceService = new WorkspaceService(pick(system, ["workspaces", "invites"]), config);
 
   const ctx: AppContext = {
     config,
@@ -161,9 +263,45 @@ export async function createAppContext(
     clock,
     system,
     forUser: (userId) => scopeFor(system, userId),
+    forSession: (actor) => accountScopeFor(self, workspaceService, actor),
+    auth: new PasskeyAuth({
+      ...pick(system, [
+        "users",
+        "passkeys",
+        "sessions",
+        "recovery",
+        "invites",
+        "accessCodes",
+        "serverSecrets",
+        "settings",
+      ]),
+      ceremonies,
+      webauthn,
+      ownerId: owner,
+    }),
   };
 
-  return { ctx, bootstrap: { seed } };
+  return { ctx, bootstrap: { seed, setupCode } };
+}
+
+/**
+ * While no passkey exists, mint a fresh setup code (only its hash is stored,
+ * so any instance can check it); once one does, drop any leftover hash.
+ */
+async function rotateSetupCode(system: SystemStores): Promise<string | undefined> {
+  if ((await system.passkeys.countAll()) > 0) {
+    await system.serverSecrets.clearSetupCode();
+    return undefined;
+  }
+  const code = generateSetupCode();
+  await system.serverSecrets.putSetupCodeHash(setupCodeHash(code));
+  return code;
+}
+
+function pick<T, K extends keyof T>(source: T, keys: readonly K[]): Pick<T, K> {
+  const out = {} as Pick<T, K>;
+  for (const key of keys) out[key] = source[key];
+  return out;
 }
 
 export function closeAppContext(ctx: AppContext): void {

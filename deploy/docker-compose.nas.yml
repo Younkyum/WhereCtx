@@ -15,6 +15,11 @@ services:
     environment:
       DATABASE_URL: "sqlite:////data/wherectx.db"
       BASE_URL: "${BASE_URL}"
+      # Every request arrives through the tunnel, so the client is the
+      # cf-connecting-ip header; without it all clients would share the
+      # cloudflared container's address in the rate limiters.
+      TRUST_PROXY: "${TRUST_PROXY:-cloudflare}"
+      ALLOW_MEMBER_WORKSPACES: "${ALLOW_MEMBER_WORKSPACES:-true}"
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
       DEVICE_TOKEN: "${DEVICE_TOKEN}"
       AGENT_TOKEN: "${AGENT_TOKEN}"

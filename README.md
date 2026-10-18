@@ -94,6 +94,24 @@ Your agent can now call:
 See [examples/](examples/) for Hermes and Claude Desktop configs and a
 recommended agent system prompt.
 
+## Accounts and passkeys
+
+People sign in with passkeys; tokens stay for devices and agents. On first
+boot the server log prints a one-time setup code that registers the owner's
+passkey (`POST /v1/auth/setup/options|verify`; the dashboard screens for this
+arrive in a later release). Owners and admins invite others to a workspace with
+single-use links. See [docs/api.md](docs/api.md#accounts-signed-in-people).
+
+Locked out (no passkey, no recovery code), or claiming an account migrated
+from before accounts? On the server:
+
+```bash
+node dist/cli.js reset-access <userId>     # Docker: docker compose exec wherectx node dist/cli.js reset-access <userId>
+npm run reset-access -- <userId>           # from a source checkout
+```
+
+It prints a one-hour code for `POST /v1/auth/access-code/options|verify`.
+
 ## Token roles
 
 | Role     | Can…                                                            |

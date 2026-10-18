@@ -10,8 +10,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AppContext } from "../app/context.js";
-import { nodeClientKey, type AuthFailureLimiter } from "../api/rateLimit.js";
-import { resolvePrincipal } from "../auth/principal.js";
+import { nodeClientKey, type RateLimiter } from "../api/rateLimit.js";
+import { resolveTokenPrincipal } from "../auth/principal.js";
 import { buildMcpServer } from "./server.js";
 
 // Match the REST body cap (app/server.ts bodyLimit) for consistency.
@@ -61,10 +61,10 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 /** Returns a Node request listener for the MCP endpoint. */
-export function mcpNodeHandler(ctx: AppContext, authLimiter?: AuthFailureLimiter) {
+export function mcpNodeHandler(ctx: AppContext, authLimiter?: RateLimiter) {
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     // Same failed-auth throttle as the REST surface (shared limiter, review M1).
-    const clientKey = authLimiter ? nodeClientKey(req) : "";
+    const clientKey = authLimiter ? nodeClientKey(req, ctx.config.trustProxy) : "";
     if (authLimiter?.isBlocked(clientKey)) {
       return sendJson(res, 429, {
         error: "too many failed authentication attempts; retry later",
@@ -72,9 +72,9 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: AuthFailureLimiter
     }
 
     // Authenticate: agent/admin tokens with read_presence.
-    const principal = await resolvePrincipal(ctx, bearerSecret(req));
+    const principal = await resolveTokenPrincipal(ctx, bearerSecret(req));
     if (!principal) {
-      authLimiter?.recordFailure(clientKey);
+      authLimiter?.record(clientKey);
       return sendJson(res, 401, { error: "unauthorized" });
     }
     if (!principal.scopes.includes("read_presence")) {

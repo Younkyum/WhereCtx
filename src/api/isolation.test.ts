@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { WhereCtxConfig } from "../config.js";
 import { createAppContext, type AppContext, type UserScope } from "../app/context.js";
 import { buildApp } from "../app/server.js";
-import { resolvePrincipal } from "../auth/principal.js";
+import { resolveTokenPrincipal } from "../auth/principal.js";
 import { buildMcpServer } from "../mcp/server.js";
 import { asUserId, type UserId } from "../types.js";
 import { WebhookDispatcher } from "../webhooks/dispatcher.js";
@@ -38,6 +38,8 @@ const config: WhereCtxConfig = {
     storeRawHistory: false,
   },
   geofence: { nearRadiusMultiplier: 3 },
+  trustProxy: "none",
+  allowMemberWorkspaces: true,
   webhooks: { allowPrivateTargets: true },
   events: { retentionHours: 720 },
 };
@@ -322,7 +324,7 @@ describe("REST isolation between users", () => {
 
 describe("MCP isolation between users", () => {
   async function connectAs(secret: string): Promise<Client> {
-    const principal = await resolvePrincipal(ctx, secret);
+    const principal = await resolveTokenPrincipal(ctx, secret);
     expect(principal).not.toBeNull();
     const server = buildMcpServer(ctx.forUser(principal!.userId), principal!, ctx);
     const client = new Client({ name: "test", version: "0.0.0" }, { capabilities: {} });

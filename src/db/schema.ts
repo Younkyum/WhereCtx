@@ -15,6 +15,7 @@
 import {
   index,
   integer,
+  primaryKey,
   real,
   sqliteTable,
   text,
@@ -31,6 +32,8 @@ import type {
   TokenRole,
   TokenScope,
 } from "../types.js";
+import type { WorkspaceRole } from "../accounts/types.js";
+import type { AuthenticatorTransportFuture } from "@simplewebauthn/server";
 
 export const tokens = sqliteTable(
   "tokens",
@@ -238,6 +241,154 @@ export const reminders = sqliteTable(
   }),
 );
 
+/**
+ * Human accounts. `id` is the same key every user-data table calls user_id.
+ * `webauthn_handle` (32 random bytes, hex) is the WebAuthn user.id handed to
+ * authenticators, so the internal id never leaves the server that way.
+ */
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    displayName: text("display_name").notNull(),
+    webauthnHandle: text("webauthn_handle").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    handleIdx: uniqueIndex("users_webauthn_handle_idx").on(t.webauthnHandle),
+  }),
+);
+
+export const workspaces = sqliteTable("workspaces", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+export const memberships = sqliteTable(
+  "memberships",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    userId: text("user_id").notNull(),
+    role: text("role").$type<WorkspaceRole>().notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.workspaceId, t.userId] }),
+    userIdx: index("memberships_user_idx").on(t.userId),
+  }),
+);
+
+/** WebAuthn credentials. `public_key` is the COSE key, base64url. */
+export const passkeys = sqliteTable(
+  "passkeys",
+  {
+    credentialId: text("credential_id").primaryKey(),
+    userId: text("user_id").notNull(),
+    publicKey: text("public_key").notNull(),
+    counter: integer("counter").notNull(),
+    transports: text("transports", { mode: "json" })
+      .$type<AuthenticatorTransportFuture[]>()
+      .notNull(),
+    name: text("name").notNull(),
+    createdAt: text("created_at").notNull(),
+    lastUsedAt: text("last_used_at"),
+  },
+  (t) => ({
+    userIdx: index("passkeys_user_idx").on(t.userId),
+  }),
+);
+
+/** Browser sessions. Only the SHA-256 of the cookie value is stored. */
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    idHash: text("id_hash").primaryKey(),
+    userId: text("user_id").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    lastSeenAt: text("last_seen_at").notNull(),
+    /** Last passkey (or recovery/access code) proof; gates sensitive changes. */
+    reauthAt: text("reauth_at").notNull(),
+    userAgent: text("user_agent"),
+  },
+  (t) => ({
+    userIdx: index("sessions_user_idx").on(t.userId),
+    expiresIdx: index("sessions_expires_idx").on(t.expiresAt),
+  }),
+);
+
+export const invites = sqliteTable(
+  "invites",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    role: text("role").$type<WorkspaceRole>().notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    usedAt: text("used_at"),
+    usedBy: text("used_by"),
+  },
+  (t) => ({
+    tokenHashIdx: uniqueIndex("invites_token_hash_idx").on(t.tokenHash),
+    workspaceIdx: index("invites_workspace_idx").on(t.workspaceId),
+  }),
+);
+
+/**
+ * Recovery codes: `lookup_id` is the public first group of the code and finds
+ * the row; only the SHA-256 of the remaining secret part is stored.
+ */
+export const recoveryCodes = sqliteTable(
+  "recovery_codes",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    lookupId: text("lookup_id").notNull(),
+    secretHash: text("secret_hash").notNull(),
+    usedAt: text("used_at"),
+  },
+  (t) => ({
+    lookupIdx: index("recovery_codes_lookup_idx").on(t.lookupId),
+    userIdx: index("recovery_codes_user_idx").on(t.userId),
+  }),
+);
+
+/** Operator-issued one-time codes that let a user register a passkey (reset-access). */
+export const accessCodes = sqliteTable(
+  "access_codes",
+  {
+    userId: text("user_id").primaryKey(),
+    codeHash: text("code_hash").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (t) => ({
+    codeHashIdx: uniqueIndex("access_codes_code_hash_idx").on(t.codeHash),
+  }),
+);
+
+/** Per-install secrets generated on first boot (ceremony signing key, setup code hash). */
+export const serverSecrets = sqliteTable("server_secrets", {
+  name: text("name").primaryKey(),
+  value: text("value").notNull(),
+  createdAt: text("created_at").notNull(),
+});
+
+/** Spent WebAuthn ceremony nonces, kept until the ceremony would have expired anyway. */
+export const usedNonces = sqliteTable(
+  "used_nonces",
+  {
+    nonce: text("nonce").primaryKey(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (t) => ({
+    expiresIdx: index("used_nonces_expires_idx").on(t.expiresAt),
+  }),
+);
+
 export const schema = {
   tokens,
   places,
@@ -248,6 +399,16 @@ export const schema = {
   webhooks,
   webhookDeliveries,
   reminders,
+  users,
+  workspaces,
+  memberships,
+  passkeys,
+  sessions,
+  invites,
+  recoveryCodes,
+  accessCodes,
+  serverSecrets,
+  usedNonces,
 };
 
 // NOTE: all timestamp columns store app-generated ISO-8601 strings

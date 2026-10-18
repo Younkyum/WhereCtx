@@ -8,9 +8,12 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
-import { AuthFailureLimiter, authFailureGuard } from "../api/rateLimit.js";
-import { bearerAuth } from "../api/middleware.js";
-import type { AppEnv } from "../api/types.js";
+import { RateLimiter, authFailureGuard } from "../api/rateLimit.js";
+import { authenticate, sessionAuth } from "../api/middleware.js";
+import type { AppEnv, SessionEnv } from "../api/types.js";
+import { authRouter, type AuthRouterLimits } from "../api/auth.js";
+import { meRouter } from "../api/me.js";
+import { workspacesRouter } from "../api/workspaces.js";
 import { dashboardRouter } from "../dashboard/router.js";
 import { eventsRouter } from "../api/events.js";
 import { ingestRouter } from "../api/ingest.js";
@@ -22,12 +25,14 @@ import { webhooksRouter } from "../api/webhooks.js";
 
 export interface BuildAppOptions {
   /** Shared with the MCP handler so both surfaces count auth failures together. */
-  authLimiter?: AuthFailureLimiter;
+  authLimiter?: RateLimiter;
+  /** Request and per-recovery-code limits on the sign-in routes. */
+  authRouterLimits?: AuthRouterLimits;
 }
 
 export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   const app = new Hono();
-  const authLimiter = options.authLimiter ?? new AuthFailureLimiter();
+  const authLimiter = options.authLimiter ?? new RateLimiter();
 
   // Security headers (defense-in-depth on the admin dashboard especially): CSP,
   // nosniff, frame-deny, no referrer leakage (review finding D3).
@@ -67,13 +72,13 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
     "/v1/*",
     cors({
       origin: ctx.config.baseUrl,
-      allowMethods: ["GET", "POST", "PUT", "DELETE"],
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
       allowHeaders: ["Authorization", "Content-Type"],
     }),
   );
 
   // Throttle repeated auth failures per client (review M1).
-  app.use("/v1/*", authFailureGuard(authLimiter));
+  app.use("/v1/*", authFailureGuard(authLimiter, ctx.config.trustProxy));
 
   app.get("/", (c) =>
     c.json({ name: "wherectx", version: "0.1.0", status: "ok" }),
@@ -83,19 +88,29 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   app.route("/dashboard", dashboardRouter());
 
   // Auth is mounted here, the one REST place holding the full context; routers
-  // get only the user scope bearerAuth attaches. Device clients
-  // (Shortcut/OwnTracks) may pass the token via ?token= on ingest only.
-  const mount = (path: string, router: Hono<AppEnv>, auth = bearerAuth(ctx)): void => {
+  // get only the user scope `authenticate` attaches (from a token or a session
+  // cookie). Device clients (Shortcut/OwnTracks) may pass the token via ?token=
+  // on ingest only.
+  const mount = (path: string, router: Hono<AppEnv>, auth = authenticate(ctx)): void => {
     app.use(`${path}/*`, auth);
     app.route(path, router);
   };
-  mount("/v1/ingest", ingestRouter(ctx), bearerAuth(ctx, { allowQueryToken: true }));
+  // Account routes act for a signed-in person only, through the account scope
+  // `sessionAuth` attaches rather than raw stores.
+  const mountSession = (path: string, router: Hono<SessionEnv>): void => {
+    app.use(`${path}/*`, sessionAuth(ctx));
+    app.route(path, router);
+  };
+  app.route("/v1/auth", authRouter(ctx, ctx.auth, options.authRouterLimits));
+  mountSession("/v1/me", meRouter(ctx));
+  mountSession("/v1/workspaces", workspacesRouter());
+  mount("/v1/ingest", ingestRouter(ctx), authenticate(ctx, { allowQueryToken: true }));
   mount("/v1/presence", presenceRouter(ctx));
   mount("/v1/places", placesRouter(ctx));
   mount("/v1/events", eventsRouter());
   mount("/v1/privacy", privacyRouter(ctx));
   mount("/v1/webhooks", webhooksRouter(ctx));
-  mount("/v1/tokens", tokensRouter());
+  mount("/v1/tokens", tokensRouter(ctx));
 
   app.notFound((c) => c.json({ error: "not found" }, 404));
   app.onError((err, c) => {

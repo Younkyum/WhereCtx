@@ -6,12 +6,13 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import type { WhereCtxConfig } from "../config.js";
 import { createAppContext, type AppContext } from "../app/context.js";
 import { buildApp } from "../app/server.js";
-import { hashToken } from "../auth/tokens.js";
+import { hashToken } from "../auth/secrets.js";
 import { asUserId } from "../types.js";
 import { createDb, migrationsFolder } from "./index.js";
 
 const LEGACY_ADMIN = "legacy-admin-token-strong-0123456789abcdef";
 const PRE_MULTI_USER_MIGRATIONS = 4;
+const PRE_ACCOUNTS_MIGRATIONS = 5;
 
 let dir: string;
 let dbUrl: string;
@@ -36,18 +37,20 @@ function config(defaultUserId: string): WhereCtxConfig {
       storeRawHistory: false,
     },
     geofence: { nearRadiusMultiplier: 3 },
+    trustProxy: "none",
+    allowMemberWorkspaces: true,
     webhooks: { allowPrivateTargets: true },
     events: { retentionHours: 720 },
   };
 }
 
-/** A copy of drizzle/ holding only the migrations that predate user_id scoping. */
-function preMultiUserFolder(): string {
-  const folder = join(dir, "drizzle-pre");
+/** A copy of drizzle/ holding only the first `count` migrations. */
+function firstMigrations(count: number): string {
+  const folder = join(dir, `drizzle-first-${count}`);
   cpSync(migrationsFolder(), folder, { recursive: true });
   const journalPath = join(folder, "meta", "_journal.json");
   const journal = JSON.parse(readFileSync(journalPath, "utf8"));
-  journal.entries = journal.entries.slice(0, PRE_MULTI_USER_MIGRATIONS);
+  journal.entries = journal.entries.slice(0, count);
   writeFileSync(journalPath, JSON.stringify(journal));
   return folder;
 }
@@ -61,7 +64,7 @@ const OWNED_TABLES = ["tokens", "presence_events", "webhooks", "reminders"] as c
  */
 async function seedLegacyInstall(settingsOwner: string | null): Promise<void> {
   const handle = createDb(dbUrl);
-  await migrate(handle.db, { migrationsFolder: preMultiUserFolder() });
+  await migrate(handle.db, { migrationsFolder: firstMigrations(PRE_MULTI_USER_MIGRATIONS) });
   const now = new Date().toISOString();
   const owner = settingsOwner ?? "default";
   await handle.client.batch(
@@ -177,5 +180,62 @@ describe("migration 0004 on a pre-multi-user install", () => {
         args: ["rm2", "home", "x", new Date().toISOString()],
       }),
     ).rejects.toThrow(/NOT NULL/);
+  });
+});
+
+describe("migration 0005 on a phase-1 install", () => {
+  async function seedPhaseOneInstall(owners: string[]): Promise<void> {
+    const handle = createDb(dbUrl);
+    await migrate(handle.db, { migrationsFolder: firstMigrations(PRE_ACCOUNTS_MIGRATIONS) });
+    const now = new Date().toISOString();
+    await handle.client.batch(
+      owners.map((owner) => ({
+        sql: "INSERT INTO privacy_settings (user_id, default_agent_access, updated_at) VALUES (?, ?, ?)",
+        args: [owner, "coarse", now],
+      })),
+      "write",
+    );
+    handle.client.close();
+  }
+
+  async function ownership(ctx: AppContext) {
+    const rows = await ctx.handle.client.execute(
+      "SELECT u.id AS user, w.id AS ws, w.name, m.role FROM users u JOIN memberships m ON m.user_id = u.id JOIN workspaces w ON w.id = m.workspace_id ORDER BY u.id",
+    );
+    return rows.rows.map((r) => ({ user: r.user, ws: r.ws, name: r.name, role: r.role }));
+  }
+
+  it("makes every existing user the owner of their own Default workspace", async () => {
+    await seedPhaseOneInstall(["alice", "bob"]);
+    const { ctx, bootstrap } = await boot("alice");
+
+    const rows = await ownership(ctx);
+    expect(rows).toEqual([
+      { user: "alice", ws: expect.stringMatching(/^[0-9a-f]{32}$/), name: "Default", role: "owner" },
+      { user: "bob", ws: expect.stringMatching(/^[0-9a-f]{32}$/), name: "Default", role: "owner" },
+    ]);
+    expect(rows[0]!.ws).not.toBe(rows[1]!.ws);
+    const users = await ctx.handle.client.execute("SELECT created_at, webauthn_handle FROM users");
+    for (const r of users.rows) expect(new Date(String(r.created_at)).toISOString()).toBe(r.created_at);
+    const handles = users.rows.map((r) => String(r.webauthn_handle));
+    for (const h of handles) expect(h).toMatch(/^[0-9a-f]{64}$/);
+    expect(new Set(handles).size).toBe(handles.length);
+
+    expect(bootstrap.setupCode).toBeDefined();
+  });
+
+  it("does not give the migrated owner a second workspace on boot", async () => {
+    await seedPhaseOneInstall(["alice"]);
+    await boot("alice");
+    opened.splice(0).forEach((ctx) => ctx.handle.client.close());
+    const { ctx } = await boot("alice");
+    expect(await ownership(ctx)).toHaveLength(1);
+  });
+
+  it("creates the Default workspace for USER_ID on a fresh install", async () => {
+    const { ctx } = await boot("carol");
+    expect(await ownership(ctx)).toEqual([
+      { user: "carol", ws: expect.any(String), name: "Default", role: "owner" },
+    ]);
   });
 });

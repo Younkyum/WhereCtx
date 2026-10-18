@@ -28,6 +28,8 @@ const config: WhereCtxConfig = {
     storeRawHistory: false,
   },
   geofence: { nearRadiusMultiplier: 3 },
+  trustProxy: "none",
+  allowMemberWorkspaces: true,
   webhooks: { allowPrivateTargets: false },
   events: { retentionHours: 720 },
 };
