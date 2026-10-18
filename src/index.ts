@@ -16,6 +16,7 @@ import { createAppContext, closeAppContext } from "./app/context.js";
 import { buildApp } from "./app/server.js";
 import { mcpNodeHandler } from "./mcp/http.js";
 import { WebhookDispatcher } from "./webhooks/dispatcher.js";
+import { log } from "./util/log.js";
 
 const STALE_SWEEP_MS = 60_000;
 const WEBHOOK_TICK_MS = 15_000;
@@ -25,12 +26,14 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const { ctx, bootstrap } = await createAppContext(config);
 
-  for (const w of bootstrap.seed.warnings) console.warn(`⚠️  ${w}`);
+  for (const w of bootstrap.seed.warnings) log.warn(w);
   if (bootstrap.seed.seeded.length > 0) {
-    console.log(`✓ seeded tokens: ${bootstrap.seed.seeded.join(", ")}`);
+    log.info("seeded tokens", { roles: bootstrap.seed.seeded.join(",") });
   }
+  // The banners carry a secret the operator must read, so they bypass the
+  // redacting log and its in-memory ring (which the dashboard shows).
   if (bootstrap.seed.generatedAdminSecret) {
-    console.log(
+    log.banner(
       "\n──────────────────────────────────────────────────────────────\n" +
         `  USER_ID "${config.defaultUserId}" had no admin token, so one was generated.\n` +
         "  Save it now — it will not be shown again:\n\n" +
@@ -40,10 +43,10 @@ async function main(): Promise<void> {
   }
 
   const passkeyProblem = passkeyBaseUrlProblem(config.baseUrl);
-  if (passkeyProblem) console.warn(`⚠️  ${passkeyProblem}`);
+  if (passkeyProblem) log.warn(passkeyProblem);
 
   if (bootstrap.setupCode) {
-    console.log(
+    log.banner(
       "\n──────────────────────────────────────────────────────────────\n" +
         "  No passkey is registered yet. This one-time setup code lets\n" +
         "  you register the owner's passkey:\n\n" +
@@ -60,11 +63,11 @@ async function main(): Promise<void> {
   if (config.webhooks.encryptionKey) {
     const migrated = await ctx.system.webhooks.encryptLegacySecrets();
     if (migrated > 0) {
-      console.log(`✓ encrypted ${migrated} legacy webhook secret(s) at rest`);
+      log.info("encrypted legacy webhook secrets at rest", { count: migrated });
     }
   } else if (await ctx.system.webhooks.hasPlaintextSecrets()) {
-    console.warn(
-      "⚠️  webhook signing secrets are stored as plaintext; set WEBHOOK_ENCRYPTION_KEY to encrypt them at rest",
+    log.warn(
+      "webhook signing secrets are stored as plaintext; set WEBHOOK_ENCRYPTION_KEY to encrypt them at rest",
     );
   }
 
@@ -85,7 +88,7 @@ async function main(): Promise<void> {
       .then((events) => {
         if (events.length > 0) dispatcher.nudge();
       })
-      .catch((e) => console.error("stale sweep error:", e));
+      .catch((e) => log.error("stale sweep failed", e));
   }, STALE_SWEEP_MS);
   staleSweep.unref?.();
 
@@ -101,7 +104,7 @@ async function main(): Promise<void> {
       ctx.system.invites.pruneExpired(config.events.retentionHours),
       ctx.system.nonces.prune(),
       ctx.system.accessCodes.prune(),
-    ]).catch((e) => console.error("prune sweep error:", e));
+    ]).catch((e) => log.error("prune sweep failed", e));
   };
   pruneOnce();
   const pruneSweep = setInterval(pruneOnce, PRUNE_SWEEP_MS);
@@ -131,17 +134,14 @@ async function main(): Promise<void> {
   });
 
   server.listen(config.port, config.host, () => {
-    console.log(
-      `WhereCtx listening on http://${config.host}:${config.port}  (base: ${config.baseUrl})`,
-    );
-    console.log(`  REST: /v1/*   MCP: /mcp   health: /healthz`);
+    log.info(`WhereCtx listening on http://${config.host}:${config.port}`, { baseUrl: config.baseUrl });
   });
 
   let shuttingDown = false;
   const shutdown = (): void => {
     if (shuttingDown) process.exit(1);
     shuttingDown = true;
-    console.log("shutting down…");
+    log.info("shutting down");
     const drained = dispatcher.stop();
     clearInterval(staleSweep);
     clearInterval(pruneSweep);
@@ -159,6 +159,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("fatal:", err);
+  log.error("fatal", err);
   process.exit(1);
 });

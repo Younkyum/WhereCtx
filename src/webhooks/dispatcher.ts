@@ -25,6 +25,7 @@ import type { Webhook, WebhooksStore } from "../store/webhooksStore.js";
 import type { PresenceEvent } from "../types.js";
 import type { Clock } from "../util/time.js";
 import { assertSafeWebhookUrl } from "./ssrf.js";
+import { log } from "../util/log.js";
 
 type FetchFn = typeof fetch;
 
@@ -134,8 +135,7 @@ export class WebhookDispatcher {
     try {
       hooks = await this.opts.webhooksStore.listActive();
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("webhook dispatch tick error:", e);
+      log.error("webhook dispatch tick failed", e);
       return [];
     }
     if (this.halt.signal.aborted) return [];
@@ -179,8 +179,7 @@ export class WebhookDispatcher {
     this.touched.set(hook.id, this.seq++);
     const done = this.drainHook(hook)
       .catch((e) => {
-        // eslint-disable-next-line no-console
-        console.error("webhook drain error:", e);
+        log.error("webhook drain failed", e, { webhookId: hook.id });
       })
       .finally(() => {
         this.slots.delete(hook.id);
@@ -219,10 +218,7 @@ export class WebhookDispatcher {
       const n = (this.attempts.get(key) ?? 0) + 1;
       this.attempts.set(key, n);
       if (n >= this.maxAttempts) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `webhook ${hook.id}: dead-lettering event ${ev.id} after ${n} attempts (${result.error})`,
-        );
+        log.warn("webhook event dead-lettered", { webhookId: hook.id, eventId: ev.id, attempts: n, error: result.error });
         await this.opts.webhooksStore.recordDeadLetter(hook.id, ev, result.error);
         this.attempts.delete(key);
         await this.opts.webhooksStore.setCursor(hook.id, ev.createdAt, ev.id);

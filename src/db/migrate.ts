@@ -5,18 +5,17 @@
 
 import { loadConfig } from "../config.js";
 import { createDb, ensureSchema } from "./index.js";
+import { log } from "../util/log.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const handle = createDb(config.databaseUrl);
   await ensureSchema(handle);
   handle.client.close();
-  // eslint-disable-next-line no-console
-  console.log(`✓ schema applied to ${config.databaseUrl}`);
+  log.info("schema applied", { database: config.databaseUrl });
 }
 
 main().catch((err) => {
-  // eslint-disable-next-line no-console
-  console.error("migration failed:", err);
+  log.error("migration failed", err);
   process.exit(1);
 });

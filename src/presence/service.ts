@@ -36,6 +36,7 @@ import {
 } from "../store/presenceStore.js";
 import type { Reminder, RemindersStore } from "../store/remindersStore.js";
 import type { SettingsStore } from "../privacy/settingsStore.js";
+import { log } from "../util/log.js";
 
 export interface PresenceServiceDeps {
   config: WhereCtxConfig;
@@ -239,8 +240,7 @@ export class PresenceService {
       if (r.status === "fulfilled") {
         if (r.value) events.push(r.value);
       } else {
-        // eslint-disable-next-line no-console
-        console.error(`stale sweep failed for user ${due[i]!.userId}:`, r.reason);
+        log.error("stale sweep failed for a user", r.reason, { userId: due[i]!.userId });
       }
     });
     return events;

@@ -16,6 +16,7 @@ import { webhookDeliveries, webhooks } from "../db/schema.js";
 import { asUserId, type PresenceEvent, type UserId } from "../types.js";
 import { isEncryptedSecret, type SecretBox } from "../webhooks/secretBox.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
+import { log } from "../util/log.js";
 
 /** Highest possible 16-byte hex id; used to seed a cursor "past" a timestamp. */
 const MAX_ID = "f".repeat(32);
@@ -75,19 +76,13 @@ export class WebhooksStore {
     let secret: string | undefined;
     if (row.secret !== null) {
       if (isEncryptedSecret(row.secret) && !this.secretBox) {
-        // eslint-disable-next-line no-console
-        console.error(
-          `webhook ${row.id}: secret is encrypted but WEBHOOK_ENCRYPTION_KEY is not set; skipping hook`,
-        );
+        log.error("webhook secret is encrypted but WEBHOOK_ENCRYPTION_KEY is not set; skipping hook", undefined, { webhookId: row.id });
         return null;
       }
       try {
         secret = this.secretBox ? this.secretBox.decrypt(row.secret) : row.secret;
       } catch {
-        // eslint-disable-next-line no-console
-        console.error(
-          `webhook ${row.id}: failed to decrypt secret (wrong WEBHOOK_ENCRYPTION_KEY?); skipping hook`,
-        );
+        log.error("webhook secret failed to decrypt (wrong WEBHOOK_ENCRYPTION_KEY?); skipping hook", undefined, { webhookId: row.id });
         return null;
       }
     }

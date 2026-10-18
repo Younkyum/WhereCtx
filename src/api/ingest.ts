@@ -17,6 +17,7 @@ import { nowIso } from "../util/time.js";
 import type { ProcessResult } from "../presence/service.js";
 import { requireScope } from "./middleware.js";
 import type { AppEnv } from "./types.js";
+import { log } from "../util/log.js";
 
 async function readJson(c: Context): Promise<unknown> {
   try {
@@ -78,7 +79,7 @@ export function ingestRouter(ctx: RouteContext): Hono<AppEnv> {
       if (err instanceof NormalizeError) {
         // Preserve the OwnTracks array-response contract even on bad payloads,
         // so the client does not retry-loop; the rejection is logged (P10).
-        console.warn(`owntracks ingest rejected: ${err.message}`);
+        log.warn("owntracks ingest rejected", { error: err.message });
         return c.json([], 200);
       }
       throw err;

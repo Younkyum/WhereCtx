@@ -24,6 +24,7 @@ import { privacyRouter } from "../api/privacy.js";
 import { tokensRouter } from "../api/tokens.js";
 import { devicesRouter } from "../api/devices.js";
 import { webhooksRouter } from "../api/webhooks.js";
+import { log } from "../util/log.js";
 
 export interface BuildAppOptions {
   /** Shared with the MCP handler so both surfaces count auth failures together. */
@@ -123,8 +124,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
 
   app.notFound((c) => c.json({ error: "not found" }, 404));
   app.onError((err, c) => {
-    // eslint-disable-next-line no-console
-    console.error("request error:", err);
+    log.error("request failed", err, { method: c.req.method, path: c.req.path });
     return c.json({ error: "internal server error" }, 500);
   });
 

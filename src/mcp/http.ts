@@ -13,6 +13,7 @@ import type { AppContext } from "../app/context.js";
 import { nodeClientKey, type RateLimiter } from "../api/rateLimit.js";
 import { resolveTokenPrincipal } from "../auth/principal.js";
 import { buildMcpServer } from "./server.js";
+import { log } from "../util/log.js";
 
 // Match the REST body cap (app/server.ts bodyLimit) for consistency.
 const MAX_BODY_BYTES = 64 * 1024;
@@ -106,8 +107,7 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: RateLimiter) {
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("mcp request error:", e);
+      log.error("mcp request failed", e);
       if (!res.headersSent) sendJson(res, 500, { error: "internal server error" });
     }
   };
