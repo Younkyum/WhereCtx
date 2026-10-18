@@ -453,7 +453,7 @@ export const KO: Record<I18nKey, string> = {
   "logs.level.warn": "경고",
   "logs.level.error": "오류",
   "logs.filter.info": "전체",
-  "logs.filter.warn": "경고와 오류",
+  "logs.filter.warn": "경고 이상",
   "logs.filter.error": "오류만",
   "logs.empty": "이 수준의 기록이 없어요.",
   "logs.note": "토큰, 쿠키, 코드, 좌표는 보관 전에 지워요. 서버가 시작된 뒤 최근 1,000개만 여기 있고, 나머지는 docker logs에서 볼 수 있어요.",

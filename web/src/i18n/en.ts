@@ -450,9 +450,9 @@ export const EN = {
   "logs.level.info": "Info",
   "logs.level.warn": "Warning",
   "logs.level.error": "Error",
-  "logs.filter.info": "Everything",
-  "logs.filter.warn": "Warnings and errors",
-  "logs.filter.error": "Errors only",
+  "logs.filter.info": "All",
+  "logs.filter.warn": "Warnings",
+  "logs.filter.error": "Errors",
   "logs.empty": "Nothing logged at this level.",
   "logs.note": "Tokens, cookies, codes and coordinates are removed before anything is kept. Only the last 1,000 entries since the server started are here; docker logs has the rest.",
 
