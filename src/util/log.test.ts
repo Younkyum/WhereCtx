@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDb, ensureSchema } from "../db/index.js";
 import { RING_SIZE, clearLogs, formatEntry, log, recentLogs, redactFields, redactString } from "./log.js";
 
 let written: string[];
@@ -73,9 +75,57 @@ describe("redaction", () => {
   });
 
   it("redacts an error's message and stack", () => {
-    const out = redactFields({ err: new Error(`fetch failed for Bearer ${SECRET}`) });
-    expect(String(out.err)).toContain("fetch failed");
-    expect(String(out.err)).not.toContain(SECRET);
+    const out = JSON.stringify(redactFields({ err: new Error(`fetch failed for Bearer ${SECRET}`) }));
+    expect(out).toContain("fetch failed");
+    expect(out).not.toContain(SECRET);
+  });
+});
+
+describe("errors", () => {
+  const LEAKS = ["37.5", "127.25", "wydm9q", "hook-secret-1", "hooks.slack.com", "T0001/B0002"];
+
+  async function failedQuery(): Promise<unknown> {
+    const handle = createDb(":memory:");
+    await ensureSchema(handle);
+    try {
+      await handle.db.run(
+        sql`INSERT INTO webhooks (id, url, secret) VALUES (${"37.5,127.25"}, ${"https://hooks.slack.com/services/T0001/B0002/xyz"}, ${"hook-secret-1"}), (${"wydm9q"}, ${null}, ${null})`,
+      );
+    } catch (e) {
+      return e;
+    } finally {
+      handle.client.close();
+    }
+    throw new Error("the insert should have failed");
+  }
+
+  it("logs a failed query by its SQL and its cause, never its parameters", async () => {
+    const err = await failedQuery();
+    expect((err as Error).message).toContain("wydm9q");
+    log.error("request failed", err);
+    const line = written.join("");
+    const ring = JSON.stringify(recentLogs());
+    for (const leak of LEAKS) {
+      expect(line).not.toContain(leak);
+      expect(ring).not.toContain(leak);
+    }
+    expect(line).toContain("SQLITE_CONSTRAINT");
+    const [entry] = recentLogs();
+    expect(entry!.fields!.err).toMatchObject({
+      name: "DrizzleQueryError",
+      message: "Failed query: INSERT INTO webhooks (id, url, secret) VALUES (?, ?, ?), (?, ?, ?)",
+      cause: { code: "SQLITE_CONSTRAINT" },
+    });
+  });
+
+  it("keeps the first line of a message, the stack frames, and a bounded chain of causes", () => {
+    let err = new Error("level 0\nsecond line with 12.5");
+    for (let i = 1; i <= 6; i++) err = new Error(`level ${i}`, { cause: err });
+    const out = redactFields({ err }).err as any;
+    expect(out.message).toBe("level 6");
+    expect(out.stack.every((f: string) => f.startsWith("at "))).toBe(true);
+    expect(JSON.stringify(out)).not.toContain("level 2");
+    expect(out.cause.cause.cause.message).toBe("level 3");
   });
 });
 

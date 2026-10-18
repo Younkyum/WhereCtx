@@ -13,6 +13,7 @@
  * read. It goes to stdout as is and never into the ring.
  */
 
+import { DrizzleQueryError } from "drizzle-orm";
 import { LOG_LEVELS, type LogEntry, type LogLevel } from "./logEntry.js";
 
 export { LOG_LEVELS, type LogEntry, type LogLevel };
@@ -44,11 +45,38 @@ export function redactString(text: string): string {
   return out;
 }
 
+const MAX_CAUSE_DEPTH = 3;
+
+const firstLine = (text: string): string => text.split("\n", 1)[0]!;
+
+/**
+ * An error as a fixed set of fields: its name, the first line of its message,
+ * its code, its stack frames, and its cause. Nothing else an error carries is
+ * read, so a query's bound parameters (DrizzleQueryError's `params`, also
+ * repeated in its message) never reach a log line.
+ */
+export function serializeError(err: Error, depth = 0): Record<string, unknown> {
+  const name = err.name !== "Error" ? err.name : err.constructor?.name || "Error";
+  const message = err instanceof DrizzleQueryError ? `Failed query: ${err.query}` : String(err.message ?? "");
+  const code = (err as { code?: unknown }).code;
+  const frames = (typeof err.stack === "string" ? err.stack.split("\n") : [])
+    .filter((line) => /^\s+at /.test(line))
+    .map((line) => redactString(line.trim()));
+  const cause = depth < MAX_CAUSE_DEPTH ? err.cause : undefined;
+  return {
+    name,
+    message: redactString(firstLine(message)),
+    ...(typeof code === "string" || typeof code === "number" ? { code } : {}),
+    ...(frames.length ? { stack: frames } : {}),
+    ...(cause === undefined
+      ? {}
+      : { cause: cause instanceof Error ? serializeError(cause, depth + 1) : redactValue(cause, 3) }),
+  };
+}
+
 function redactValue(value: unknown, depth: number): unknown {
   if (typeof value === "string") return redactString(value);
-  if (value instanceof Error) {
-    return redactString(value.stack ?? `${value.name}: ${value.message}`);
-  }
+  if (value instanceof Error) return serializeError(value);
   if (value === null || typeof value !== "object") return value;
   if (depth >= 4) return "[object]";
   if (Array.isArray(value)) return value.map((v) => redactValue(v, depth + 1));
