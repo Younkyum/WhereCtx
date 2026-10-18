@@ -113,12 +113,23 @@ export interface Place {
   updatedAt: string;
 }
 
-export type PresenceEventType =
-  | "presence.updated"
-  | "presence.entered_place"
-  | "presence.left_place"
-  | "presence.became_stale"
-  | "presence.privacy_changed";
+/** How much of their location a person shares with another member. */
+export const SHARE_LEVELS = ["coarse", "precise"] as const;
+export type ShareLevel = (typeof SHARE_LEVELS)[number];
+
+export const PRESENCE_EVENT_TYPES = [
+  "presence.updated",
+  "presence.entered_place",
+  "presence.left_place",
+  "presence.became_stale",
+  "presence.privacy_changed",
+  // Location sharing audit, written to the owner's log so they see who looks.
+  "share.granted",
+  "share.changed",
+  "share.revoked",
+  "share.precise_viewed",
+] as const;
+export type PresenceEventType = (typeof PRESENCE_EVENT_TYPES)[number];
 
 export interface PresenceEvent {
   id: string;
@@ -126,6 +137,10 @@ export interface PresenceEvent {
   placeName?: string;
   status?: string;
   source?: string;
+  /** share.* events: the person the owner shares with. */
+  viewerUserId?: UserId;
+  /** share.granted / share.changed: the level granted. */
+  level?: ShareLevel;
   createdAt: string;
 }
 

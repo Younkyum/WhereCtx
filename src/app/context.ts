@@ -9,9 +9,9 @@
  *   user's data or a cross-user method is a type error rather than a review item.
  *
  * Account routes mirror this: `forSession(actor)` returns an `AccountScope`
- * pre-bound to one signed-in session (its own account, and workspace actions
- * checked against the actor's role), and `auth` is the narrow handle for the
- * unauthenticated sign-in ceremonies.
+ * pre-bound to one signed-in session (its own account, workspace actions
+ * checked against the actor's role, and location sharing with co-members),
+ * and `auth` is the narrow handle for the unauthenticated sign-in ceremonies.
  */
 
 import type { WhereCtxConfig } from "../config.js";
@@ -44,6 +44,8 @@ import type { Actor } from "../accounts/types.js";
 import { UsersStore } from "../accounts/usersStore.js";
 import { WorkspaceService } from "../accounts/workspaceService.js";
 import { WorkspacesStore } from "../accounts/workspacesStore.js";
+import { SharesStore } from "../sharing/sharesStore.js";
+import { SharingService } from "../sharing/sharingService.js";
 import type { PresenceEvent, UserId } from "../types.js";
 
 export interface SystemStores {
@@ -65,6 +67,7 @@ export interface SystemStores {
   accessCodes: AccessCodesStore;
   serverSecrets: ServerSecretsStore;
   nonces: NoncesStore;
+  shares: SharesStore;
 }
 
 type Unbound<F, A> = F extends (first: A, ...args: infer P) => infer R ? (...args: P) => R : never;
@@ -108,7 +111,13 @@ function scopeFor(system: SystemStores, userId: UserId) {
   };
 }
 
-function accountScopeFor(self: SelfService, workspaces: WorkspaceService, actor: Actor) {
+interface AccountServices {
+  self: SelfService;
+  workspaces: WorkspaceService;
+  sharing: SharingService;
+}
+
+function accountScopeFor({ self, workspaces, sharing }: AccountServices, actor: Actor) {
   return {
     sessionId: actor.sessionId,
     me: bindFirst(self, actor, [
@@ -135,6 +144,7 @@ function accountScopeFor(self: SelfService, workspaces: WorkspaceService, actor:
       "revokeInvite",
       "acceptInvite",
     ]),
+    sharing: bindFirst(sharing, actor.userId, ["list", "put", "revoke", "people"]),
   };
 }
 
@@ -204,12 +214,13 @@ export async function createAppContext(
     { allowMemberWorkspaces: config.allowMemberWorkspaces, ownerId: config.defaultUserId },
     clock,
   );
+  const events = new EventsStore(db, clock);
   const stores = {
     tokens: new TokenStore(db, clock),
     settings: new SettingsStore(db, config, clock),
     presence: new PresenceStore(db),
     places: new PlacesStore(db, clock),
-    events: new EventsStore(db, clock),
+    events,
     history: new HistoryStore(db, clock),
     reminders: new RemindersStore(db, clock),
     webhooks: new WebhooksStore(db, clock, secretBox),
@@ -222,6 +233,7 @@ export async function createAppContext(
     accessCodes: new AccessCodesStore(db, passkeys, clock),
     serverSecrets: new ServerSecretsStore(db, clock),
     nonces: new NoncesStore(db, clock),
+    shares: new SharesStore(db, events, clock),
   };
   const system: SystemStores = {
     ...stores,
@@ -255,7 +267,11 @@ export async function createAppContext(
     webauthn,
     clock,
   });
-  const workspaceService = new WorkspaceService(pick(system, ["workspaces", "invites"]), config);
+  const services: AccountServices = {
+    self,
+    workspaces: new WorkspaceService(pick(system, ["workspaces", "invites"]), config),
+    sharing: new SharingService(pick(system, ["shares", "presence"]), clock),
+  };
 
   const ctx: AppContext = {
     config,
@@ -263,7 +279,7 @@ export async function createAppContext(
     clock,
     system,
     forUser: (userId) => scopeFor(system, userId),
-    forSession: (actor) => accountScopeFor(self, workspaceService, actor),
+    forSession: (actor) => accountScopeFor(services, actor),
     auth: new PasskeyAuth({
       ...pick(system, [
         "users",

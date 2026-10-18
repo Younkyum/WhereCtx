@@ -14,6 +14,7 @@ import type { AppEnv, SessionEnv } from "../api/types.js";
 import { authRouter, type AuthRouterLimits } from "../api/auth.js";
 import { meRouter } from "../api/me.js";
 import { workspacesRouter } from "../api/workspaces.js";
+import { peopleRouter, sharesRouter } from "../api/sharing.js";
 import { dashboardRouter } from "../dashboard/router.js";
 import { eventsRouter } from "../api/events.js";
 import { ingestRouter } from "../api/ingest.js";
@@ -105,6 +106,8 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   app.route("/v1/auth", authRouter(ctx, ctx.auth, options.authRouterLimits));
   mountSession("/v1/me", meRouter(ctx));
   mountSession("/v1/workspaces", workspacesRouter());
+  mountSession("/v1/shares", sharesRouter(ctx));
+  mountSession("/v1/people", peopleRouter(ctx));
   mount("/v1/ingest", ingestRouter(ctx), authenticate(ctx, { deviceCredentials: true }));
   mount("/v1/presence", presenceRouter(ctx));
   mount("/v1/places", placesRouter(ctx));

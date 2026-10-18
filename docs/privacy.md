@@ -66,6 +66,25 @@ Privacy panel). While it is on, the MCP place-write tools (`create_place`,
 could quietly move "home" and defeat the coordinate protection above. REST
 place writes are always admin-only regardless of this toggle.
 
+## Sharing with people
+
+Location sharing between people (`/v1/shares`, `/v1/people`) is separate from
+what agents see:
+
+- It is off until you share with someone, and only with a person who belongs
+  to a workspace you are in. It ends the moment the two of you no longer have
+  a workspace in common.
+- `coarse` shows the summary above (status, label, motion, age, stale) with no
+  coordinates. `precise` adds your exact position. `hideHomeExact` withholds
+  it while you are at or near home; it is off by default, as in Find My.
+- It does not follow `defaultAgentAccess`: putting agents in `hidden` mode
+  does not hide you from people you share with, and sharing with a person
+  gives nothing to agents. Only a signed-in person sees shared locations; no
+  token, including that person's own agent tokens, can.
+- Every grant, change and revoke, and each precise view (at most hourly per
+  viewer), lands in your events, so you can see who looked. Your agents see
+  that these events happened but not who the person was, as with place names.
+
 ## Token roles & the "device can't read" rule
 
 - `device` tokens carry only `write_location` — they are rejected at every read

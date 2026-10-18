@@ -8,7 +8,8 @@
  *   - a workspace never loses its last owner;
  *   - creating a workspace respects the per-user cap and creator rule.
  * A membership change also drops the member's pending invites that their new
- * standing no longer backs, in the same batch.
+ * standing no longer backs, and a removal drops the location shares between
+ * people who no longer have a workspace in common, in the same batch.
  */
 
 import { and, eq, isNull, not, or, sql, type SQL } from "drizzle-orm";
@@ -18,6 +19,7 @@ import { invites, memberships, users, workspaces } from "../db/schema.js";
 import { asUserId, type UserId } from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 import { newId } from "../auth/secrets.js";
+import { deleteOrphanedShares } from "../sharing/sharesStore.js";
 import { actorMay, inviteBackedByCreator } from "./roleSql.js";
 import {
   asWorkspaceId,
@@ -209,6 +211,7 @@ export class WorkspacesStore {
         .delete(memberships)
         .where(and(this.member(id, target), allowed, this.keepsAnOwner(id))),
       this.dropUnbackedInvites(id, target),
+      deleteOrphanedShares(this.db, target),
     ]);
     return this.outcome(id, target, allowed, result.rowsAffected);
   }

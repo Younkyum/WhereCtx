@@ -29,6 +29,7 @@ import type {
   PresenceEventType,
   PresenceStatus,
   PrivacyMode,
+  ShareLevel,
   TokenRole,
   TokenScope,
 } from "../types.js";
@@ -122,6 +123,8 @@ export const presenceEvents = sqliteTable(
     placeName: text("place_name"),
     status: text("status"),
     source: text("source"),
+    viewerUserId: text("viewer_user_id"),
+    shareLevel: text("share_level").$type<ShareLevel>(),
     createdAt: text("created_at").notNull(),
   },
   (t) => ({
@@ -279,6 +282,28 @@ export const memberships = sqliteTable(
   }),
 );
 
+/**
+ * Find-My style location sharing between two people: `owner` lets `viewer`
+ * see their presence at `level`. A share only counts while the two still
+ * belong to a common workspace (checked on every write and read).
+ */
+export const locationShares = sqliteTable(
+  "location_shares",
+  {
+    ownerUserId: text("owner_user_id").notNull(),
+    viewerUserId: text("viewer_user_id").notNull(),
+    level: text("level").$type<ShareLevel>().notNull(),
+    /** Withhold exact coordinates while the owner is at or near home. */
+    hideHomeExact: integer("hide_home_exact", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.ownerUserId, t.viewerUserId] }),
+    viewerIdx: index("location_shares_viewer_idx").on(t.viewerUserId),
+  }),
+);
+
 /** WebAuthn credentials. `public_key` is the COSE key, base64url. */
 export const passkeys = sqliteTable(
   "passkeys",
@@ -402,6 +427,7 @@ export const schema = {
   users,
   workspaces,
   memberships,
+  locationShares,
   passkeys,
   sessions,
   invites,

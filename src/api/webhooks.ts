@@ -10,19 +10,13 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
+import { PRESENCE_EVENT_TYPES } from "../types.js";
 import { assertSafeWebhookUrl, SsrfError } from "../webhooks/ssrf.js";
 import { requireScope } from "./middleware.js";
 import { parseLimit, zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
 
-const EVENT_TYPES = [
-  "presence.updated",
-  "presence.entered_place",
-  "presence.left_place",
-  "presence.became_stale",
-  "presence.privacy_changed",
-  "*",
-] as const;
+const EVENT_TYPES = [...PRESENCE_EVENT_TYPES, "*"] as const;
 
 /** Per-user cap: each hook is drained on every dispatcher tick. */
 const MAX_WEBHOOKS = 20;

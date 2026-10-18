@@ -78,7 +78,7 @@ DELETE /v1/places/:name      # manage_places
 ## Events
 
 ```
-GET /v1/events?limit=50      # read_presence; placeName stripped for agents; 403 in hidden mode
+GET /v1/events?limit=50      # read_presence; placeName and viewerUserId stripped for agents; 403 in hidden mode
 ```
 
 ## Privacy (admin)
@@ -131,6 +131,46 @@ Step-up operations (and `POST /v1/tokens` from a session) answer `403` with
 minutes ago. Unknown setup, invite, recovery, or access codes and failed
 ceremonies answer `401` and count toward the auth-failure limit; expired or used
 invites answer `410`.
+
+## Location sharing (signed-in people)
+
+Members of a common workspace can share their location with each other, like
+Find My. Session only: tokens get `403`, so neither the owner's nor the
+viewer's agents ever reach these routes.
+
+```
+GET    /v1/shares                  # { outgoing: [{ viewer:{id,displayName}, level, hideHomeExact }],
+                                   #   incoming: [{ owner:{id,displayName}, level }] }
+PUT    /v1/shares/:viewerUserId    # { "level":"coarse"|"precise", "hideHomeExact":false } -> { share }
+DELETE /v1/shares/:viewerUserId    # stop sharing
+GET    /v1/people                  # everyone sharing with me
+```
+
+A viewer who shares no workspace with you answers `404`, as does an unknown
+id; sharing with yourself is `400`. `hideHomeExact` defaults to `false` and an
+update that omits it keeps the current value. A share counts only while the
+two people still have a workspace in common: it stops showing as soon as that
+ends, and leaving or being removed from the last common workspace deletes it.
+
+`GET /v1/people`:
+
+```json
+{ "people": [ {
+  "user": { "id":"…", "displayName":"Mina" },
+  "level": "precise",
+  "presence": { "status":"away", "label":"away", "motion":"walking", "updatedAgoSec":42, "stale":false },
+  "precise": { "lat":37.6, "lon":127.1, "accuracyM":12, "mapUrl":"https://maps.google.com/?q=37.6,127.1", "updatedAgoSec":42 }
+} ] }
+```
+
+`presence` is `null` before the owner's first reading. `precise` is `null`
+unless the level is `precise`, and also while the owner is at or near home
+with `hideHomeExact` on.
+
+Each grant, change and revoke is written to the owner's events
+(`share.granted`, `share.changed`, `share.revoked`, with `viewerUserId` and
+`level`). So is each precise view (`share.precise_viewed`), at most once an
+hour per viewer.
 
 ## Tokens (admin)
 
@@ -210,7 +250,10 @@ ok = fresh && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.head
 ```
 
 Events: `presence.updated`, `presence.entered_place`, `presence.left_place`,
-`presence.became_stale`, `presence.privacy_changed`.
+`presence.became_stale`, `presence.privacy_changed`, and the sharing audit
+events `share.granted`, `share.changed`, `share.revoked`,
+`share.precise_viewed`. Share events carry `viewer` (the person's user id)
+and, for grants and changes, `level`.
 
 ## Misc
 

@@ -5,10 +5,17 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, asc, desc, eq, gt, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, exists, gt, lt, or, type SQL } from "drizzle-orm";
 import type { Database } from "../db/index.js";
+import { insertWhen, type InsertCondition } from "../db/insertWhen.js";
 import { presenceEvents } from "../db/schema.js";
-import type { PresenceEvent, PresenceEventType, UserId } from "../types.js";
+import {
+  asUserId,
+  type PresenceEvent,
+  type PresenceEventType,
+  type ShareLevel,
+  type UserId,
+} from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
 export interface NewPresenceEvent {
@@ -16,6 +23,8 @@ export interface NewPresenceEvent {
   placeName?: string;
   status?: string;
   source?: string;
+  viewerUserId?: UserId;
+  level?: ShareLevel;
 }
 
 interface EventRow {
@@ -25,6 +34,8 @@ interface EventRow {
   placeName: string | null;
   status: string | null;
   source: string | null;
+  viewerUserId: string | null;
+  shareLevel: ShareLevel | null;
   createdAt: string;
 }
 
@@ -35,7 +46,23 @@ function rowToEvent(row: EventRow): PresenceEvent {
     placeName: row.placeName ?? undefined,
     status: row.status ?? undefined,
     source: row.source ?? undefined,
+    viewerUserId: row.viewerUserId === null ? undefined : asUserId(row.viewerUserId),
+    level: row.shareLevel ?? undefined,
     createdAt: row.createdAt,
+  };
+}
+
+function newRow(userId: UserId, event: NewPresenceEvent, createdAt: string): EventRow {
+  return {
+    id: randomBytes(16).toString("hex"),
+    userId,
+    type: event.type,
+    placeName: event.placeName ?? null,
+    status: event.status ?? null,
+    source: event.source ?? null,
+    viewerUserId: event.viewerUserId ?? null,
+    shareLevel: event.level ?? null,
+    createdAt,
   };
 }
 
@@ -61,17 +88,35 @@ export class EventsStore {
   ): Promise<PresenceEvent[]> {
     if (events.length === 0) return [];
     const createdAt = nowIso(this.clock);
-    const records: EventRow[] = events.map((event) => ({
-      id: randomBytes(16).toString("hex"),
-      userId,
-      type: event.type,
-      placeName: event.placeName ?? null,
-      status: event.status ?? null,
-      source: event.source ?? null,
-      createdAt,
-    }));
+    const records = events.map((event) => newRow(userId, event, createdAt));
     await this.db.insert(presenceEvents).values(records);
     return records.map(rowToEvent);
+  }
+
+  /**
+   * A statement appending `event` only when `when` matches (for batches),
+   * plus the event it would write, so the caller can report it if it landed.
+   */
+  appendWhen(userId: UserId, event: NewPresenceEvent, when: InsertCondition) {
+    const row = newRow(userId, event, nowIso(this.clock));
+    return { statement: insertWhen(this.db, presenceEvents, row, when), event: rowToEvent(row) };
+  }
+
+  /** True while `userId` has an event of `type` about `viewer` newer than `since`. */
+  recordedSince(userId: UserId, type: PresenceEventType, viewer: UserId, since: string): SQL {
+    return exists(
+      this.db
+        .select({ id: presenceEvents.id })
+        .from(presenceEvents)
+        .where(
+          and(
+            eq(presenceEvents.userId, userId),
+            eq(presenceEvents.type, type),
+            eq(presenceEvents.viewerUserId, viewer),
+            gt(presenceEvents.createdAt, since),
+          ),
+        ),
+    );
   }
 
   /** Delete events older than the retention window. Returns rows removed. */

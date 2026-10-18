@@ -74,3 +74,17 @@ export function actorMay(
 export function inviteBackedByCreator(): SQL {
   return actorMay(invites.workspaceId, invites.createdBy, "invite", [invites.role]);
 }
+
+const mine = alias(memberships, "mine");
+const theirs = alias(memberships, "theirs");
+
+/** True while `a` and `b` belong to at least one common workspace. */
+export function shareAWorkspace(a: UserId | SQLiteColumn, b: UserId | SQLiteColumn): SQL {
+  return exists(
+    qb
+      .select({ one: sql`1` })
+      .from(mine)
+      .innerJoin(theirs, eq(theirs.workspaceId, mine.workspaceId))
+      .where(and(eq(mine.userId, a), eq(theirs.userId, b))),
+  );
+}

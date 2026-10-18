@@ -4,22 +4,15 @@
  *
  * Privacy:
  * - Withheld entirely in `hidden` mode.
- * - For non-admin (agent) callers, `placeName` is stripped so the event feed
- *   cannot be used as a back-door movement log of named places + exact times
- *   (review findings P4/P5). Admins see full events.
+ * - Non-admin (agent) callers get `agentEventView`: no place names, no share
+ *   viewer identities. Admins see full events.
  */
 
 import { Hono } from "hono";
-import { accessAtLeast } from "../privacy/policy.js";
-import type { PresenceEvent } from "../types.js";
+import { accessAtLeast, agentEventView } from "../privacy/policy.js";
 import { requireScope } from "./middleware.js";
 import { parseLimit } from "./validation.js";
 import type { AppEnv } from "./types.js";
-
-function stripPlace(e: PresenceEvent): PresenceEvent {
-  const { placeName: _p, ...rest } = e;
-  return rest;
-}
 
 export function eventsRouter(): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -34,7 +27,7 @@ export function eventsRouter(): Hono<AppEnv> {
     }
     const limit = parseLimit(c.req.query("limit"), 50, 500);
     const events = await scope.events.listRecent(limit);
-    return c.json({ events: isAdmin ? events : events.map(stripPlace) });
+    return c.json({ events: isAdmin ? events : events.map(agentEventView) });
   });
 
   return app;

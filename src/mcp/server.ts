@@ -21,6 +21,7 @@ import { haversineMeters } from "../geofence/distance.js";
 import {
   accessAtLeast,
   agentCoarseView,
+  agentEventView,
   authorizePrecise,
   buildPreciseView,
 } from "../privacy/policy.js";
@@ -167,14 +168,14 @@ export function buildMcpServer(
     "list_recent_presence_events",
     {
       description:
-        "List recent presence events (updated / entered_place / left_place / became_stale / privacy_changed). Place names are omitted for non-admin tokens.",
+        "List recent presence events (updated / entered_place / left_place / became_stale / privacy_changed, and share.* when the user grants, changes or revokes location sharing or a person views their precise location). Place names and who the user shares with are omitted for non-admin tokens.",
       inputSchema: { limit: z.number().int().min(1).max(200).optional() },
     },
     async ({ limit }) => {
       if (!(await presenceVisible())) return ok({ hidden: true, events: [] });
       const events = await scope.events.listRecent(limit ?? 20);
       if (isAdmin) return ok({ events });
-      return ok({ events: events.map(({ placeName: _p, ...rest }) => rest) });
+      return ok({ events: events.map(agentEventView) });
     },
   );
 

@@ -22,6 +22,7 @@ import { labelForStatus } from "../geofence/engine.js";
 import type {
   CoarsePresenceView,
   PrecisePresenceView,
+  PresenceEvent,
   PresenceContext,
   PrivacyMode,
   PrivacySettings,
@@ -80,6 +81,16 @@ export function agentCoarseView(
   return { ...buildCoarseView(presence, clock), privacy: settings.defaultAgentAccess };
 }
 
+/**
+ * A presence event as a non-admin agent sees it. Place names would make the
+ * feed a movement log of named places (review P4/P5); the people the user
+ * shares with are the user's business, not their agents'.
+ */
+export function agentEventView(event: PresenceEvent): PresenceEvent {
+  const { placeName: _p, viewerUserId: _v, ...rest } = event;
+  return rest;
+}
+
 /** Google Maps link for a coordinate (plan section 9.7). */
 export function mapUrl(lat: number, lon: number): string {
   return `https://maps.google.com/?q=${lat},${lon}`;
@@ -109,7 +120,7 @@ export function buildPreciseView(
 /** Whether home-coordinate protection applies to the current presence. */
 export function shouldHideExact(
   presence: PresenceContext,
-  settings: PrivacySettings,
+  settings: Pick<PrivacySettings, "hideHomeExactCoordinates">,
 ): boolean {
   return (
     settings.hideHomeExactCoordinates &&
