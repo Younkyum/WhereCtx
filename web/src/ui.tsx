@@ -103,7 +103,8 @@ export function useLoad<T>(loader: () => Promise<T>, deps: readonly unknown[]): 
 
 /**
  * A newest-first log read page by page through its `next` cursor. `more`
- * appends the following page; changing `url` starts over.
+ * appends the following page; changing `url` (or reloading) starts over, and
+ * a page asked for before that is dropped when it arrives.
  */
 export function usePaged<T>(url: string): {
   state: Load<T[]>;
@@ -113,6 +114,7 @@ export function usePaged<T>(url: string): {
   reload: () => Promise<void>;
 } {
   const next = useRef<string | undefined>(undefined);
+  const generation = useRef(0);
   const [extra, setExtra] = useState<T[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const page = (before?: string) => {
@@ -120,15 +122,21 @@ export function usePaged<T>(url: string): {
     return api<{ entries: T[]; next?: string }>(before ? `${url}${sep}before=${encodeURIComponent(before)}` : url);
   };
   const [state, reload] = useLoad(async () => {
+    const asked = ++generation.current;
+    next.current = undefined;
     const first = await page();
-    next.current = first.next;
-    setExtra([]);
-    setHasMore(Boolean(first.next));
+    if (asked === generation.current) {
+      next.current = first.next;
+      setExtra([]);
+      setHasMore(Boolean(first.next));
+    }
     return first.entries ?? [];
   }, [url]);
   const [loadingMore, more] = useAction(async () => {
+    const asked = generation.current;
     if (!next.current) return;
     const following = await page(next.current);
+    if (asked !== generation.current) return;
     next.current = following.next;
     setExtra((rows) => [...rows, ...(following.entries ?? [])]);
     setHasMore(Boolean(following.next));

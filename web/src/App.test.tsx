@@ -5,7 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
-type Handler = (body: unknown) => { status: number; body?: unknown };
+type Reply = { status: number; body?: unknown };
+type Handler = (body: unknown) => Reply | Promise<Reply>;
 
 let routes: Map<string, Handler>;
 let calls: string[];
@@ -47,7 +48,7 @@ beforeEach(() => {
     const key = `${init.method ?? "GET"} ${path}`;
     calls.push(key);
     const handler = routes.get(key) ?? routes.get(key.split("?")[0]!);
-    const out = handler ? handler(init.body ? JSON.parse(String(init.body)) : undefined) : { status: 404, body: { error: "not found" } };
+    const out = handler ? await handler(init.body ? JSON.parse(String(init.body)) : undefined) : { status: 404, body: { error: "not found" } };
     return new Response(out.body === undefined ? "" : JSON.stringify(out.body), { status: out.status });
   });
   Object.defineProperty(navigator, "credentials", {
@@ -255,6 +256,44 @@ describe("log views", () => {
     expect(host.textContent).toContain("×7");
     expect(host.textContent).toContain("Asked 7 times within a minute of each other");
     expect(() => button("Show older")).toThrow();
+  });
+
+  it("Agent access drops an older page that arrives after the token filter changed", async () => {
+    const entry = (id: string, action: string) => ({
+      id,
+      credential: { kind: "token", id: "t1", name: "Claude Desktop" },
+      surface: "rest",
+      action,
+      precise: false,
+      outcome: "allowed",
+      count: 1,
+      createdAt: "2026-10-18T01:00:00.000Z",
+      lastAt: "2026-10-18T01:00:00.000Z",
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    route("GET /v1/tokens", () => ({
+      status: 200,
+      body: { tokens: [{ id: "t1", name: "Claude Desktop", role: "agent", lastUsedAt: null }, { id: "t2", name: "Other bot", role: "agent", lastUsedAt: null }] },
+    }));
+    route("GET /v1/activity/access?limit=50", () => ({ status: 200, body: { entries: [entry("a", "presence.read")], next: "c1" } }));
+    route("GET /v1/activity/access?limit=50&before=c1", async () => {
+      await gate;
+      return { status: 200, body: { entries: [entry("stale", "presence.history")] } };
+    });
+    route("GET /v1/activity/access?limit=50&credential=t2", () => ({ status: 200, body: { entries: [entry("b", "places.list")] } }));
+    await open("#activity");
+    await act(async () => button("Show older").click());
+    await act(async () => (host.querySelector('[role="combobox"]') as HTMLElement).click());
+    await settle();
+    const option = [...document.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes("Other bot")) as HTMLElement;
+    await act(async () => option.click());
+    await settle();
+    expect(host.textContent).toContain("Listed your places");
+    release();
+    await settle();
+    expect(host.textContent).toContain("Listed your places");
+    expect(host.textContent).not.toContain("Read your location history");
   });
 
   it("Devices shows when each phone last sent and the recent uploads, never a location", async () => {
