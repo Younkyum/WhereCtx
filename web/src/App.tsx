@@ -20,6 +20,7 @@ import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
 import {
   Activity,
   Bot,
+  Eye,
   History as HistoryIcon,
   House,
   Languages,
@@ -41,6 +42,7 @@ import type { Me } from "./model";
 import { theme } from "./theme";
 import { ConfirmProvider } from "./ui";
 import { AccountView } from "./views/Account";
+import { ActivityView } from "./views/Activity";
 import { DevicesView, AgentsView } from "./views/Devices";
 import { EventsView, PlacesView, PrivacyView, WebhooksView } from "./views/Data";
 import { Gate, InviteAccept } from "./views/Gate";
@@ -68,6 +70,7 @@ const VIEWS = [
   { id: "workspace", icon: Users, label: "nav.workspace", main: false, Component: WorkspaceView },
   { id: "account", icon: UserRound, label: "nav.account", main: false, Component: AccountView },
   { id: "history", icon: HistoryIcon, label: "nav.history", main: false, Component: HistoryView },
+  { id: "activity", icon: Eye, label: "nav.activity", main: false, Component: ActivityView },
   { id: "events", icon: Activity, label: "nav.events", main: false, Component: EventsView },
   { id: "webhooks", icon: Webhook, label: "nav.webhooks", main: false, Component: WebhooksView },
 ] as const satisfies readonly View[];

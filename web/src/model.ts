@@ -5,8 +5,19 @@
  */
 
 import type { WorkspaceRole } from "../../src/accounts/types";
+import type { AccessEntry as ServerAccessEntry } from "../../src/activity/types";
 
 export type { WorkspaceRole };
+export {
+  ACCESS_ACTIONS,
+  ACCESS_OUTCOMES,
+  INGEST_OUTCOMES,
+  type AccessAction,
+  type AccessOutcome,
+  type DeviceSummary,
+  type IngestEntry,
+  type IngestOutcome,
+} from "../../src/activity/types";
 
 export const STATUSES = ["home", "near_home", "away", "work", "near_work", "transit", "custom", "unknown"] as const;
 export type Status = (typeof STATUSES)[number];
@@ -191,4 +202,13 @@ export interface History {
   to: string;
   truncated: boolean;
   points: HistoryPoint[];
+}
+
+/** An access log row as JSON. */
+export type AccessEntry = ServerAccessEntry;
+
+/** A keyset page from the activity endpoints. */
+export interface LogPage<T> {
+  entries: T[];
+  next?: string;
 }

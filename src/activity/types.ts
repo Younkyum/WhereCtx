@@ -26,6 +26,31 @@ export type AccessSurface = (typeof ACCESS_SURFACES)[number];
 export const ACCESS_OUTCOMES = ["allowed", "denied", "hidden"] as const;
 export type AccessOutcome = (typeof ACCESS_OUTCOMES)[number];
 
+/**
+ * Every action the access log names: the REST routes (api/accessAudit.ts)
+ * and the MCP tools (mcp/server.ts). Tests hold both surfaces to this list,
+ * and the dashboard has copy for each.
+ */
+export const ACCESS_ACTIONS = [
+  "presence.read",
+  "presence.precise",
+  "presence.history",
+  "places.list",
+  "places.write",
+  "places.delete",
+  "events.list",
+  "get_presence",
+  "get_precise_location",
+  "is_near_place",
+  "list_places",
+  "get_location_age",
+  "list_recent_presence_events",
+  "create_location_reminder",
+  "create_place",
+  "remember_current_place",
+] as const;
+export type AccessAction = (typeof ACCESS_ACTIONS)[number];
+
 /** Longest stored precise-access reason and denial text. */
 export const ACCESS_TEXT_MAX = 256;
 

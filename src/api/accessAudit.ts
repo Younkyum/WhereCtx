@@ -7,13 +7,13 @@
 
 import type { MiddlewareHandler } from "hono";
 import { accessRecorder, restOutcome } from "../activity/record.js";
-import { ACCESS_TEXT_MAX } from "../activity/types.js";
+import { ACCESS_TEXT_MAX, type AccessAction } from "../activity/types.js";
 import type { AppEnv } from "./types.js";
 
 interface RestAction {
   method: string;
   path: RegExp;
-  action: string;
+  action: AccessAction;
   /** The response carries coordinates. */
   precise: boolean;
 }
@@ -29,7 +29,7 @@ export const REST_ACTIONS: readonly RestAction[] = [
   { method: "GET", path: /^\/v1\/events\/?$/, action: "events.list", precise: false },
 ];
 
-export function restActionFor(method: string, path: string): Pick<RestAction, "action" | "precise"> {
+export function restActionFor(method: string, path: string): { action: string; precise: boolean } {
   const hit = REST_ACTIONS.find((a) => a.method === method && a.path.test(path));
   if (hit) return { action: hit.action, precise: hit.precise };
   return { action: `${method} ${path}`.slice(0, ACCESS_TEXT_MAX), precise: false };

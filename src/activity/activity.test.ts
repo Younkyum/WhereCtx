@@ -5,6 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AppContext } from "../app/context.js";
 import { resolveTokenPrincipal } from "../auth/principal.js";
 import { REST_ACTIONS, restActionFor } from "../api/accessAudit.js";
+import { ACCESS_ACTIONS } from "./types.js";
 import { eventsRouter } from "../api/events.js";
 import { placesRouter } from "../api/places.js";
 import { presenceRouter } from "../api/presence.js";
@@ -139,6 +140,7 @@ describe("MCP access log", () => {
     await client.connect(c);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(Object.keys(ARGS).sort());
+    for (const tool of tools) expect(ACCESS_ACTIONS as readonly string[]).toContain(tool.name);
     for (const tool of tools) await client.callTool({ name: tool.name, arguments: ARGS[tool.name]! });
 
     const { entries } = await accessOf(owner.browser, "?limit=50");

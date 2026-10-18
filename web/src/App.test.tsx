@@ -201,4 +201,37 @@ describe("log views", () => {
     const links = [...host.querySelectorAll("a")].filter((a) => a.textContent?.includes("Map"));
     expect(links.map((a) => a.getAttribute("href"))).toEqual(points.map((p) => p.mapUrl).reverse());
   });
+
+  it("Agent access lists each read with its token, outcome and reason, and pages back", async () => {
+    const entry = (id: string, over: Record<string, unknown> = {}) => ({
+      id,
+      credential: { kind: "token", id: "t1", name: "Claude Desktop" },
+      surface: "mcp",
+      action: "get_presence",
+      precise: false,
+      outcome: "allowed",
+      createdAt: "2026-10-18T01:00:00.000Z",
+      ...over,
+    });
+    route("GET /v1/tokens", () => ({ status: 200, body: { tokens: [{ id: "t1", name: "Claude Desktop", role: "agent", lastUsedAt: null }] } }));
+    route("GET /v1/activity/access?limit=50", () => ({
+      status: 200,
+      body: {
+        entries: [entry("a", { action: "get_precise_location", precise: true, outcome: "denied", reason: "pick me up", denial: "precise location denied" })],
+        next: "cursor-1",
+      },
+    }));
+    route("GET /v1/activity/access?limit=50&before=cursor-1", () => ({ status: 200, body: { entries: [entry("b", { action: "presence.read", surface: "rest" })] } }));
+    await open("#activity");
+    expect(host.textContent).toContain("Asked for your exact location");
+    expect(host.textContent).toContain("Refused");
+    expect(host.textContent).toContain("Reason given: pick me up");
+    expect(host.textContent).toContain("Claude Desktop · MCP");
+
+    await act(async () => button("Show older").click());
+    await settle();
+    expect(host.textContent).toContain("Read your status");
+    expect(host.textContent).toContain("Claude Desktop · REST API");
+    expect(() => button("Show older")).toThrow();
+  });
 });

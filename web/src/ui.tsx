@@ -18,7 +18,7 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
 import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, isHandled } from "./api";
+import { ApiError, api, isHandled } from "./api";
 import { useApp } from "./context";
 import type { Lang, Translate } from "./i18n";
 import { ageParts, errorKey, passkeyErrorKey } from "./lib";
@@ -100,6 +100,42 @@ export function useLoad<T>(loader: () => Promise<T>, deps: readonly unknown[]): 
   return [state, reload];
 }
 
+/**
+ * A newest-first log read page by page through its `next` cursor. `more`
+ * appends the following page; changing `url` starts over.
+ */
+export function usePaged<T>(url: string): {
+  state: Load<T[]>;
+  hasMore: boolean;
+  loadingMore: boolean;
+  more: () => Promise<void>;
+  reload: () => Promise<void>;
+} {
+  const next = useRef<string | undefined>(undefined);
+  const [extra, setExtra] = useState<T[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const page = (before?: string) => {
+    const sep = url.includes("?") ? "&" : "?";
+    return api<{ entries: T[]; next?: string }>(before ? `${url}${sep}before=${encodeURIComponent(before)}` : url);
+  };
+  const [state, reload] = useLoad(async () => {
+    const first = await page();
+    next.current = first.next;
+    setExtra([]);
+    setHasMore(Boolean(first.next));
+    return first.entries ?? [];
+  }, [url]);
+  const [loadingMore, more] = useAction(async () => {
+    if (!next.current) return;
+    const following = await page(next.current);
+    next.current = following.next;
+    setExtra((rows) => [...rows, ...(following.entries ?? [])]);
+    setHasMore(Boolean(following.next));
+  });
+  const merged: Load<T[]> = state.kind === "ready" ? { kind: "ready", data: [...state.data, ...extra] } : state;
+  return { state: merged, hasMore, loadingMore, more, reload };
+}
+
 export function Loaded<T>({ state, children }: { state: Load<T>; children: (data: T) => ReactNode }) {
   const { t } = useApp();
   if (state.kind === "loading") return <Spinner label={t("common.loading")} />;
@@ -151,14 +187,18 @@ export function Hint({ children }: { children: ReactNode }) {
   );
 }
 
-/** One record in a list: its name and details, with controls that wrap below on a phone. */
+/**
+ * One record in a list: its name and details, with controls that wrap below
+ * on a phone. A string subtitle is set as supporting text; anything else is
+ * placed as given.
+ */
 export function Row({ title, subtitle, children }: { title: ReactNode; subtitle?: ReactNode; children?: ReactNode }) {
   return (
     <HStack gap={3} vAlign="center" wrap="wrap" paddingBlock={3}>
       <StackItem size="fill">
         <VStack gap={0.5}>
           <Text weight="semibold">{title}</Text>
-          {subtitle ? <Text type="supporting">{subtitle}</Text> : null}
+          {typeof subtitle === "string" ? <Text type="supporting">{subtitle}</Text> : subtitle}
         </VStack>
       </StackItem>
       {children ? (
