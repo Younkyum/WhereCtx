@@ -10,7 +10,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { webhookDeliveries, webhooks } from "../db/schema.js";
 import { asUserId, type PresenceEvent, type UserId } from "../types.js";
@@ -24,6 +24,12 @@ const MAX_ID = "f".repeat(32);
 /** Encode a composite delivery cursor "(createdAt, eventId)" as a string. */
 export function formatCursor(createdAt: string, eventId: string): string {
   return `${createdAt}|${eventId}`;
+}
+
+/** One spelling per selection: ["*"] when it includes "*" or is empty, otherwise each type once, in order. */
+export function normalizeEvents(events: readonly string[]): string[] {
+  if (events.length === 0 || events.includes("*")) return ["*"];
+  return [...new Set(events)];
 }
 
 export interface DeadLetter {
@@ -113,7 +119,7 @@ export class WebhooksStore {
       id: randomBytes(16).toString("hex"),
       userId,
       url: input.url,
-      events: input.events.length > 0 ? input.events : ["*"],
+      events: normalizeEvents(input.events),
       secret:
         input.secret === undefined
           ? null
@@ -171,12 +177,27 @@ export class WebhooksStore {
     return rows.some((r) => !isEncryptedSecret(r.secret));
   }
 
-  /** Advance a hook's delivery cursor to the composite (createdAt, eventId). */
-  async setCursor(id: string, createdAt: string, eventId: string): Promise<void> {
-    await this.db
+  /**
+   * Advance a drain's hook to the composite cursor (createdAt, eventId), only
+   * forward, only while the hook is active, and only while its event
+   * selection is the one the drain read. False means the hook was paused,
+   * resumed (which moves the cursor to then), re-subscribed or rewound since,
+   * and the drain must stop: its copy of the hook is stale.
+   */
+  async setCursor(hook: Pick<Webhook, "id" | "events">, createdAt: string, eventId: string): Promise<boolean> {
+    const cursor = formatCursor(createdAt, eventId);
+    const result = await this.db
       .update(webhooks)
-      .set({ cursor: formatCursor(createdAt, eventId) })
-      .where(eq(webhooks.id, id));
+      .set({ cursor })
+      .where(
+        and(
+          eq(webhooks.id, hook.id),
+          eq(webhooks.active, true),
+          eq(webhooks.events, hook.events),
+          or(isNull(webhooks.cursor), lt(webhooks.cursor, cursor)),
+        ),
+      );
+    return (result.rowsAffected ?? 0) > 0;
   }
 
   /** Record an event that was permanently undeliverable (dead-letter). */
@@ -288,7 +309,7 @@ export class WebhooksStore {
     const result = await this.db
       .update(webhooks)
       .set({
-        ...(patch.events ? { events: patch.events.length > 0 ? patch.events : ["*"] } : {}),
+        ...(patch.events ? { events: normalizeEvents(patch.events) } : {}),
         ...(patch.active === undefined ? {} : { active: patch.active }),
         // SET reads the row as it was, so this sees whether the hook was off.
         ...(patch.active

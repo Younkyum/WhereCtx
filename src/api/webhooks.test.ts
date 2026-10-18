@@ -50,6 +50,22 @@ describe("PATCH /v1/webhooks/:id", () => {
     expect((await patch(owner.browser, hookId, body)).status).toBe(400);
   });
 
+  it.each([
+    [["presence.left_place", "presence.left_place"], ["presence.left_place"]],
+    [["presence.left_place", "*", "presence.updated"], ["*"]],
+    [["presence.updated", "presence.left_place", "presence.updated"], ["presence.updated", "presence.left_place"]],
+  ])("stores %j as %j", async (events, stored) => {
+    const res = await patch(owner.browser, hookId, { events });
+    expect(((await res.json()) as any).webhook.events).toEqual(stored);
+    const [hook] = (await owner.browser.json("/v1/webhooks")).webhooks;
+    expect(hook.events).toEqual(stored);
+  });
+
+  it("refuses an unknown or empty event selection", async () => {
+    expect((await patch(owner.browser, hookId, { events: ["presence.teleported"] })).status).toBe(400);
+    expect((await patch(owner.browser, hookId, { events: [] })).status).toBe(400);
+  });
+
   it("answers 404 for another person's hook and leaves it alone", async () => {
     expect((await patch(mina, hookId, { events: ["*"], active: false })).status).toBe(404);
     const [hook] = (await owner.browser.json("/v1/webhooks")).webhooks;

@@ -341,6 +341,65 @@ describe("WebhookDispatcher scheduling", () => {
   });
 });
 
+describe("WebhookDispatcher cursor", () => {
+  it("does not replay what happened while a hook was paused, when it is paused and resumed mid-drain", async () => {
+    const hook = await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"] });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    const delivered: string[] = [];
+    let first = true;
+    const fetchFn = vi.fn(async (_url: string, init: any) => {
+      delivered.push(JSON.parse(init.body).status);
+      if (first) {
+        first = false;
+        await webhooks.update(USER, hook.id, { active: false });
+        nowMs += 1000;
+        await events.append(USER, { type: "presence.updated", status: "while-paused" });
+        nowMs += 1000;
+        await webhooks.update(USER, hook.id, { active: true });
+      }
+      return new Response(null, { status: 200 });
+    });
+    const dispatcher = makeDispatcher({ fetchFn: fetchFn as any });
+    await dispatcher.tick();
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "after" });
+    await dispatcher.tick();
+    await dispatcher.tick();
+    expect(delivered).toEqual(["home", "after"]);
+  });
+
+  it("stops a drain when the hook stops wanting the next event's type", async () => {
+    const hook = await webhooks.create(USER, {
+      url: "https://example.test/hook",
+      events: ["presence.updated", "presence.entered_place"],
+    });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    nowMs += 1;
+    await events.append(USER, { type: "presence.entered_place", placeName: "home" });
+    const delivered: string[] = [];
+    const fetchFn = vi.fn(async (_url: string, init: any) => {
+      delivered.push(JSON.parse(init.body).event);
+      if (delivered.length === 1) await webhooks.update(USER, hook.id, { events: ["presence.updated"] });
+      return new Response(null, { status: 200 });
+    });
+    const dispatcher = makeDispatcher({ fetchFn: fetchFn as any });
+    await dispatcher.tick();
+    await dispatcher.tick();
+    expect(delivered.filter((e) => e === "presence.entered_place")).toEqual([]);
+    expect(delivered[0]).toBe("presence.updated");
+  });
+
+  it("never moves a cursor backwards", async () => {
+    const hook = await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"] });
+    expect(await webhooks.setCursor(hook, "2030-01-01T00:00:00.000Z", "b".repeat(32))).toBe(true);
+    expect(await webhooks.setCursor(hook, "2029-01-01T00:00:00.000Z", "f".repeat(32))).toBe(false);
+    const [stored] = await webhooks.list(USER);
+    expect(stored!.cursor).toBe(`2030-01-01T00:00:00.000Z|${"b".repeat(32)}`);
+  });
+});
+
 describe("the dashboard's example delivery", () => {
   it("has the headers and body fields a real signed delivery has", async () => {
     await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], secret: "s3cret-s3cret" });

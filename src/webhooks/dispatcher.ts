@@ -192,15 +192,19 @@ export class WebhookDispatcher {
       if (this.halt.signal.aborted) return;
       // Out of budget: the persisted cursor is where the next tick resumes.
       if (this.opts.clock().getTime() - startedAt >= this.drainBudgetMs) return;
+      // Each advance also checks the hook is still as this drain read it; when
+      // it is not (paused, resumed, re-subscribed), stop and let the next tick
+      // start from the stored hook.
+      const advance = () => this.opts.webhooksStore.setCursor(hook, ev.createdAt, ev.id);
       if (!subscribed(hook, ev.type)) {
-        await this.opts.webhooksStore.setCursor(hook.id, ev.createdAt, ev.id);
+        if (!(await advance())) return;
         continue;
       }
       const key = `${hook.id}:${ev.id}`;
       const result = await this.deliver(hook, ev);
       if (result.ok) {
         this.attempts.delete(key);
-        await this.opts.webhooksStore.setCursor(hook.id, ev.createdAt, ev.id);
+        if (!(await advance())) return;
         continue;
       }
       if (this.halt.signal.aborted) return;
@@ -211,7 +215,7 @@ export class WebhookDispatcher {
         log.warn("webhook event dead-lettered", { webhookId: hook.id, eventId: ev.id, attempts: n, error: result.error });
         await this.opts.webhooksStore.recordDeadLetter(hook.id, ev, result.error);
         this.attempts.delete(key);
-        await this.opts.webhooksStore.setCursor(hook.id, ev.createdAt, ev.id);
+        if (!(await advance())) return;
         continue;
       }
       // Stop draining this hook; retry from here on the next tick.
