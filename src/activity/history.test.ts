@@ -153,7 +153,7 @@ describe("history retention", () => {
     expect((await owner.browser.json(all)).points).toHaveLength(2);
 
     clock.advance(48 * 60 * MINUTE);
-    expect(await ctx.system.history.pruneExpired()).toBe(1);
+    expect(await ctx.system.history.pruneExpired(24)).toBe(1);
     expect((await owner.browser.json(all)).points).toHaveLength(1);
 
     clock.advance(20 * MINUTE);

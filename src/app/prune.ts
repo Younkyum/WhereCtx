@@ -8,7 +8,7 @@
 import type { WhereCtxConfig } from "../config.js";
 import type { SystemStores } from "./context.js";
 
-export type PruneConfig = Pick<WhereCtxConfig, "events" | "sharing" | "activity">;
+export type PruneConfig = Pick<WhereCtxConfig, "events" | "sharing" | "activity" | "privacy">;
 
 /** Rows removed from each table. */
 export async function pruneOnce(system: SystemStores, config: PruneConfig): Promise<Record<string, number>> {
@@ -19,7 +19,7 @@ export async function pruneOnce(system: SystemStores, config: PruneConfig): Prom
       system.shares.pruneAudit(config.sharing.auditRetentionDays),
       system.accessLog.prune(config.activity.accessLogRetentionDays),
       system.ingestLog.prune(config.activity.ingestLogRetentionDays),
-      system.history.pruneExpired(),
+      system.history.pruneExpired(config.privacy.retentionHours),
       system.sessions.prune(),
       system.invites.pruneExpired(config.events.retentionHours),
       system.nonces.prune(),

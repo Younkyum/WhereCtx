@@ -5,7 +5,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { locationHistory, privacySettings } from "../db/schema.js";
 import type { IngestSource, UserId } from "../types.js";
@@ -89,17 +89,28 @@ export class HistoryStore {
 
   /**
    * Every user's points past their own retention (prune sweep), so history
-   * ages out even for someone whose phone stopped reporting.
+   * ages out even for someone whose phone stopped reporting. A user with no
+   * settings row has `defaultRetentionHours`. Deletes `batchSize` rows per
+   * statement, so a large backlog does not hold the database in one write.
    */
-  async pruneExpired(): Promise<number> {
+  async pruneExpired(defaultRetentionHours: number, batchSize = 5000): Promise<number> {
     const now = nowIso(this.clock);
-    const result = await this.db.delete(locationHistory).where(
-      sql`${locationHistory.recordedAt} < (
-        SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ${now}, '-' || ${privacySettings.retentionHours} || ' hours')
-        FROM ${privacySettings} WHERE ${privacySettings.userId} = ${locationHistory.userId}
-      )`,
-    );
-    return result.rowsAffected ?? 0;
+    const retention = sql`COALESCE(
+      (SELECT ${privacySettings.retentionHours} FROM ${privacySettings} WHERE ${privacySettings.userId} = ${locationHistory.userId}),
+      ${defaultRetentionHours}
+    )`;
+    const expired = this.db
+      .select({ id: locationHistory.id })
+      .from(locationHistory)
+      .where(sql`${locationHistory.recordedAt} < strftime('%Y-%m-%dT%H:%M:%fZ', ${now}, '-' || ${retention} || ' hours')`)
+      .limit(batchSize);
+    let removed = 0;
+    for (;;) {
+      const result = await this.db.delete(locationHistory).where(inArray(locationHistory.id, expired));
+      const n = result.rowsAffected ?? 0;
+      removed += n;
+      if (n < batchSize) return removed;
+    }
   }
 
   /** Delete history older than `retentionHours` for a user. Returns rows removed. */
