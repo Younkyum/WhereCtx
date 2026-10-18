@@ -26,7 +26,14 @@ import {
   buildPreciseView,
 } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
-import { accessRecorder } from "../activity/record.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import {
+  isJSONRPCErrorResponse,
+  isJSONRPCRequest,
+  isJSONRPCResultResponse,
+  type RequestId,
+} from "@modelcontextprotocol/sdk/types.js";
+import { accessRecorder, type AccessRecorder } from "../activity/record.js";
 import type { AccessAction, AccessDecision } from "../activity/types.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
 import { secondsSince, isStale } from "../util/time.js";
@@ -74,6 +81,56 @@ const toResult = (reply: Reply): ToolResult => ({
   ...(reply.isError ? { isError: true } : {}),
 });
 
+/**
+ * Write one access log row per tools/call request, valid or not, when its
+ * response goes out. Watches the transport the server connects to: its
+ * incoming requests and its outgoing responses. A call still unanswered when
+ * the transport closes is recorded as an error.
+ */
+function recordToolCalls(
+  server: McpServer,
+  record: AccessRecorder,
+  outcomeOf: (id: RequestId, name: string, undecided: AccessDecision) => { action: AccessAction; decision: AccessDecision },
+): void {
+  const pending = new Map<RequestId, { name: string; args: unknown }>();
+  /** `undecided`: the outcome of a call no handler decided (the SDK refused it, or it was never answered). */
+  const settle = async (id: RequestId, undecided: AccessDecision): Promise<void> => {
+    const call = pending.get(id);
+    if (!call) return;
+    pending.delete(id);
+    const { action, decision } = outcomeOf(id, call.name, undecided);
+    const reason = (call.args as { reason?: unknown } | undefined)?.reason;
+    await record({
+      action,
+      ...decision,
+      ...(decision.precise && typeof reason === "string" ? { reason } : {}),
+    });
+  };
+  const connect = server.connect.bind(server);
+  server.connect = (transport: Transport) => {
+    // Protocol.connect chains these, so they run before the server's own.
+    transport.onmessage = (message) => {
+      if (isJSONRPCRequest(message) && message.method === "tools/call") {
+        const params = message.params as { name?: unknown; arguments?: unknown } | undefined;
+        pending.set(message.id, { name: typeof params?.name === "string" ? params.name : "", args: params?.arguments });
+      }
+    };
+    transport.onclose = () => {
+      for (const id of [...pending.keys()]) void settle(id, { outcome: "error" });
+    };
+    const send = transport.send.bind(transport);
+    transport.send = async (message, options) => {
+      if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
+        if (message.id !== undefined && message.id !== null) {
+          await settle(message.id, { outcome: "denied", denial: "invalid arguments" });
+        }
+      }
+      return send(message, options);
+    };
+    return connect(transport);
+  };
+}
+
 export function buildMcpServer(
   scope: UserScope,
   principal: Principal,
@@ -84,32 +141,37 @@ export function buildMcpServer(
     { capabilities: { tools: {} } },
   );
 
-  // Every tool is registered through this wrapper, so each call lands in the
-  // owner's access log with the decision its handler returned.
-  const record = accessRecorder(scope, principal, "mcp");
+  // Every tool is registered through this wrapper, which keeps the decision
+  // its handler returned for the call's request id. The access log is written
+  // per tools/call request (recordToolCalls), so a call the SDK refuses before
+  // any handler runs (bad arguments, an unknown tool) is recorded too.
+  const decisions = new Map<RequestId, AccessDecision>();
+  const tools = new Set<string>();
   const registerTool = <Shape extends z.ZodRawShape>(
     name: AccessAction,
     config: { description: string; inputSchema: Shape },
     handler: (args: z.infer<z.ZodObject<Shape>>) => Promise<Reply>,
   ): void => {
-    const run = async (args: z.infer<z.ZodObject<Shape>>): Promise<ToolResult> => {
+    tools.add(name);
+    const run = async (args: z.infer<z.ZodObject<Shape>>, extra: { requestId: RequestId }): Promise<ToolResult> => {
       let reply: Reply;
       try {
         reply = await handler(args);
       } catch (e) {
-        await record({ action: name, outcome: "error" });
+        decisions.set(extra.requestId, { outcome: "error" });
         throw e;
       }
-      const reason = (args as { reason?: unknown }).reason;
-      await record({
-        action: name,
-        ...reply.decision,
-        ...(reply.decision.precise && typeof reason === "string" ? { reason } : {}),
-      });
+      decisions.set(extra.requestId, reply.decision);
       return toResult(reply);
     };
     server.registerTool(name, config, run as never);
   };
+  recordToolCalls(server, accessRecorder(scope, principal, "mcp"), (id, name, undecided) => {
+    const decision = decisions.get(id);
+    decisions.delete(id);
+    if (!tools.has(name)) return { action: "unknown", decision: { outcome: "denied", denial: "unknown tool" } };
+    return { action: name as AccessAction, decision: decision ?? undecided };
+  });
 
   const isAdmin = principal.scopes.includes("manage_privacy");
   // Same scope REST places uses to decide who sees place coordinates.

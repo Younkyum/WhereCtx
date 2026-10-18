@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Hono } from "hono";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -8,6 +10,7 @@ import { REST_ACTIONS } from "../api/accessAudit.js";
 import { ACCESS_ACTIONS } from "./types.js";
 import { log } from "../util/log.js";
 import { buildMcpServer } from "../mcp/server.js";
+import { MAX_BATCH_MESSAGES, mcpNodeHandler } from "../mcp/http.js";
 import { Browser, TestClock, bootApp, setupOwner, signUpByInvite, type Enrolled } from "../testing/accounts.js";
 
 const HOME = { lat: 37.5, lon: 127.0 };
@@ -254,6 +257,95 @@ describe("MCP access log", () => {
     await client.callTool({ name: "get_presence", arguments: {} });
     const [entry] = (await accessOf(owner.browser)).entries;
     expect(entry).toMatchObject({ action: "get_presence", outcome: "hidden" });
+  });
+});
+
+describe("MCP requests the SDK or the endpoint refuses", () => {
+  async function connected() {
+    const principal = (await resolveTokenPrincipal(ctx, agent))!;
+    const server = buildMcpServer(ctx.forUser(principal.userId), principal, ctx);
+    const client = new Client({ name: "test", version: "0.0.0" }, { capabilities: {} });
+    const [c, s] = InMemoryTransport.createLinkedPair();
+    await server.connect(s);
+    await client.connect(c);
+    return client;
+  }
+
+  it("records each call refused by schema validation, once, as invalid arguments", async () => {
+    const client = await connected();
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ["get_precise_location", {}],
+      ["get_precise_location", { reason: "" }],
+      ["get_precise_location", { reason: "x".repeat(300) }],
+      ["create_place", { name: "pole", type: "custom", lat: 91, lon: 0 }],
+      ["list_recent_presence_events", { limit: 1000 }],
+    ];
+    for (const [name, args] of calls) {
+      clock.advance(1);
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError, name).toBe(true);
+    }
+    const { entries } = await accessOf(owner.browser);
+    expect(entries.map((e: any) => [e.action, e.outcome, e.denial])).toEqual(
+      calls.map(([name]) => [name, "denied", "invalid arguments"]).reverse(),
+    );
+    expect(JSON.stringify(entries)).not.toContain("xxxxxxxxxx");
+  });
+
+  it("records an unknown tool as unknown, without its name", async () => {
+    const client = await connected();
+    const result = await client.callTool({ name: "exfiltrate_everything", arguments: {} });
+    expect(result.isError).toBe(true);
+    const { entries } = await accessOf(owner.browser);
+    expect(entries.map((e: any) => [e.action, e.outcome, e.denial])).toEqual([["unknown", "denied", "unknown tool"]]);
+    expect(JSON.stringify(entries)).not.toContain("exfiltrate");
+  });
+
+  describe("over HTTP", () => {
+    let url: string;
+    let server: Server;
+    beforeEach(async () => {
+      const handler = mcpNodeHandler(ctx);
+      server = createServer((req, res) => void handler(req, res));
+      await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+      url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+    });
+    afterEach(() => {
+      server.close();
+    });
+    const rpc = (token: string, body: unknown) =>
+      fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+    const call = (id: number, name: string, args: Record<string, unknown> = {}) => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name, arguments: args },
+    });
+
+    it("records a token without read_presence that is refused at the door", async () => {
+      const device = (await mint(owner.browser, "Phone", "device")).secret;
+      expect((await rpc(device, call(1, "get_presence"))).status).toBe(403);
+      const { entries } = await accessOf(owner.browser);
+      expect(entries).toEqual([
+        expect.objectContaining({ action: "mcp.request", outcome: "denied", surface: "mcp", credential: expect.objectContaining({ name: "Phone" }) }),
+      ]);
+      expect(entries[0].denial).toMatch(/read_presence/);
+    });
+
+    it("records each tool call in a batch, and refuses a batch over the cap", async () => {
+      const ok = await rpc(agent, [call(1, "get_presence"), call(2, "list_places"), call(3, "nope")]);
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toHaveLength(3);
+      const big = await rpc(agent, Array.from({ length: MAX_BATCH_MESSAGES + 1 }, (_, i) => call(i + 1, "get_presence")));
+      expect(big.status).toBe(400);
+      expect((await big.json()).error.message).toMatch(/batch too large/);
+      const { entries } = await accessOf(owner.browser);
+      expect(entries.map((e: any) => e.action).sort()).toEqual(["get_presence", "list_places", "mcp.request", "unknown"]);
+    });
   });
 });
 
