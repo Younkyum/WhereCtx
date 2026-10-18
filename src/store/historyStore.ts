@@ -5,7 +5,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, asc, eq, gte, lt, lte } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { locationHistory } from "../db/schema.js";
 import type { IngestSource, UserId } from "../types.js";
@@ -57,15 +57,27 @@ export class HistoryStore {
     });
   }
 
-  async listRecent(userId: UserId, limit = 100): Promise<HistoryPoint[]> {
-    const capped = Math.max(1, Math.min(limit, 1000));
+  /**
+   * Points recorded in [from, to], oldest first, at most `limit`. `truncated`
+   * says the range held more, so a caller can narrow it.
+   */
+  async listRange(
+    userId: UserId,
+    range: { from: string; to: string; limit: number },
+  ): Promise<{ points: HistoryPoint[]; truncated: boolean }> {
     const rows = (await this.db
       .select()
       .from(locationHistory)
-      .where(eq(locationHistory.userId, userId))
-      .orderBy(desc(locationHistory.recordedAt))
-      .limit(capped)) as HistoryRow[];
-    return rows.map(rowToPoint);
+      .where(
+        and(
+          eq(locationHistory.userId, userId),
+          gte(locationHistory.recordedAt, range.from),
+          lte(locationHistory.recordedAt, range.to),
+        ),
+      )
+      .orderBy(asc(locationHistory.recordedAt), asc(locationHistory.id))
+      .limit(range.limit + 1)) as HistoryRow[];
+    return { points: rows.slice(0, range.limit).map(rowToPoint), truncated: rows.length > range.limit };
   }
 
   /** Delete history older than `retentionHours` for a user. Returns rows removed. */

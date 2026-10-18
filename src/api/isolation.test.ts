@@ -18,6 +18,7 @@ const A_DEVICE = "a-device-token-strong-0123456789abcdef";
 const A_AGENT = "a-agent-token-strong-0123456789abcdef";
 
 const HOME = { lat: 37.0, lon: 127.0 };
+const ALL_TIME = { from: "0000", to: "9999", limit: 5000 };
 const AWAY = { lat: 37.05, lon: 127.0 };
 
 const config: WhereCtxConfig = {
@@ -120,7 +121,7 @@ async function snapshot(scope: UserScope) {
     presence: await scope.presence.getCurrent(),
     settings: await scope.settings.getOrSeed(),
     events: await scope.events.listRecent(500),
-    history: await scope.history.listRecent(),
+    history: await scope.history.listRange(ALL_TIME),
     reminders: await scope.reminders.listActive(),
     webhooks: await scope.webhooks.list(),
     deadLetters: await scope.webhooks.listDeadLetters(),
@@ -149,7 +150,7 @@ describe("user scope isolation", () => {
       ["places.get", () => scopeB.places.get("home"), null],
       ["presence.getCurrent", () => scopeB.presence.getCurrent(), null],
       ["events.listRecent", () => scopeB.events.listRecent(), []],
-      ["history.listRecent", () => scopeB.history.listRecent(), []],
+      ["history.listRange", () => scopeB.history.listRange(ALL_TIME), { points: [], truncated: false }],
       ["reminders.listActive", () => scopeB.reminders.listActive(), []],
       ["reminders.countActive", () => scopeB.reminders.countActive(), 0],
       ["webhooks.list", () => scopeB.webhooks.list(), []],

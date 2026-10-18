@@ -83,8 +83,9 @@ export interface Config {
   allowMemberWorkspaces: boolean;
   databaseUrl: string;
   /**
-   * Owner of bootstrap tokens and the first-boot settings row. Read only by
-   * `createAppContext`; request paths take the user from their credential.
+   * Owner of bootstrap tokens and the first-boot settings row, and the
+   * operator who may read server logs (api/admin.ts). Request paths take the
+   * user from their credential.
    */
   defaultUserId: UserId;
   bootstrapTokens: {

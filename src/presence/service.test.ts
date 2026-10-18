@@ -129,8 +129,8 @@ describe("PresenceService.processReading", () => {
 
   it("does not record raw history when disabled", async () => {
     await service.processReading(USER, reading(37.0, 127.0));
-    const history = await new HistoryStore(handle.db, clock).listRecent(USER);
-    expect(history).toHaveLength(0);
+    const history = await new HistoryStore(handle.db, clock).listRange(USER, { from: "0000", to: "9999", limit: 100 });
+    expect(history.points).toHaveLength(0);
   });
 });
 

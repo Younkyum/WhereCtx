@@ -103,7 +103,7 @@ function scopeFor(system: SystemStores, userId: UserId) {
       ]),
     },
     events: bindFirst(system.events, userId, ["listRecent"]),
-    history: bindFirst(system.history, userId, ["listRecent"]),
+    history: bindFirst(system.history, userId, ["listRange"]),
     reminders: bindFirst(system.reminders, userId, ["create", "countActive", "listActive"]),
     accessLog: bindFirst(system.accessLog, userId, ["record", "list"]),
     ingestLog: bindFirst(system.ingestLog, userId, ["record", "list", "deviceSummaries"]),
@@ -256,9 +256,10 @@ export async function createAppContext(
     }),
   };
 
-  // `defaultUserId` is read only here: it owns the env-configured tokens, the
-  // first settings row, the Default workspace, and the setup passkey. Request
-  // paths take their user from the credential.
+  // `defaultUserId` owns the env-configured tokens, the first settings row,
+  // the Default workspace, and the setup passkey. Request paths take their
+  // user from the credential; the only other reader is api/admin.ts
+  // `isOperator`, which compares that user against it.
   const owner = config.defaultUserId;
   await system.settings.getOrSeed(owner);
   await system.users.ensure(owner, owner);

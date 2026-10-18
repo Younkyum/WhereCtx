@@ -1,7 +1,8 @@
 /**
  * The signed-in person's own account (session only). Handlers act through the
  * request's AccountScope, already bound to this session.
- *   GET    /v1/me                          -> user, workspaces with role, passkeys, sessions
+ *   GET    /v1/me                          -> user, workspaces with role, passkeys, sessions,
+ *                                              isOperator (the instance owner, USER_ID)
  *   PATCH  /v1/me                          -> change display name
  *   POST   /v1/me/reauth/options|verify    -> prove a passkey again (opens the step-up window)
  *   POST   /v1/me/passkeys/options|verify  -> register another passkey (step-up)
@@ -24,6 +25,7 @@ import {
   parseBody,
   respond,
 } from "./accountHttp.js";
+import { isOperator } from "./admin.js";
 import { noStore } from "./middleware.js";
 import { clearSessionCookie } from "./session.js";
 import type { SessionEnv } from "./types.js";
@@ -39,7 +41,11 @@ const Reauth = z.object({ ceremony: CeremonyState, response: AuthenticationRespo
 export function meRouter(ctx: RouteContext): Hono<SessionEnv> {
   const app = new Hono<SessionEnv>();
 
-  app.get("/", async (c) => respond(c, await c.get("account").me.profile(), (p) => c.json(p)));
+  app.get("/", async (c) =>
+    respond(c, await c.get("account").me.profile(), (p) =>
+      c.json({ ...p, isOperator: isOperator(ctx.config, p.user.id) }),
+    ),
+  );
 
   app.patch("/", async (c) => {
     const body = await parseBody(c, Rename);

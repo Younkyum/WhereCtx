@@ -26,6 +26,7 @@ import { tokensRouter } from "../api/tokens.js";
 import { devicesRouter } from "../api/devices.js";
 import { webhooksRouter } from "../api/webhooks.js";
 import { activityRouter } from "../api/activity.js";
+import { adminRouter } from "../api/admin.js";
 import { log } from "../util/log.js";
 
 export interface BuildAppOptions {
@@ -130,6 +131,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   mount("/v1/tokens", tokensRouter(ctx));
   mount("/v1/devices", devicesRouter(ctx));
   mount("/v1/activity", activityRouter());
+  mount("/v1/admin", adminRouter(ctx));
 
   app.notFound((c) => c.json({ error: "not found" }, 404));
   app.onError((err, c) => {
