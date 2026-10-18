@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 import type { WhereCtxConfig } from "../config.js";
+import { asUserId } from "../types.js";
 import { createAppContext } from "../app/context.js";
 import { buildApp } from "../app/server.js";
 import { DASHBOARD_HTML, DASHBOARD_JS } from "./page.js";
@@ -10,7 +11,7 @@ const config: WhereCtxConfig = {
   host: "127.0.0.1",
   baseUrl: "http://localhost:8787",
   databaseUrl: ":memory:",
-  userId: "default",
+  defaultUserId: asUserId("default"),
   bootstrapTokens: {},
   privacy: {
     defaultAgentAccess: "coarse",

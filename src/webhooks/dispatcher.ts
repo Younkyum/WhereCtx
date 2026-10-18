@@ -124,7 +124,12 @@ export class WebhookDispatcher {
   }
 
   private async drainHook(hook: Webhook): Promise<void> {
-    const events = await this.opts.eventsStore.listSince(hook.cursor ?? null, this.batchSize);
+    // Owner-scoped read: a hook only ever sees its own user's events.
+    const events = await this.opts.eventsStore.listSince(
+      hook.userId,
+      hook.cursor ?? null,
+      this.batchSize,
+    );
     for (const ev of events) {
       if (!subscribed(hook, ev.type)) {
         await this.opts.webhooksStore.setCursor(hook.id, ev.createdAt, ev.id);

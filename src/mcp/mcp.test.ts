@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { WhereCtxConfig } from "../config.js";
-import { createAppContext, type AppContext } from "../app/context.js";
-import type { VerifiedToken } from "../auth/tokens.js";
-import { ROLE_SCOPES } from "../types.js";
+import { createAppContext, type AppContext, type UserScope } from "../app/context.js";
+import type { Principal } from "../auth/principal.js";
+import { ROLE_SCOPES, asUserId } from "../types.js";
 import type { NormalizedReading } from "../normalizer/types.js";
 import { buildMcpServer } from "./server.js";
 
@@ -13,7 +13,7 @@ const config: WhereCtxConfig = {
   host: "127.0.0.1",
   baseUrl: "http://localhost:8787",
   databaseUrl: ":memory:",
-  userId: "default",
+  defaultUserId: asUserId("default"),
   bootstrapTokens: {},
   privacy: {
     defaultAgentAccess: "coarse",
@@ -30,21 +30,10 @@ const config: WhereCtxConfig = {
   events: { retentionHours: 720 },
 };
 
-const agentToken: VerifiedToken = {
-  id: "t1",
-  name: "agent",
-  role: "agent",
-  scopes: ROLE_SCOPES.agent,
-  createdAt: "2026-06-05T00:00:00.000Z",
-};
+const USER = asUserId("default");
 
-const adminToken: VerifiedToken = {
-  id: "t2",
-  name: "admin",
-  role: "admin",
-  scopes: ROLE_SCOPES.admin,
-  createdAt: "2026-06-05T00:00:00.000Z",
-};
+const agentToken: Principal = { userId: USER, scopes: ROLE_SCOPES.agent };
+const adminToken: Principal = { userId: USER, scopes: ROLE_SCOPES.admin };
 
 function reading(lat: number, lon: number): NormalizedReading {
   return {
@@ -56,10 +45,11 @@ function reading(lat: number, lon: number): NormalizedReading {
 }
 
 let ctx: AppContext;
+let user: UserScope;
 let client: Client;
 
-async function connect(token: VerifiedToken = agentToken): Promise<void> {
-  const server = buildMcpServer(ctx, token);
+async function connect(principal: Principal = agentToken): Promise<void> {
+  const server = buildMcpServer(ctx.forUser(principal.userId), principal, ctx);
   client = new Client({ name: "test", version: "0.0.0" }, { capabilities: {} });
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   await server.connect(serverT);
@@ -77,7 +67,8 @@ async function callJson(name: string, args: Record<string, unknown> = {}): Promi
 beforeEach(async () => {
   const built = await createAppContext(config);
   ctx = built.ctx;
-  await ctx.placesStore.upsert("default", {
+  user = ctx.forUser(USER);
+  await user.places.upsert({
     name: "home",
     lat: 37.0,
     lon: 127.0,
@@ -110,16 +101,16 @@ describe("MCP server", () => {
     await connect();
     const { data } = await callJson("create_place", { name: "gym", type: "custom", lat: 37.4, lon: 127.1, radiusM: 120 });
     expect(data.name).toBe("gym");
-    const places = await ctx.placesStore.list("default");
+    const places = await user.places.list();
     expect(places.some((p) => p.name === "gym")).toBe(true);
   });
 
   it("remember_current_place uses the current location", async () => {
-    await ctx.service.processReading(reading(37.61, 127.22));
+    await user.presence.processReading(reading(37.61, 127.22));
     await connect();
     const { data } = await callJson("remember_current_place", { name: "spot" });
     expect(data.name).toBe("spot");
-    const p = (await ctx.placesStore.list("default")).find((x) => x.name === "spot");
+    const p = (await user.places.list()).find((x) => x.name === "spot");
     expect(p?.lat).toBe(37.61);
   });
 
@@ -130,7 +121,7 @@ describe("MCP server", () => {
   });
 
   it("get_presence returns coarse status with no raw coordinates", async () => {
-    await ctx.service.processReading(reading(37.0, 127.0));
+    await user.presence.processReading(reading(37.0, 127.0));
     await connect();
     const { data } = await callJson("get_presence");
     expect(data.status).toBe("home");
@@ -139,14 +130,14 @@ describe("MCP server", () => {
   });
 
   it("get_precise_location is denied at home (home protection)", async () => {
-    await ctx.service.processReading(reading(37.0, 127.0));
+    await user.presence.processReading(reading(37.0, 127.0));
     await connect();
     const { isError } = await callJson("get_precise_location", { reason: "map" });
     expect(isError).toBe(true);
   });
 
   it("is_near_place returns booleans only", async () => {
-    await ctx.service.processReading(reading(37.0, 127.0));
+    await user.presence.processReading(reading(37.0, 127.0));
     await connect();
     const { data } = await callJson("is_near_place", { name: "home" });
     expect(data).toEqual({ name: "home", inside: true, near: true });
@@ -160,7 +151,7 @@ describe("MCP server", () => {
   });
 
   it("get_location_age reports age and stale flag", async () => {
-    await ctx.service.processReading(reading(37.0, 127.0));
+    await user.presence.processReading(reading(37.0, 127.0));
     await connect();
     const { data } = await callJson("get_location_age");
     expect(typeof data.updatedAgoSec).toBe("number");
@@ -168,8 +159,8 @@ describe("MCP server", () => {
   });
 
   it("withholds presence in hidden mode", async () => {
-    await ctx.service.processReading(reading(37.05, 127.0));
-    await ctx.service.changePrivacySettings({ defaultAgentAccess: "hidden" });
+    await user.presence.processReading(reading(37.05, 127.0));
+    await user.presence.changePrivacySettings({ defaultAgentAccess: "hidden" });
     await connect();
     const presence = await callJson("get_presence");
     expect(presence.data.status).toBe("hidden");
@@ -185,7 +176,7 @@ describe("MCP server", () => {
     });
     expect(data.id).toBeDefined();
     expect(data.place).toBe("home");
-    const active = await ctx.remindersStore.listActive();
+    const active = await user.reminders.listActive();
     expect(active).toHaveLength(1);
   });
 
@@ -196,11 +187,11 @@ describe("MCP server", () => {
       message: "x",
     });
     expect(isError).toBe(true);
-    expect(await ctx.remindersStore.countActive()).toBe(0);
+    expect(await user.reminders.countActive()).toBe(0);
   });
 
   it("create_location_reminder is refused in hidden mode", async () => {
-    await ctx.service.changePrivacySettings({ defaultAgentAccess: "hidden" });
+    await user.presence.changePrivacySettings({ defaultAgentAccess: "hidden" });
     await connect();
     const { isError } = await callJson("create_location_reminder", {
       place: "home",
@@ -220,7 +211,7 @@ describe("MCP server", () => {
       });
       expect(isError).toBe(true);
       expect(data.error).toContain("manage_places");
-      expect(await ctx.placesStore.get("default", "home2")).toBeNull();
+      expect(await user.places.get("home2")).toBeNull();
     });
 
     it("blocks an agent from overwriting the existing home place (even as type custom)", async () => {
@@ -232,18 +223,18 @@ describe("MCP server", () => {
         lon: 0,
       });
       expect(isError).toBe(true);
-      const home = await ctx.placesStore.get("default", "home");
+      const home = await user.places.get("home");
       expect(home?.lat).toBe(37.0); // unchanged
     });
 
     it("blocks remember_current_place for the home place", async () => {
-      await ctx.service.processReading(reading(37.61, 127.22));
+      await user.presence.processReading(reading(37.61, 127.22));
       await connect();
       const { isError } = await callJson("remember_current_place", {
         name: "home",
       });
       expect(isError).toBe(true);
-      const home = await ctx.placesStore.get("default", "home");
+      const home = await user.places.get("home");
       expect(home?.lat).toBe(37.0); // unchanged
     });
 
@@ -267,12 +258,12 @@ describe("MCP server", () => {
         lon: 128.0,
       });
       expect(isError).toBe(false);
-      const home = await ctx.placesStore.get("default", "home");
+      const home = await user.places.get("home");
       expect(home?.lat).toBe(38.0);
     });
 
     it("allows agent home writes when the dashboard toggle is off", async () => {
-      await ctx.service.changePrivacySettings({ protectHomePlace: false });
+      await user.presence.changePrivacySettings({ protectHomePlace: false });
       await connect();
       const { isError } = await callJson("create_place", {
         name: "home",
@@ -281,7 +272,7 @@ describe("MCP server", () => {
         lon: 129.0,
       });
       expect(isError).toBe(false);
-      const home = await ctx.placesStore.get("default", "home");
+      const home = await user.places.get("home");
       expect(home?.lat).toBe(39.0);
     });
   });

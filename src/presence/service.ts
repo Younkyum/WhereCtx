@@ -22,6 +22,7 @@ import type {
   PresenceEvent,
   PresenceStatus,
   PrivacySettings,
+  UserId,
 } from "../types.js";
 import { nowIso, isStale, type Clock, systemClock } from "../util/time.js";
 import { KeyedMutex } from "../util/mutex.js";
@@ -68,34 +69,24 @@ export class PresenceService {
     this.clock = deps.clock ?? systemClock;
   }
 
-  private get userId(): string {
-    return this.deps.config.userId;
-  }
-
   /**
    * Process a normalized reading. Serialized per user so overlapping ingests
    * cannot race the read-diff-write sequence (review finding F10).
    */
-  async processReading(reading: NormalizedReading): Promise<ProcessResult> {
-    return this.mutex.run(this.userId, () => this.processReadingLocked(reading));
+  async processReading(userId: UserId, reading: NormalizedReading): Promise<ProcessResult> {
+    return this.mutex.run(userId, () => this.processReadingLocked(userId, reading));
   }
 
-  /** Settings with the (defensive) first-boot seed fallback. */
-  private async getSettings(userId: string): Promise<PrivacySettings> {
-    return (
-      (await this.deps.settingsStore.get(userId)) ??
-      (await this.deps.settingsStore.seedFromConfig(userId, this.deps.config))
-    );
-  }
-
-  private async processReadingLocked(reading: NormalizedReading): Promise<ProcessResult> {
+  private async processReadingLocked(
+    userId: UserId,
+    reading: NormalizedReading,
+  ): Promise<ProcessResult> {
     const { config } = this.deps;
-    const userId = this.userId;
 
     // Independent reads — fetch concurrently to keep the mutex hold time down
     // on slow storage (review P5).
     const [settings, places, prev] = await Promise.all([
-      this.getSettings(userId),
+      this.deps.settingsStore.getOrSeed(userId),
       this.deps.placesStore.list(userId),
       this.deps.presenceStore.getCurrent(userId),
     ]);
@@ -140,7 +131,7 @@ export class PresenceService {
 
     await this.deps.presenceStore.upsert(next);
 
-    const events = await this.emitTransitionEvents(prev, next);
+    const events = await this.emitTransitionEvents(userId, prev, next);
 
     // Raw history (opt-in) + retention pruning.
     if (settings.storeRawHistory) {
@@ -155,7 +146,7 @@ export class PresenceService {
     }
 
     // Fire reminders attached to a newly-entered place.
-    const triggeredReminders = await this.fireReminders(prev, next);
+    const triggeredReminders = await this.fireReminders(userId, prev, next);
 
     return {
       presence: toPresenceContext(next),
@@ -165,6 +156,7 @@ export class PresenceService {
   }
 
   private async emitTransitionEvents(
+    userId: UserId,
     prev: StoredPresence | null,
     next: StoredPresence,
   ): Promise<PresenceEvent[]> {
@@ -193,17 +185,21 @@ export class PresenceService {
     }
 
     // Single batched INSERT — up to 3 events per reading, inside the mutex (P1).
-    return this.deps.eventsStore.appendMany(pending);
+    return this.deps.eventsStore.appendMany(userId, pending);
   }
 
   private async fireReminders(
+    userId: UserId,
     prev: StoredPresence | null,
     next: StoredPresence,
   ): Promise<Reminder[]> {
     const nextPlace = next.currentPlaceName;
     if (!nextPlace || prev?.currentPlaceName === nextPlace) return [];
-    const reminders = await this.deps.remindersStore.listActiveForPlace(nextPlace);
-    await this.deps.remindersStore.markTriggeredBatch(reminders.map((r) => r.id));
+    const reminders = await this.deps.remindersStore.listActiveForPlace(userId, nextPlace);
+    await this.deps.remindersStore.markTriggeredBatch(
+      userId,
+      reminders.map((r) => r.id),
+    );
     return reminders;
   }
 
@@ -213,20 +209,41 @@ export class PresenceService {
    * called on read and/or by a periodic sweep. Serialized with ingest so the
    * stale flag does not race a concurrent upsert (F10/F13).
    */
-  async checkStale(): Promise<PresenceEvent | null> {
-    return this.mutex.run(this.userId, async () => {
-      const userId = this.userId;
+  async checkStale(userId: UserId): Promise<PresenceEvent | null> {
+    return this.mutex.run(userId, async () => {
       const current = await this.deps.presenceStore.getCurrent(userId);
       if (!current) return null;
       const stale = isStale(current.updatedAt, current.staleAfterSec, this.clock);
       if (!stale || current.staleEventFired) return null;
       await this.deps.presenceStore.setStaleEventFired(userId, true);
-      return this.deps.eventsStore.append({
+      return this.deps.eventsStore.append(userId, {
         type: "presence.became_stale",
         status: current.status,
         source: current.source,
       });
     });
+  }
+
+  /**
+   * Periodic stale sweep across every user (system handle only): one query for
+   * readings that have not fired `became_stale` yet, then `checkStale` per
+   * user. One user's failure is logged and does not stop the others. Returns
+   * the emitted events so the caller can nudge delivery.
+   */
+  async sweepStale(): Promise<PresenceEvent[]> {
+    const candidates = await this.deps.presenceStore.listUnfiredStale();
+    const due = candidates.filter((c) => isStale(c.updatedAt, c.staleAfterSec, this.clock));
+    const results = await Promise.allSettled(due.map((c) => this.checkStale(c.userId)));
+    const events: PresenceEvent[] = [];
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") {
+        if (r.value) events.push(r.value);
+      } else {
+        // eslint-disable-next-line no-console
+        console.error(`stale sweep failed for user ${due[i]!.userId}:`, r.reason);
+      }
+    });
+    return events;
   }
 
   /**
@@ -239,9 +256,8 @@ export class PresenceService {
    * Returns null when there is no current location to re-evaluate. Serialized
    * per user so it cannot race a concurrent ingest.
    */
-  async reevaluateCurrent(): Promise<ProcessResult | null> {
-    return this.mutex.run(this.userId, async () => {
-      const userId = this.userId;
+  async reevaluateCurrent(userId: UserId): Promise<ProcessResult | null> {
+    return this.mutex.run(userId, async () => {
       const prev = await this.deps.presenceStore.getCurrent(userId);
       if (!prev?.precise) return null;
 
@@ -279,8 +295,8 @@ export class PresenceService {
       };
 
       await this.deps.presenceStore.upsert(next);
-      const events = await this.emitTransitionEvents(prev, next);
-      const triggeredReminders = await this.fireReminders(prev, next);
+      const events = await this.emitTransitionEvents(userId, prev, next);
+      const triggeredReminders = await this.fireReminders(userId, prev, next);
       return { presence: toPresenceContext(next), events, triggeredReminders };
     });
   }
@@ -292,14 +308,12 @@ export class PresenceService {
    * tightened mode takes effect immediately. Serialized per user.
    */
   async changePrivacySettings(
+    userId: UserId,
     patch: Partial<PrivacySettings>,
   ): Promise<{ settings: PrivacySettings; event: PresenceEvent | null }> {
-    return this.mutex.run(this.userId, async () => {
-      const userId = this.userId;
-
-      const before = await this.getSettings(userId);
-      const after =
-        (await this.deps.settingsStore.update(userId, patch)) ?? before;
+    return this.mutex.run(userId, async () => {
+      const before = await this.deps.settingsStore.getOrSeed(userId);
+      const after = await this.deps.settingsStore.update(userId, patch);
 
       const modeChanged = before.defaultAgentAccess !== after.defaultAgentAccess;
 
@@ -314,7 +328,7 @@ export class PresenceService {
 
       let event: PresenceEvent | null = null;
       if (modeChanged) {
-        event = await this.deps.eventsStore.append({
+        event = await this.deps.eventsStore.append(userId, {
           type: "presence.privacy_changed",
           status: current?.status,
         });

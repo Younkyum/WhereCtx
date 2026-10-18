@@ -13,7 +13,7 @@ have a single, authoritative reference. It resolves the plan's "Open Questions"
 | 3 | Precise approval interactive vs static? | **Static policy only** in v0.1 (`ALLOW_PRECISE_TO_AGENT`, `PRECISE_REQUIRES_REASON`). Interactive approval is v0.2. |
 | 4 | Store raw history by default? | **No.** `STORE_RAW_HISTORY=false`. Presence-first philosophy. |
 | 5 | Reverse geocoding in v0.1? | **No.** Coarse location uses geohash only. Reverse geocoding is an optional v0.2 integration. |
-| 6 | Single or multi-user in v0.1? | **Single-user.** All presence is attributed to `USER_ID` (default `"default"`). See "Single-user scope" below. |
+| 6 | Single or multi-user in v0.1? | **Single-user** in v0.1; data is now owned per user, with the token's owner deciding whose data a request sees. See "Single-user scope" below. |
 | 7 | `near_home`/`home` separate or distance metadata? | **Separate statuses** (the plan enumerates both). `near_*` is derived from `radiusM * NEAR_RADIUS_MULTIPLIER`. |
 
 ## Config vs DB precedence (privacy / retention / stale)
@@ -21,10 +21,11 @@ have a single, authoritative reference. It resolves the plan's "Open Questions"
 Several values exist both as environment config **and** as persisted DB rows
 (`privacy_settings`, and per-reading fields on `presence`). The rule:
 
-> **Environment seeds the `privacy_settings` row on first boot. Thereafter the
-> persisted row is authoritative.** Dashboard/admin edits write the DB row and
-> must stick across restarts; env changes only affect a database that has not
-> yet been seeded.
+> **Environment seeds a user's `privacy_settings` row the first time it is
+> read** (at boot for `USER_ID`, on first request for any other user).
+> **Thereafter the persisted row is authoritative.** Dashboard/admin edits write
+> the DB row and must stick across restarts; env changes only affect users whose
+> row has not yet been seeded.
 
 Naming is aligned on `defaultAgentAccess` across the type (`PrivacySettings`),
 the DB column (`default_agent_access`), and the config field
@@ -37,13 +38,19 @@ re-age historical readings.
 
 ## Single-user scope (v0.1)
 
-v0.1 is explicitly single-user. `user_id` columns exist on the naturally
-user-owned entities (`presence`, `places`, `privacy_settings`,
-`location_history`) to make the v0.2 multi-user migration cheaper. Global/ops
-entities (`tokens`, `webhooks`, `reminders`, `presence_events`) are intentionally
-**not** user-scoped in v0.1. All store queries filter by `config.userId`. Multi-
-user (plan §15) will add the remaining `user_id` columns and per-token user
-binding in one migration.
+v0.1 shipped single-user. Migration 0004 rebuilt `tokens`, `webhooks`,
+`reminders`, and `presence_events` with a `user_id NOT NULL` column and no
+default, so every user-data table is now owned by a user. Pre-existing rows went
+to the owner of the single v0.1 `privacy_settings` row (the `USER_ID` that
+install booted with), or `'default'` if there was none. Every token belongs to a
+user, and every REST route and MCP tool works through a scope bound to the user
+of the presented token.
+
+`USER_ID` names the owner of the env-configured bootstrap tokens and of the
+settings row seeded at boot, and if that user has no admin token one is
+generated for it. Changing `USER_ID` after first boot does not move any data:
+existing rows and env tokens keep their original owner (boot warns when an env
+token belongs to someone else).
 
 ## Label fallback
 

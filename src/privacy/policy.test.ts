@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { PresenceContext, PrivacySettings, TokenScope } from "../types.js";
+import {
+  asUserId,
+  type PresenceContext,
+  type PrivacySettings,
+  type TokenScope,
+} from "../types.js";
 import {
   accessAtLeast,
   agentCoarseView,
@@ -14,7 +19,7 @@ const FIXED = new Date("2026-06-05T00:10:00.000Z");
 const clock = () => FIXED;
 
 const basePresence = (over: Partial<PresenceContext> = {}): PresenceContext => ({
-  userId: "default",
+  userId: asUserId("default"),
   status: "near_home",
   label: undefined,
   precise: { lat: 37.123456, lon: 127.123456, accuracyM: 21 },
@@ -33,6 +38,7 @@ const settings = (over: Partial<PrivacySettings> = {}): PrivacySettings => ({
   preciseRequiresReason: true,
   preciseRequiresApproval: false,
   hideHomeExactCoordinates: true,
+  protectHomePlace: true,
   retentionHours: 24,
   storeRawHistory: false,
   ...over,

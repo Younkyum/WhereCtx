@@ -3,16 +3,27 @@
  *
  * Secrets are never persisted — only their SHA-256 hash. Lookups hash the
  * presented secret and match the stored hash. Bootstrap seeding refuses weak or
- * placeholder tokens (plan review finding #6) and, if the store ends up empty,
- * generates a strong admin token and surfaces it once so a fresh self-host is
- * usable without shipping a known secret.
+ * placeholder tokens (plan review finding #6) and, if the bootstrap user ends up
+ * with no admin token, generates a strong one and surfaces it once so a fresh
+ * self-host is usable without shipping a known secret.
+ *
+ * Every token is owned by a user. `verify` is the one global lookup (a secret
+ * identifies its owner); listing, creation, and revocation are scoped to the
+ * caller's user so one tenant can never see or revoke another's credentials.
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { tokens } from "../db/schema.js";
-import { ROLE_SCOPES, type Token, type TokenRole, type TokenScope } from "../types.js";
+import {
+  ROLE_SCOPES,
+  asUserId,
+  type Token,
+  type TokenRole,
+  type TokenScope,
+  type UserId,
+} from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 import { scopesForRole } from "./scopes.js";
 
@@ -53,6 +64,7 @@ function newId(): string {
 
 interface TokenRow {
   id: string;
+  userId: string;
   name: string;
   role: TokenRole;
   scopes: TokenScope[];
@@ -64,6 +76,7 @@ interface TokenRow {
 function rowToToken(row: TokenRow): VerifiedToken {
   return {
     id: row.id,
+    userId: asUserId(row.userId),
     name: row.name,
     role: row.role,
     scopes: row.scopes,
@@ -114,20 +127,25 @@ export class TokenStore {
     return rowToToken(row);
   }
 
-  async list(): Promise<Token[]> {
-    const rows = (await this.db.select().from(tokens)) as TokenRow[];
+  async list(userId: UserId): Promise<Token[]> {
+    const rows = (await this.db
+      .select()
+      .from(tokens)
+      .where(eq(tokens.userId, userId))) as TokenRow[];
     return rows.map(rowToToken);
   }
 
-  async count(): Promise<number> {
+  async count(userId: UserId): Promise<number> {
     const rows = (await this.db
       .select({ c: sql<number>`count(*)` })
-      .from(tokens)) as Array<{ c: number }>;
+      .from(tokens)
+      .where(eq(tokens.userId, userId))) as Array<{ c: number }>;
     return rows[0]?.c ?? 0;
   }
 
   /** Create a token; returns the domain record and the one-time plaintext secret. */
   async create(
+    userId: UserId,
     name: string,
     role: TokenRole,
     scopes?: TokenScope[],
@@ -135,6 +153,7 @@ export class TokenStore {
     const secret = generateTokenSecret();
     const record: TokenRow = {
       id: newId(),
+      userId,
       name,
       role,
       scopes: scopes ?? scopesForRole(role),
@@ -146,21 +165,24 @@ export class TokenStore {
     return { token: rowToToken(record), secret };
   }
 
-  async revoke(id: string): Promise<boolean> {
-    const result = await this.db.delete(tokens).where(eq(tokens.id, id));
+  async revoke(userId: UserId, id: string): Promise<boolean> {
+    const result = await this.db
+      .delete(tokens)
+      .where(and(eq(tokens.userId, userId), eq(tokens.id, id)));
     return (result.rowsAffected ?? 0) > 0;
   }
 
   /**
-   * Seed bootstrap tokens from config. Idempotent: a secret already present
-   * (by hash) is skipped. Weak/placeholder secrets are refused with a warning.
-   * If the store is empty afterward, a strong admin token is generated.
+   * Seed bootstrap tokens from config, owned by `userId`. Idempotent: a secret
+   * already present (by hash) is skipped, with a warning when another user owns
+   * it, since USER_ID changed after that token was seeded and the token keeps
+   * its original owner. Weak/placeholder secrets are refused with a warning. If
+   * `userId` has no admin token afterward, a strong one is generated.
    */
-  async seedBootstrap(bootstrap: {
-    admin?: string;
-    device?: string;
-    agent?: string;
-  }): Promise<SeedResult> {
+  async seedBootstrap(
+    userId: UserId,
+    bootstrap: { admin?: string; device?: string; agent?: string },
+  ): Promise<SeedResult> {
     const result: SeedResult = { seeded: [], warnings: [] };
     const entries: Array<[TokenRole, string | undefined]> = [
       ["admin", bootstrap.admin],
@@ -178,14 +200,22 @@ export class TokenStore {
       }
       const hash = hashToken(secret);
       const existing = (await this.db
-        .select({ id: tokens.id })
+        .select({ userId: tokens.userId })
         .from(tokens)
         .where(eq(tokens.tokenHash, hash))
-        .limit(1)) as Array<{ id: string }>;
-      if (existing.length > 0) continue;
+        .limit(1)) as Array<{ userId: string }>;
+      if (existing[0]) {
+        if (existing[0].userId !== userId) {
+          result.warnings.push(
+            `${role.toUpperCase()}_TOKEN belongs to user "${existing[0].userId}", not USER_ID "${userId}"; it keeps acting as "${existing[0].userId}". Changing USER_ID does not move tokens or data.`,
+          );
+        }
+        continue;
+      }
 
       await this.db.insert(tokens).values({
         id: newId(),
+        userId,
         name: `${role} (bootstrap)`,
         role,
         scopes: [...ROLE_SCOPES[role]],
@@ -196,10 +226,16 @@ export class TokenStore {
       result.seeded.push(role);
     }
 
-    if ((await this.count()) === 0) {
+    const admins = (await this.db
+      .select({ id: tokens.id })
+      .from(tokens)
+      .where(and(eq(tokens.userId, userId), eq(tokens.role, "admin")))
+      .limit(1)) as Array<{ id: string }>;
+    if (admins.length === 0) {
       const secret = generateTokenSecret();
       await this.db.insert(tokens).values({
         id: newId(),
+        userId,
         name: "admin (auto-generated)",
         role: "admin",
         scopes: [...ROLE_SCOPES.admin],

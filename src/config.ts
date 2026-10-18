@@ -7,7 +7,7 @@
  * URLs work.
  */
 
-import type { PrivacyMode } from "./types.js";
+import { asUserId, type PrivacyMode, type UserId } from "./types.js";
 import { normalizeDatabaseUrl } from "./db/url.js";
 
 export { normalizeDatabaseUrl };
@@ -62,7 +62,11 @@ export interface Config {
   host: string;
   baseUrl: string;
   databaseUrl: string;
-  userId: string;
+  /**
+   * Owner of bootstrap tokens and the first-boot settings row. Read only by
+   * `createAppContext`; request paths take the user from their credential.
+   */
+  defaultUserId: UserId;
   bootstrapTokens: {
     admin?: string;
     device?: string;
@@ -113,7 +117,7 @@ export function loadConfig(): Config {
     host: envStr("HOST", "0.0.0.0"),
     baseUrl,
     databaseUrl: normalizeDatabaseUrl(envStr("DATABASE_URL", "file:./data/wherectx.db")),
-    userId: envStr("USER_ID", "default"),
+    defaultUserId: asUserId(envStr("USER_ID", "default")),
     bootstrapTokens: {
       admin: envOptional("ADMIN_TOKEN"),
       device: envOptional("DEVICE_TOKEN"),

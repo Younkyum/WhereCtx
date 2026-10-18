@@ -2,7 +2,11 @@
  * Drizzle ORM schema for the WhereCtx SQLite store (plan section 9.4 / 10).
  *
  * Design notes:
- * - `presence` holds exactly one current row per user (single-user in v0.1).
+ * - `presence` holds exactly one current row per user.
+ * - Every user-data table carries a NOT NULL `user_id` with no schema default:
+ *   a default would make `userId` optional in Drizzle's insert types, letting a
+ *   forgotten owner silently land rows in another tenant. Migration 0004 rebuilds
+ *   the pre-multi-user tables and backfills their owner in SQL.
  * - Tokens are stored as SHA-256 hashes; the raw secret is never persisted.
  * - Scopes / event lists are stored as JSON text columns for portability.
  * - Timestamps are ISO-8601 strings for round-trip fidelity with the API.
@@ -32,6 +36,7 @@ export const tokens = sqliteTable(
   "tokens",
   {
     id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
     name: text("name").notNull(),
     role: text("role").$type<TokenRole>().notNull(),
     scopes: text("scopes", { mode: "json" }).$type<TokenScope[]>().notNull(),
@@ -41,6 +46,7 @@ export const tokens = sqliteTable(
   },
   (t) => ({
     tokenHashIdx: uniqueIndex("tokens_token_hash_idx").on(t.tokenHash),
+    userIdx: index("tokens_user_idx").on(t.userId),
   }),
 );
 
@@ -108,6 +114,7 @@ export const presenceEvents = sqliteTable(
   "presence_events",
   {
     id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
     type: text("type").$type<PresenceEventType>().notNull(),
     placeName: text("place_name"),
     status: text("status"),
@@ -116,6 +123,13 @@ export const presenceEvents = sqliteTable(
   },
   (t) => ({
     createdAtIdx: index("presence_events_created_at_idx").on(t.createdAt),
+    // listRecent/listSince filter by user_id then order/range on the
+    // (created_at, id) keyset cursor.
+    userCreatedIdx: index("presence_events_user_created_idx").on(
+      t.userId,
+      t.createdAt,
+      t.id,
+    ),
   }),
 );
 
@@ -169,17 +183,24 @@ export const privacySettings = sqliteTable("privacy_settings", {
   updatedAt: text("updated_at").notNull(),
 });
 
-export const webhooks = sqliteTable("webhooks", {
-  id: text("id").primaryKey(),
-  url: text("url").notNull(),
-  // JSON array of PresenceEventType, or ["*"] for all events.
-  events: text("events", { mode: "json" }).$type<string[]>().notNull(),
-  secret: text("secret"),
-  active: integer("active", { mode: "boolean" }).notNull().default(true),
-  /** Delivery cursor: ISO createdAt of the last event delivered to this hook. */
-  cursor: text("cursor"),
-  createdAt: text("created_at").notNull(),
-});
+export const webhooks = sqliteTable(
+  "webhooks",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    url: text("url").notNull(),
+    // JSON array of PresenceEventType, or ["*"] for all events.
+    events: text("events", { mode: "json" }).$type<string[]>().notNull(),
+    secret: text("secret"),
+    active: integer("active", { mode: "boolean" }).notNull().default(true),
+    /** Delivery cursor: ISO createdAt of the last event delivered to this hook. */
+    cursor: text("cursor"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    userIdx: index("webhooks_user_idx").on(t.userId),
+  }),
+);
 
 /**
  * Dead-letter log for webhook events that could not be delivered after the
@@ -205,6 +226,7 @@ export const reminders = sqliteTable(
   "reminders",
   {
     id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
     placeName: text("place_name").notNull(),
     message: text("message").notNull(),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
@@ -212,7 +234,7 @@ export const reminders = sqliteTable(
     triggeredAt: text("triggered_at"),
   },
   (t) => ({
-    activeIdx: index("reminders_active_idx").on(t.active),
+    userActiveIdx: index("reminders_user_active_idx").on(t.userId, t.active),
   }),
 );
 

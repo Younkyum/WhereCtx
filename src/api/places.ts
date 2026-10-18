@@ -11,9 +11,9 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
-import type { AppContext } from "../app/context.js";
+import type { RouteContext } from "../app/context.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace } from "../types.js";
-import { bearerAuth, requireAnyScope, requireScope } from "./middleware.js";
+import { requireAnyScope, requireScope } from "./middleware.js";
 import { zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
 
@@ -30,15 +30,12 @@ const PlaceSchema = z.object({
   useCurrentLocation: z.boolean().optional(),
 });
 
-export function placesRouter(ctx: AppContext): Hono<AppEnv> {
+export function placesRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
-  app.use("*", bearerAuth(ctx));
-
-  const userId = ctx.config.userId;
 
   app.get("/", requireAnyScope("read_presence", "manage_places"), async (c) => {
-    const places = await ctx.placesStore.list(userId);
-    const isAdmin = c.get("token").scopes.includes("manage_places");
+    const places = await c.get("scope").places.list();
+    const isAdmin = c.get("principal").scopes.includes("manage_places");
     return c.json({ places: isAdmin ? places : places.map(sanitizePlace) });
   });
 
@@ -54,9 +51,10 @@ export function placesRouter(ctx: AppContext): Hono<AppEnv> {
       return c.json({ error: "invalid place", detail: zodMessages(parsed.error) }, 400);
     }
     const d = parsed.data;
+    const scope = c.get("scope");
     let { lat, lon } = d;
     if (d.useCurrentLocation) {
-      const current = await ctx.presenceStore.getCurrent(userId);
+      const current = await scope.presence.getCurrent();
       if (!current?.precise) {
         return c.json({ error: "no current location available to use" }, 400);
       }
@@ -66,7 +64,7 @@ export function placesRouter(ctx: AppContext): Hono<AppEnv> {
     if (lat === undefined || lon === undefined) {
       return c.json({ error: "lat/lon are required (or set useCurrentLocation)" }, 400);
     }
-    const place = await ctx.placesStore.upsert(userId, {
+    const place = await scope.places.upsert({
       name: d.name,
       label: d.label,
       type: d.type,
@@ -78,18 +76,19 @@ export function placesRouter(ctx: AppContext): Hono<AppEnv> {
     // current geofence verdict, so re-evaluate against the last known location
     // and dispatch any resulting events. Without this, registering "work" while
     // standing at work still shows "away" until the next reading arrives.
-    const result = await ctx.service.reevaluateCurrent();
+    const result = await scope.presence.reevaluateCurrent();
     if (result) await ctx.onEvents?.(result.events);
     return c.json({ place }, 201);
   });
 
   app.delete("/:name", requireScope("manage_places"), async (c) => {
     const name = c.req.param("name");
-    const deleted = await ctx.placesStore.deleteByName(userId, name);
+    const scope = c.get("scope");
+    const deleted = await scope.places.deleteByName(name);
     if (!deleted) return c.json({ error: "place not found" }, 404);
     // Removing a place can flip the current status (e.g. work -> away); keep the
     // displayed status consistent without waiting for the next reading.
-    const result = await ctx.service.reevaluateCurrent();
+    const result = await scope.presence.reevaluateCurrent();
     if (result) await ctx.onEvents?.(result.events);
     return c.json({ ok: true });
   });

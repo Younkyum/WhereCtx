@@ -8,13 +8,15 @@
 import { eq } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { presence } from "../db/schema.js";
-import type {
-  CoarsePlaceType,
-  IngestSource,
-  Motion,
-  PresenceContext,
-  PrivacyMode,
-  PresenceStatus,
+import {
+  asUserId,
+  type CoarsePlaceType,
+  type IngestSource,
+  type Motion,
+  type PresenceContext,
+  type PrivacyMode,
+  type PresenceStatus,
+  type UserId,
 } from "../types.js";
 
 /** Domain presence plus internal bookkeeping fields. */
@@ -53,7 +55,7 @@ interface PresenceRow {
 function rowToStored(row: PresenceRow): StoredPresence {
   const hasPrecise = row.preciseLat !== null && row.preciseLon !== null;
   return {
-    userId: row.userId,
+    userId: asUserId(row.userId),
     status: row.status,
     label: row.label ?? undefined,
     precise: hasPrecise
@@ -128,7 +130,29 @@ export function toPresenceContext(stored: StoredPresence): PresenceContext {
 export class PresenceStore {
   constructor(private readonly db: Database) {}
 
-  async getCurrent(userId: string): Promise<StoredPresence | null> {
+  /**
+   * Readings across all users whose `became_stale` has not fired yet, for the
+   * periodic sweep to age-check. Cross-user: system handle only.
+   */
+  async listUnfiredStale(): Promise<
+    Array<{ userId: UserId; updatedAt: string; staleAfterSec: number }>
+  > {
+    const rows = (await this.db
+      .select({
+        userId: presence.userId,
+        updatedAt: presence.updatedAt,
+        staleAfterSec: presence.staleAfterSec,
+      })
+      .from(presence)
+      .where(eq(presence.staleEventFired, false))) as Array<{
+      userId: string;
+      updatedAt: string;
+      staleAfterSec: number;
+    }>;
+    return rows.map((r) => ({ ...r, userId: asUserId(r.userId) }));
+  }
+
+  async getCurrent(userId: UserId): Promise<StoredPresence | null> {
     const rows = (await this.db
       .select()
       .from(presence)
@@ -148,7 +172,7 @@ export class PresenceStore {
   }
 
   /** Update only the stale-event flag (used when marking a reading stale). */
-  async setStaleEventFired(userId: string, fired: boolean): Promise<void> {
+  async setStaleEventFired(userId: UserId, fired: boolean): Promise<void> {
     await this.db
       .update(presence)
       .set({ staleEventFired: fired })
@@ -160,7 +184,7 @@ export class PresenceStore {
    * changes settings) without disturbing the reading or its stale flag.
    */
   async setPrivacy(
-    userId: string,
+    userId: UserId,
     mode: PrivacyMode,
     allowPreciseToAgents: boolean,
   ): Promise<void> {

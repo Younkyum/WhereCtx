@@ -9,6 +9,8 @@ import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
 import { AuthFailureLimiter, authFailureGuard } from "../api/rateLimit.js";
+import { bearerAuth } from "../api/middleware.js";
+import type { AppEnv } from "../api/types.js";
 import { dashboardRouter } from "../dashboard/router.js";
 import { eventsRouter } from "../api/events.js";
 import { ingestRouter } from "../api/ingest.js";
@@ -80,13 +82,20 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
 
   app.route("/dashboard", dashboardRouter());
 
-  app.route("/v1/ingest", ingestRouter(ctx));
-  app.route("/v1/presence", presenceRouter(ctx));
-  app.route("/v1/places", placesRouter(ctx));
-  app.route("/v1/events", eventsRouter(ctx));
-  app.route("/v1/privacy", privacyRouter(ctx));
-  app.route("/v1/webhooks", webhooksRouter(ctx));
-  app.route("/v1/tokens", tokensRouter(ctx));
+  // Auth is mounted here, the one REST place holding the full context; routers
+  // get only the user scope bearerAuth attaches. Device clients
+  // (Shortcut/OwnTracks) may pass the token via ?token= on ingest only.
+  const mount = (path: string, router: Hono<AppEnv>, auth = bearerAuth(ctx)): void => {
+    app.use(`${path}/*`, auth);
+    app.route(path, router);
+  };
+  mount("/v1/ingest", ingestRouter(ctx), bearerAuth(ctx, { allowQueryToken: true }));
+  mount("/v1/presence", presenceRouter(ctx));
+  mount("/v1/places", placesRouter(ctx));
+  mount("/v1/events", eventsRouter());
+  mount("/v1/privacy", privacyRouter(ctx));
+  mount("/v1/webhooks", webhooksRouter(ctx));
+  mount("/v1/tokens", tokensRouter());
 
   app.notFound((c) => c.json({ error: "not found" }, 404));
   app.onError((err, c) => {

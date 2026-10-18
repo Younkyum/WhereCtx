@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   if (bootstrap.seed.generatedAdminSecret) {
     console.log(
       "\n──────────────────────────────────────────────────────────────\n" +
-        "  No usable tokens were configured, so an ADMIN token was generated.\n" +
+        `  USER_ID "${config.defaultUserId}" had no admin token, so one was generated.\n` +
         "  Save it now — it will not be shown again:\n\n" +
         `    ${bootstrap.seed.generatedAdminSecret}\n` +
         "──────────────────────────────────────────────────────────────\n",
@@ -41,11 +41,11 @@ async function main(): Promise<void> {
   // Webhook secret hygiene: encrypt any legacy plaintext secrets once a key is
   // configured, and warn when secrets are stored without one (review H2).
   if (config.webhooks.encryptionKey) {
-    const migrated = await ctx.webhooksStore.encryptLegacySecrets();
+    const migrated = await ctx.system.webhooks.encryptLegacySecrets();
     if (migrated > 0) {
       console.log(`✓ encrypted ${migrated} legacy webhook secret(s) at rest`);
     }
-  } else if (await ctx.webhooksStore.hasPlaintextSecrets()) {
+  } else if (await ctx.system.webhooks.hasPlaintextSecrets()) {
     console.warn(
       "⚠️  webhook signing secrets are stored as plaintext; set WEBHOOK_ENCRYPTION_KEY to encrypt them at rest",
     );
@@ -53,20 +53,20 @@ async function main(): Promise<void> {
 
   // Webhook delivery: nudge on every emitted event, plus a periodic tick.
   const dispatcher = new WebhookDispatcher({
-    webhooksStore: ctx.webhooksStore,
-    eventsStore: ctx.eventsStore,
+    webhooksStore: ctx.system.webhooks,
+    eventsStore: ctx.system.events,
     clock: ctx.clock,
     allowPrivateTargets: config.webhooks.allowPrivateTargets,
   });
   ctx.onEvents = () => dispatcher.nudge();
   dispatcher.start(WEBHOOK_TICK_MS);
 
-  // Periodic stale sweep (fires became_stale even with no reads).
+  // Periodic stale sweep: fires became_stale even with no reads.
   const staleSweep = setInterval(() => {
-    void ctx.service
-      .checkStale()
-      .then((ev) => {
-        if (ev) dispatcher.nudge();
+    ctx.system.service
+      .sweepStale()
+      .then((events) => {
+        if (events.length > 0) dispatcher.nudge();
       })
       .catch((e) => console.error("stale sweep error:", e));
   }, STALE_SWEEP_MS);
@@ -76,8 +76,8 @@ async function main(): Promise<void> {
   // review P3/L5). Runs at boot and then every few hours.
   const pruneOnce = (): void => {
     void Promise.all([
-      ctx.eventsStore.prune(config.events.retentionHours),
-      ctx.webhooksStore.pruneDeadLetters(config.events.retentionHours),
+      ctx.system.events.prune(config.events.retentionHours),
+      ctx.system.webhooks.pruneDeadLetters(config.events.retentionHours),
     ]).catch((e) => console.error("prune sweep error:", e));
   };
   pruneOnce();

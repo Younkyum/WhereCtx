@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { and, desc, eq, lt } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { locationHistory } from "../db/schema.js";
-import type { IngestSource } from "../types.js";
+import type { IngestSource, UserId } from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
 export interface HistoryPoint {
@@ -45,7 +45,7 @@ export class HistoryStore {
     private readonly clock: Clock = systemClock,
   ) {}
 
-  async append(userId: string, point: HistoryPoint): Promise<void> {
+  async append(userId: UserId, point: HistoryPoint): Promise<void> {
     await this.db.insert(locationHistory).values({
       id: randomBytes(16).toString("hex"),
       userId,
@@ -57,7 +57,7 @@ export class HistoryStore {
     });
   }
 
-  async listRecent(userId: string, limit = 100): Promise<HistoryPoint[]> {
+  async listRecent(userId: UserId, limit = 100): Promise<HistoryPoint[]> {
     const capped = Math.max(1, Math.min(limit, 1000));
     const rows = (await this.db
       .select()
@@ -69,7 +69,7 @@ export class HistoryStore {
   }
 
   /** Delete history older than `retentionHours` for a user. Returns rows removed. */
-  async prune(userId: string, retentionHours: number): Promise<number> {
+  async prune(userId: UserId, retentionHours: number): Promise<number> {
     const cutoff = new Date(
       this.clock().getTime() - retentionHours * 3600 * 1000,
     ).toISOString();

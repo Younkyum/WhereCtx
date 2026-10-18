@@ -9,32 +9,29 @@
  */
 
 import { Hono } from "hono";
-import type { AppContext } from "../app/context.js";
+import type { RouteContext } from "../app/context.js";
 import {
   agentCoarseView,
   authorizePrecise,
   buildPreciseView,
 } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
-import { bearerAuth, requireScope } from "./middleware.js";
+import { requireScope } from "./middleware.js";
 import { parseLimit } from "./validation.js";
 import type { AppEnv } from "./types.js";
 
-export function presenceRouter(ctx: AppContext): Hono<AppEnv> {
+export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
-  app.use("*", bearerAuth(ctx));
-
-  const userId = ctx.config.userId;
 
   // Current coarse presence.
   app.get("/", requireScope("read_presence"), async (c) => {
-    const staleEvent = await ctx.service.checkStale();
+    const scope = c.get("scope");
+    const staleEvent = await scope.presence.checkStale();
     if (staleEvent) await ctx.onEvents?.([staleEvent]);
 
-    const stored = await ctx.presenceStore.getCurrent(userId);
+    const stored = await scope.presence.getCurrent();
     if (!stored) return c.json({ error: "no presence recorded yet" }, 404);
-    const settings = await ctx.settings.get(userId);
-    if (!settings) return c.json({ error: "privacy settings not initialized" }, 500);
+    const settings = await scope.settings.getOrSeed();
 
     const view = agentCoarseView(toPresenceContext(stored), settings, ctx.clock);
     if (!view) {
@@ -45,19 +42,20 @@ export function presenceRouter(ctx: AppContext): Hono<AppEnv> {
 
   // Precise location, gated by the privacy engine.
   app.get("/precise", requireScope("read_precise_location"), async (c) => {
+    const { scopes } = c.get("principal");
+    const scope = c.get("scope");
     const rawReason = c.req.query("reason");
     if (rawReason !== undefined && rawReason.length > 256) {
       return c.json({ error: "reason too long (max 256 chars)" }, 400);
     }
     const reason = rawReason;
-    const stored = await ctx.presenceStore.getCurrent(userId);
+    const stored = await scope.presence.getCurrent();
     if (!stored) return c.json({ error: "no presence recorded yet" }, 404);
-    const settings = await ctx.settings.get(userId);
-    if (!settings) return c.json({ error: "privacy settings not initialized" }, 500);
+    const settings = await scope.settings.getOrSeed();
 
     const presence = toPresenceContext(stored);
     const auth = authorizePrecise({
-      scopes: c.get("token").scopes,
+      scopes,
       settings,
       presence,
       reason,
@@ -73,7 +71,7 @@ export function presenceRouter(ctx: AppContext): Hono<AppEnv> {
   // Raw history (admin only; empty unless STORE_RAW_HISTORY is enabled).
   app.get("/history", requireScope("manage_privacy"), async (c) => {
     const limit = parseLimit(c.req.query("limit"), 100, 1000);
-    const points = await ctx.historyStore.listRecent(userId, limit);
+    const points = await c.get("scope").history.listRecent(limit);
     return c.json({ points });
   });
 

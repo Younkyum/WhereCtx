@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 import type { WhereCtxConfig } from "../config.js";
+import { asUserId } from "../types.js";
 import { createAppContext, type AppContext } from "../app/context.js";
 import { buildApp } from "../app/server.js";
 
@@ -13,7 +14,7 @@ const config: WhereCtxConfig = {
   host: "127.0.0.1",
   baseUrl: "http://localhost:8787",
   databaseUrl: ":memory:",
-  userId: "default",
+  defaultUserId: asUserId("default"),
   bootstrapTokens: { admin: ADMIN, device: DEVICE, agent: AGENT },
   privacy: {
     defaultAgentAccess: "coarse",
@@ -316,10 +317,14 @@ describe("events privacy", () => {
     expect(adminEvents.events.some((e) => e.placeName === "home")).toBe(true);
   });
 
-  it("fails closed on /events when privacy settings are missing", async () => {
+  it("re-seeds missing privacy settings from config instead of failing", async () => {
     await ctx.handle.client.execute("DELETE FROM privacy_settings");
     const r = await req("/v1/events", { token: AGENT });
-    expect(r.status).toBe(500);
+    expect(r.status).toBe(200);
+    const settings = (await (await req("/v1/privacy", { token: ADMIN })).json()) as {
+      settings: { defaultAgentAccess: string };
+    };
+    expect(settings.settings.defaultAgentAccess).toBe(config.privacy.defaultAgentAccess);
   });
 });
 

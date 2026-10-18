@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 import type { WhereCtxConfig } from "../config.js";
+import { asUserId } from "../types.js";
 import { createAppContext, type AppContext } from "../app/context.js";
 import { mcpNodeHandler } from "./http.js";
 
@@ -14,7 +15,7 @@ const config: WhereCtxConfig = {
   host: "127.0.0.1",
   baseUrl: "http://localhost:8787",
   databaseUrl: ":memory:",
-  userId: "default",
+  defaultUserId: asUserId("default"),
   bootstrapTokens: { admin: ADMIN, device: DEVICE, agent: AGENT },
   privacy: {
     defaultAgentAccess: "coarse",

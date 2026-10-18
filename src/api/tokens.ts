@@ -7,23 +7,24 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
-import type { AppContext } from "../app/context.js";
-import { bearerAuth, requireScope } from "./middleware.js";
+import { requireScope } from "./middleware.js";
 import { zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
+
+/** Per-user cap so one admin credential cannot mint tokens without bound. */
+const MAX_TOKENS = 50;
 
 const CreateSchema = z.object({
   name: z.string().min(1).max(64),
   role: z.enum(["device", "agent", "admin"]),
 });
 
-export function tokensRouter(ctx: AppContext): Hono<AppEnv> {
+export function tokensRouter(): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
-  app.use("*", bearerAuth(ctx));
   app.use("*", requireScope("manage_tokens"));
 
   app.get("/", async (c) => {
-    const tokens = await ctx.tokens.list();
+    const tokens = await c.get("scope").tokens.list();
     return c.json({ tokens });
   });
 
@@ -38,13 +39,17 @@ export function tokensRouter(ctx: AppContext): Hono<AppEnv> {
     if (!parsed.success) {
       return c.json({ error: "invalid token request", detail: zodMessages(parsed.error) }, 400);
     }
-    const { token, secret } = await ctx.tokens.create(parsed.data.name, parsed.data.role);
+    const scope = c.get("scope");
+    if ((await scope.tokens.count()) >= MAX_TOKENS) {
+      return c.json({ error: `token limit reached (${MAX_TOKENS})` }, 409);
+    }
+    const { token, secret } = await scope.tokens.create(parsed.data.name, parsed.data.role);
     // The secret is shown exactly once.
     return c.json({ token, secret }, 201);
   });
 
   app.delete("/:id", async (c) => {
-    const revoked = await ctx.tokens.revoke(c.req.param("id"));
+    const revoked = await c.get("scope").tokens.revoke(c.req.param("id"));
     if (!revoked) return c.json({ error: "token not found" }, 404);
     return c.json({ ok: true });
   });

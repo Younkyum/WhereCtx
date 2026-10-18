@@ -17,6 +17,7 @@
 
 import type { Context, MiddlewareHandler } from "hono";
 import type { AppContext } from "../app/context.js";
+import { resolvePrincipal } from "../auth/principal.js";
 import type { TokenScope } from "../types.js";
 import type { AppEnv } from "./types.js";
 
@@ -40,7 +41,10 @@ export interface BearerAuthOptions {
   allowQueryToken?: boolean;
 }
 
-/** Verify the bearer token and attach it to the context, or 401. */
+/**
+ * Verify the bearer token and attach its principal and user scope, or 401.
+ * Mounted by `buildApp`, the only REST code that holds the full context.
+ */
 export function bearerAuth(
   ctx: AppContext,
   options: BearerAuthOptions = {},
@@ -48,20 +52,20 @@ export function bearerAuth(
   const allowQueryToken = options.allowQueryToken ?? false;
   return async (c, next) => {
     const secret = extractSecret(c, allowQueryToken);
-    const token = await ctx.tokens.verify(secret);
-    if (!token) {
+    const principal = await resolvePrincipal(ctx, secret);
+    if (!principal) {
       return c.json({ error: "unauthorized" }, 401);
     }
-    c.set("token", token);
+    c.set("principal", principal);
+    c.set("scope", ctx.forUser(principal.userId));
     await next();
   };
 }
 
-/** Require that the authenticated token carries a specific scope, or 403. */
+/** Require that the authenticated principal carries a specific scope, or 403. */
 export function requireScope(scope: TokenScope): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    const token = c.get("token");
-    if (!token.scopes.includes(scope)) {
+    if (!c.get("principal").scopes.includes(scope)) {
       return c.json(
         { error: "forbidden", detail: `requires ${scope} scope` },
         403,
@@ -74,8 +78,8 @@ export function requireScope(scope: TokenScope): MiddlewareHandler<AppEnv> {
 /** Require at least one of the given scopes (e.g. read or admin), or 403. */
 export function requireAnyScope(...scopes: TokenScope[]): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
-    const token = c.get("token");
-    if (!scopes.some((s) => token.scopes.includes(s))) {
+    const { scopes: granted } = c.get("principal");
+    if (!scopes.some((s) => granted.includes(s))) {
       return c.json(
         { error: "forbidden", detail: `requires one of: ${scopes.join(", ")}` },
         403,

@@ -6,6 +6,18 @@
  * downstream component (privacy engine, geofence, store, MCP, REST) consumes.
  */
 
+/**
+ * Owner of every row of user data. Branded so a raw string (a place name, a
+ * token id) can never be passed where a tenant key is expected; construct one
+ * only at a boundary (config, DB row, verified credential) via `asUserId`.
+ */
+export type UserId = string & { readonly __brand: "UserId" };
+
+export function asUserId(raw: string): UserId {
+  if (raw.length === 0) throw new Error("userId must be a non-empty string");
+  return raw as UserId;
+}
+
 export type PresenceStatus =
   | "unknown"
   | "home"
@@ -72,7 +84,7 @@ export interface PresencePrivacy {
  * before it ever reaches an agent.
  */
 export interface PresenceContext {
-  userId: string;
+  userId: UserId;
   status: PresenceStatus;
   label?: string;
   precise?: PreciseLocation;
@@ -140,6 +152,7 @@ export type TokenScope =
 
 export interface Token {
   id: string;
+  userId: UserId;
   name: string;
   role: TokenRole;
   scopes: TokenScope[];

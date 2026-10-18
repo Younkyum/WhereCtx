@@ -11,6 +11,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AppContext } from "../app/context.js";
 import { nodeClientKey, type AuthFailureLimiter } from "../api/rateLimit.js";
+import { resolvePrincipal } from "../auth/principal.js";
 import { buildMcpServer } from "./server.js";
 
 // Match the REST body cap (app/server.ts bodyLimit) for consistency.
@@ -71,12 +72,12 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: AuthFailureLimiter
     }
 
     // Authenticate: agent/admin tokens with read_presence.
-    const token = await ctx.tokens.verify(bearerSecret(req));
-    if (!token) {
+    const principal = await resolvePrincipal(ctx, bearerSecret(req));
+    if (!principal) {
       authLimiter?.recordFailure(clientKey);
       return sendJson(res, 401, { error: "unauthorized" });
     }
-    if (!token.scopes.includes("read_presence")) {
+    if (!principal.scopes.includes("read_presence")) {
       return sendJson(res, 403, { error: "forbidden", detail: "requires read_presence scope" });
     }
 
@@ -90,7 +91,7 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: AuthFailureLimiter
       }
     }
 
-    const server = buildMcpServer(ctx, token);
+    const server = buildMcpServer(ctx.forUser(principal.userId), principal, ctx);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined, // stateless
       enableJsonResponse: true,
