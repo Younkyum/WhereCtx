@@ -568,6 +568,8 @@ export const EN = {
   "maps.flagDesc.geoEnabled": "Off: nothing about your location goes to Kakao or Naver, and no neighbourhood is kept.",
   "maps.flag.skipProviderNearHome": "Send nothing while I am at or near home",
   "maps.flagDesc.skipProviderNearHome": "Nothing goes out while you are within reach of your home place, and agents asking for a route are told you are at or near home. Your own drive-time check starts at your home place instead of your phone's position.",
+  "maps.flag.areaOnHome": "Show my neighbourhood on Home",
+  "maps.flagDesc.areaOnHome": "Only you see it there. With this, agents and shares all off, no neighbourhood is looked up at all.",
   "maps.flag.areaToAgents": "Agents may see my neighbourhood",
   "maps.flagDesc.areaToAgents": "Adds the district and dong (\"분당구 삼평동\") to what agents see. No street or house number.",
   "maps.flag.etaToAgents": "Agents may ask for routes from where I am",

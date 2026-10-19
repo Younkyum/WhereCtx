@@ -570,6 +570,8 @@ export const KO: Record<I18nKey, string> = {
   "maps.flagDesc.geoEnabled": "끄면 내 위치에 관한 어떤 정보도 카카오나 네이버로 가지 않고, 동네 이름도 남기지 않아요.",
   "maps.flag.skipProviderNearHome": "집이나 집 근처에서는 아무것도 보내지 않기",
   "maps.flagDesc.skipProviderNearHome": "등록한 집 근처에 있는 동안에는 아무것도 보내지 않고, 경로를 묻는 에이전트에게는 집이나 집 근처라고만 알려요. 내가 직접 확인하는 집까지 시간은 휴대폰 위치가 아니라 집 장소에서 출발해요.",
+  "maps.flag.areaOnHome": "홈에 내 동네 보이기",
+  "maps.flagDesc.areaOnHome": "나만 볼 수 있어요. 이것과 에이전트, 공유 설정이 모두 꺼져 있으면 동네를 아예 조회하지 않아요.",
   "maps.flag.areaToAgents": "에이전트에게 내 동네 보여주기",
   "maps.flagDesc.areaToAgents": "에이전트가 보는 정보에 구와 동(\"분당구 삼평동\")을 더해요. 도로명이나 번지는 넣지 않아요.",
   "maps.flag.etaToAgents": "에이전트가 내 위치에서 출발하는 경로 묻기 허용",

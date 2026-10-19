@@ -85,7 +85,7 @@ export interface Presence {
 export { GEO_PROVIDERS, type GeoProviderName } from "../../src/geo/types";
 
 /** The maps switches, each a privacy setting (PUT /v1/privacy). */
-export const GEO_FLAGS = ["geoEnabled", "skipProviderNearHome", "areaToAgents", "etaToAgents", "areaToPeople"] as const;
+export const GEO_FLAGS = ["geoEnabled", "skipProviderNearHome", "areaOnHome", "areaToAgents", "etaToAgents", "areaToPeople"] as const;
 export type GeoFlag = (typeof GEO_FLAGS)[number];
 
 export type PrivacySettings = Record<PrivacyFlag, boolean> &

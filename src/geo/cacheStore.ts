@@ -10,12 +10,15 @@ import type { Database } from "../db/index.js";
 import { geoCache } from "../db/schema.js";
 import type { UserId } from "../types.js";
 import { nowIso, systemClock, type Clock } from "../util/time.js";
-import type { LatLon, ReverseResult } from "./types.js";
+import { roundPoint, type LatLon, type ReverseResult } from "./types.js";
 
 export const GEO_CACHE_TTL_MS = 7 * 86_400_000;
 
-/** The cache key of a rounded point. */
-export const cellOf = (point: LatLon): string => `${point.lat},${point.lon}`;
+/** The cache key of a point: the rounded cell a provider would be sent. */
+export const cellOf = (point: LatLon): string => {
+  const cell = roundPoint(point);
+  return `${cell.lat},${cell.lon}`;
+};
 
 export type CachedReverse = { hit: true; result: ReverseResult | null } | { hit: false };
 

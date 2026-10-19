@@ -289,6 +289,16 @@ export class SharesStore {
     }));
   }
 
+  /** Whether any of `owner`'s shares shows their neighbourhood. */
+  async showsAreaToAnyone(owner: UserId): Promise<boolean> {
+    const rows = await this.db
+      .select({ viewer: locationShares.viewerUserId })
+      .from(locationShares)
+      .where(and(eq(locationShares.ownerUserId, owner), eq(locationShares.showArea, true)))
+      .limit(1);
+    return rows.length > 0;
+  }
+
   /**
    * The shares `viewer` may see now (one owner's, when given), each with the
    * owner's current presence and sharing settings, in one query: the share

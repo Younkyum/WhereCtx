@@ -12,15 +12,14 @@
 
 import type { WhereCtxConfig } from "../config.js";
 import type { AccessLogStore } from "../activity/accessLogStore.js";
-import { haversineMeters } from "../geofence/distance.js";
 import { authorizePrecise, type PresenceViews } from "../privacy/policy.js";
 import type { SettingsStore } from "../privacy/settingsStore.js";
 import type { PlacesStore } from "../store/placesStore.js";
 import type { PresenceStore } from "../store/presenceStore.js";
+import type { SharesStore } from "../sharing/sharesStore.js";
 import type { Freshness, Place, UserId } from "../types.js";
-import { log } from "../util/log.js";
-import { KeyedMutex } from "../util/mutex.js";
 import { systemClock, type Clock } from "../util/time.js";
+import { AreaRefresher, timerSchedule, type AreaUpdate, type Schedule } from "./area.js";
 import type { GeoCacheStore } from "./cacheStore.js";
 import type { GeoCredentialsStore, StoredGeoCredential } from "./credentialsStore.js";
 import { FakeGeoProvider } from "./fake.js";
@@ -28,20 +27,15 @@ import { GeoKeys, type CallResult, type GeoCaller, type GeoStatus, type KeyTestO
 import { agentNumbers, agentRoads, freshEnoughToRoute, nearHomePlace, ownerNumbers } from "./eta.js";
 import { mainRoads } from "./roads.js";
 import {
-  roundPoint,
   type GeocodeCandidate,
   type GeoErrorKind,
   type GeoProviderName,
   type LatLon,
-  type ReverseResult,
   type RouteAvoid,
   type RouteResult,
 } from "./types.js";
 
-/** Refresh the area at most this often per person... */
-export const AREA_REFRESH_MIN_MS = 120_000;
-/** ...and only after moving this far from where it was last looked up. */
-export const AREA_REFRESH_MOVE_M = 200;
+export { AREA_REFRESH_MIN_MS, AREA_REFRESH_MOVE_M, type AreaUpdate } from "./area.js";
 export { GEO_USER_CALLS_PER_MINUTE, KEY_TEST_POINT, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
 
 export interface EtaRequest {
@@ -113,8 +107,6 @@ export type SearchOutcome =
   | { kind: "unconfigured" }
   | { kind: "failed"; error: GeoErrorKind; message: string };
 
-/** The area a reading resolved to, or null to clear it. `forPoint`: the reading it was looked up for. */
-export type AreaUpdate = { region: ReverseResult | null; forPoint?: LatLon };
 
 export interface GeoServiceDeps {
   config: WhereCtxConfig;
@@ -125,8 +117,11 @@ export interface GeoServiceDeps {
   presence: PresenceStore;
   places: PlacesStore;
   accessLog: AccessLogStore;
+  shares: Pick<SharesStore, "showsAreaToAnyone">;
   /** Writes presence city/area under the presence mutex (PresenceService.setArea). */
   setArea: (userId: UserId, update: AreaUpdate) => Promise<void>;
+  /** Runs the trailing area lookup; a real timer unless a test replaces it. */
+  schedule?: Schedule;
   clock?: Clock;
   /** Replaces the network for the real adapters (tests). */
   fetch?: typeof fetch;
@@ -147,10 +142,7 @@ export function deepLinks(label: string, point: LatLon): EtaAnswer["deepLinks"] 
 export class GeoService {
   private readonly clock: Clock;
   private readonly keys: GeoKeys;
-  private readonly areaMutex = new KeyedMutex();
-  /** Where and when each person's area was last looked up at a provider. */
-  private readonly lastLookup = new Map<UserId, { at: number; point: LatLon }>();
-  private readonly inFlight = new Set<Promise<void>>();
+  private readonly area: AreaRefresher;
   /** Answers every call when GEO_PROVIDER_FAKE is on. */
   readonly fake?: FakeGeoProvider;
 
@@ -164,6 +156,18 @@ export class GeoService {
       clock: this.clock,
       fake: this.fake,
       fetch: deps.fetch,
+    });
+    this.area = new AreaRefresher({
+      settings: deps.settings,
+      presence: deps.presence,
+      places: deps.places,
+      shares: deps.shares,
+      cache: deps.cache,
+      keys: this.keys,
+      nearRadiusMultiplier: deps.config.geofence.nearRadiusMultiplier,
+      setArea: deps.setArea,
+      clock: this.clock,
+      schedule: deps.schedule ?? timerSchedule,
     });
   }
 
@@ -308,70 +312,21 @@ export class GeoService {
     };
   }
 
-  /** Whether the point is at or near any of the person's home places, by distance, whatever the stored status says. */
-  private async nearHome(userId: UserId, point: LatLon): Promise<boolean> {
-    return nearHomePlace(point, await this.deps.places.list(userId), this.deps.config.geofence.nearRadiusMultiplier) !== null;
-  }
-
   // ---- the background area ----
 
-  /**
-   * Bring my area up to date with my current reading, in the background.
-   * Returns at once; `settled()` waits for every lookup still running.
-   */
+  /** Bring my area up to date with my current reading, in the background (area.ts). */
   refreshArea(userId: UserId): void {
-    const run = this.areaMutex.run(userId, () => this.refreshAreaLocked(userId)).catch((e: unknown) => {
-      log.error("area lookup failed", e);
-    });
-    this.inFlight.add(run);
-    void run.finally(() => this.inFlight.delete(run));
+    this.area.refresh(userId);
   }
 
   /** Wait for every background lookup started so far (tests, shutdown). */
-  async settled(): Promise<void> {
-    while (this.inFlight.size > 0) await Promise.all([...this.inFlight]);
+  settled(): Promise<void> {
+    return this.area.settled();
   }
 
-  private async refreshAreaLocked(userId: UserId): Promise<void> {
-    const [settings, presence] = await Promise.all([
-      this.deps.settings.getOrSeed(userId),
-      this.deps.presence.getCurrent(userId),
-    ]);
-    const hasArea = presence?.coarse?.area !== undefined || presence?.coarse?.city !== undefined;
-    /** Drop the area; `forget` also lifts the throttle, which a failed call keeps so errors cannot loop. */
-    const clear = async (forget = true) => {
-      if (forget) this.lastLookup.delete(userId);
-      if (hasArea) await this.deps.setArea(userId, { region: null });
-    };
-    if (!presence?.precise || !settings.geoEnabled) return clear();
-    // Near home nothing is sent; the status already says home.
-    if (settings.skipProviderNearHome && (await this.nearHome(userId, presence.precise))) return clear();
-
-    const here = presence.precise;
-    const last = this.lastLookup.get(userId);
-    const moved = !last || haversineMeters(last.point.lat, last.point.lon, here.lat, here.lon) > AREA_REFRESH_MOVE_M;
-    if (hasArea && !moved) return;
-
-    // From here on the area on record is for somewhere else: replace it or drop it.
-    const resolved = await this.keys.resolve(userId, settings);
-    if (!resolved) return clear();
-    const cell = roundPoint(here);
-    const cached = await this.deps.cache.get(userId, resolved.name, cell);
-    if (cached.hit) {
-      await this.deps.setArea(userId, { region: cached.result, forPoint: here });
-      return;
-    }
-    const now = this.clock().getTime();
-    if (last && now - last.at < AREA_REFRESH_MIN_MS) return;
-    this.lastLookup.set(userId, { at: now, point: here });
-    const looked = await this.keys.call(userId, { kind: "system" }, resolved, "geo.reverse", (p) => p.reverse(here));
-    if (looked.kind !== "ok") {
-      if (looked.kind === "failed") log.warn("area lookup failed", { provider: resolved.name, kind: looked.error.kind });
-      return clear(false);
-    }
-    const region = looked.value;
-    await this.deps.cache.put(userId, resolved.name, cell, region);
-    await this.deps.setArea(userId, { region, forPoint: here });
+  /** Cancel trailing lookups and wait for running ones (shutdown). */
+  close(): Promise<void> {
+    return this.area.close();
   }
 
   prune(): Promise<number> {

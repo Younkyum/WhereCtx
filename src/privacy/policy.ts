@@ -186,7 +186,7 @@ export interface PresenceViews {
    * policy mode, not the per-reading snapshot (F8). No raw GPS, no geohash.
    */
   agentCoarse(presence: PresenceContext, settings: PrivacySettings): CoarsePresenceView | null;
-  /** What the owner sees of themself: the area whenever maps are on. */
+  /** What the owner sees of themself: the area while maps and areaOnHome are on. */
   ownerCoarse(presence: PresenceContext, settings: PrivacySettings): CoarsePresenceView;
   /**
    * What a viewer sees of one person who shares with them. Human sharing does
@@ -217,7 +217,7 @@ export function presenceViews(config: FreshnessConfig, clock: Clock): PresenceVi
         ? coarse(presence, settings.defaultAgentAccess, settings.geoEnabled && settings.areaToAgents ? presence.coarse?.area : undefined)
         : null,
     ownerCoarse: (presence, settings) =>
-      coarse(presence, settings.defaultAgentAccess, settings.geoEnabled ? presence.coarse?.area : undefined),
+      coarse(presence, settings.defaultAgentAccess, settings.geoEnabled && settings.areaOnHome ? presence.coarse?.area : undefined),
     person: (presence, share, owner) => {
       if (owner.sharingPaused) return { paused: true, presence: null, precise: null };
       const area = share.showArea && owner.geoEnabled ? presence?.coarse?.area : undefined;

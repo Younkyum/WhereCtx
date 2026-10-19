@@ -54,6 +54,7 @@ import { AccessLogStore } from "../activity/accessLogStore.js";
 import { IngestLogStore } from "../activity/ingestLogStore.js";
 import type { PresenceEvent, UserId } from "../types.js";
 import { GeoService } from "../geo/service.js";
+import type { Schedule } from "../geo/area.js";
 import { GeoCredentialsStore } from "../geo/credentialsStore.js";
 import { GeoCacheStore } from "../geo/cacheStore.js";
 import { presenceViews, type PresenceViews } from "../privacy/policy.js";
@@ -222,6 +223,8 @@ export interface AppContextOptions {
   oauthFetch?: typeof fetch;
   /** Replaces the network for the Kakao and Naver adapters (tests). */
   geoFetch?: typeof fetch;
+  /** Replaces the timer behind the trailing area lookup (tests). */
+  geoSchedule?: Schedule;
 }
 
 /**
@@ -282,7 +285,9 @@ export async function createAppContext(
     presence: stores.presence,
     places: stores.places,
     accessLog: stores.accessLog,
+    shares: stores.shares,
     setArea: (userId, update) => service.setArea(userId, update),
+    schedule: options.geoSchedule,
     clock,
     fetch: options.geoFetch,
   });
@@ -330,7 +335,7 @@ export async function createAppContext(
   const services: AccountServices = {
     self,
     workspaces: new WorkspaceService(pick(system, ["workspaces", "invites"]), config),
-    sharing: new SharingService(pick(system, ["shares", "settings"]), clock, views),
+    sharing: new SharingService(pick(system, ["shares", "settings"]), clock, views, (owner) => geo.refreshArea(owner)),
     oauth,
   };
 

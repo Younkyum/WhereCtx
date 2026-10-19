@@ -128,7 +128,7 @@ ${RULE}
     // In-flight drains write cursors; let them return before the DB closes.
     await drained;
     // Background area lookups write presence; the same holds for them.
-    await ctx.system.geo.settled();
+    await ctx.system.geo.close();
     closeAppContext(ctx);
   };
 

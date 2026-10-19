@@ -223,6 +223,8 @@ export interface PrivacySettings {
   areaToPeople: boolean;
   /** Agents may ask for an ETA or directions from the current location. */
   etaToAgents: boolean;
+  /** My own Home shows my neighbourhood while maps are on. On by default. */
+  areaOnHome: boolean;
   /** No provider call with the live location while at or near home. On by default. */
   skipProviderNearHome: boolean;
   /** The provider to use; null picks the first one with a key. */

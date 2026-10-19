@@ -4,7 +4,9 @@ import type { AppContext } from "../app/context.js";
 import type { WhereCtxConfig } from "../config.js";
 import { asUserId } from "../types.js";
 import { Browser, OWNER_ADMIN, TestClock, bootApp, setupOwner, signUpByInvite, type Enrolled } from "../testing/accounts.js";
-import type { FakeGeoProvider } from "./fake.js";
+import type { Schedule } from "./area.js";
+import { FakeGeoProvider } from "./fake.js";
+import { roundPoint } from "./types.js";
 
 const AGENT = "agent-token-strong-0123456789abcdef-geo";
 const HOME = { lat: 37.5, lon: 127.0 };
@@ -19,12 +21,32 @@ let app: Hono;
 let owner: Enrolled;
 let fake: FakeGeoProvider;
 
+/** Timers the trailing lookup asked for, fired by hand. */
+let timers: Array<{ ms: number; task: () => void; cancelled: boolean }>;
+const schedule: Schedule = (ms, task) => {
+  const timer = { ms, task, cancelled: false };
+  timers.push(timer);
+  return () => {
+    timer.cancelled = true;
+  };
+};
+async function fireTimers(): Promise<void> {
+  for (const timer of timers.splice(0)) if (!timer.cancelled) timer.task();
+  await ctx.system.geo.settled();
+}
+
 async function boot(geo: Partial<WhereCtxConfig["geo"]> = {}): Promise<void> {
   clock = new TestClock();
-  const booted = await bootApp(clock, {
-    bootstrapTokens: { admin: OWNER_ADMIN, agent: AGENT },
-    geo: { operatorKeys: { kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" } }, operatorKeyForAll: false, fake: true, ...geo },
-  });
+  timers = [];
+  const booted = await bootApp(
+    clock,
+    {
+      bootstrapTokens: { admin: OWNER_ADMIN, agent: AGENT },
+      geo: { operatorKeys: { kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" } }, operatorKeyForAll: false, operatorDailyCap: 200, fake: true, ...geo },
+    },
+    {},
+    { geoSchedule: schedule },
+  );
   ({ ctx, app } = booted);
   fake = ctx.system.geo.fake!;
   owner = await setupOwner(app, booted.setupCode);
@@ -33,10 +55,13 @@ async function boot(geo: Partial<WhereCtxConfig["geo"]> = {}): Promise<void> {
 
 const settings = (body: Record<string, unknown>, who = owner.browser) => who.json("/v1/privacy", { method: "PUT", body });
 
-async function ingest(at: { lat: number; lon: number }, who = owner.browser): Promise<void> {
-  await who.json("/v1/ingest", { body: { source: "manual", ...at } });
+async function ingest(at: { lat: number; lon: number }, who = owner.browser, timestamp?: Date): Promise<void> {
+  await who.json("/v1/ingest", { body: { source: "manual", ...at, ...(timestamp ? { timestamp: timestamp.toISOString() } : {}) } });
   await ctx.system.geo.settled();
 }
+
+/** The area the fake provider names for a point. */
+const fakeArea = async (at: { lat: number; lon: number }) => (await new FakeGeoProvider().reverse(roundPoint(at)))!.label;
 
 const reverseCalls = () => fake.calls.filter((c) => c.op === "reverse");
 
@@ -97,6 +122,82 @@ describe("the background area lookup", () => {
     clock.advance(2 * 60_000);
     await ingest(ELSEWHERE);
     expect(reverseCalls()).toHaveLength(2);
+  });
+
+  it("drops the area the moment a reading moves away from it, and looks up the new one when the window ends", async () => {
+    await settings({ geoEnabled: true });
+    await ingest(AWAY);
+    expect(await areaOf()).toBe(await fakeArea(AWAY));
+    await ingest(AWAY_NEAR);
+    expect(await areaOf()).toBe(await fakeArea(AWAY));
+
+    clock.advance(30_000);
+    await ingest(ELSEWHERE);
+    expect(await areaOf()).toBeNull();
+    expect(reverseCalls()).toHaveLength(1);
+    await ingest({ lat: ELSEWHERE.lat + 0.0003, lon: ELSEWHERE.lon });
+    expect(timers.map((t) => t.ms)).toEqual([90_000]);
+
+    clock.advance(90_000);
+    await fireTimers();
+    expect(reverseCalls()).toHaveLength(2);
+    expect(await areaOf()).toBe(await fakeArea(ELSEWHERE));
+    expect(await areaOf()).not.toBe(await fakeArea(AWAY));
+  });
+
+  it("a trailing lookup that comes due at home sends nothing, and the area stays dropped", async () => {
+    await settings({ geoEnabled: true });
+    await ingest(AWAY);
+    clock.advance(30_000);
+    await ingest(ELSEWHERE);
+    await ingest(HOME);
+    clock.advance(90_000);
+    await fireTimers();
+    expect(reverseCalls()).toHaveLength(1);
+    expect(await areaOf()).toBeNull();
+  });
+
+  it("drops the area when a new home place puts the person near home", async () => {
+    await settings({ geoEnabled: true });
+    await ingest(ELSEWHERE);
+    expect(await areaOf()).not.toBeNull();
+    await owner.browser.json("/v1/places", { body: { name: "second home", type: "home", ...ELSEWHERE, radiusM: 150 } });
+    await ctx.system.geo.settled();
+    expect(await areaOf()).toBeNull();
+  });
+
+  it("does not look up a reading the device took minutes ago", async () => {
+    await settings({ geoEnabled: true });
+    await ingest(AWAY, owner.browser, new Date(clock.fn().getTime() - 10 * 60_000));
+    expect(reverseCalls()).toEqual([]);
+    expect(await areaOf()).toBeNull();
+  });
+
+  it("looks up nothing while nobody would see the area, and starts when someone may", async () => {
+    await settings({ geoEnabled: true, areaOnHome: false });
+    await ingest(AWAY);
+    expect(reverseCalls()).toEqual([]);
+    const { url } = await owner.browser.json(`/v1/workspaces/${(await owner.browser.json("/v1/workspaces")).workspaces[0].id}/invites`, {
+      body: { role: "member" },
+    });
+    const mina = await signUpByInvite(app, url, "Mina");
+    const minaId = ((await mina.res.json()) as any).userId;
+    await owner.browser.json(`/v1/shares/${minaId}`, { method: "PUT", body: { level: "coarse", showArea: true } });
+    await ctx.system.geo.settled();
+    expect(await areaOf()).toBe(await fakeArea(AWAY));
+    await owner.browser.json(`/v1/shares/${minaId}`, { method: "DELETE" });
+    await ctx.system.geo.settled();
+    expect(await areaOf()).toBeNull();
+  });
+
+  it("cancels a pending trailing lookup on shutdown", async () => {
+    await settings({ geoEnabled: true });
+    await ingest(AWAY);
+    clock.advance(30_000);
+    await ingest(ELSEWHERE);
+    expect(timers).toHaveLength(1);
+    await ctx.system.geo.close();
+    expect(timers[0]!.cancelled).toBe(true);
   });
 
   it("answers a cell it has seen from the cache, per person", async () => {
@@ -197,8 +298,11 @@ describe("who sees the area", () => {
     expect(await agentPresence()).not.toHaveProperty("area");
   });
 
-  it("the owner always, while maps are on", async () => {
+  it("the owner while maps and areaOnHome are on", async () => {
     expect((await owner.browser.json("/v1/presence")).area).toMatch(/^테스트구/);
+    await settings({ areaOnHome: false, areaToAgents: true });
+    expect(await owner.browser.json("/v1/presence")).not.toHaveProperty("area");
+    expect((await agentPresence()).area).toMatch(/^테스트구/);
     const second = new Browser(app);
     expect((await second.send("/v1/presence")).status).toBe(401);
   });

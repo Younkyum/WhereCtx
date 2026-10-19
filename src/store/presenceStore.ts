@@ -26,6 +26,8 @@ export interface StoredPresence extends PresenceContext {
   staleEventFired: boolean;
   /** Where the person arrived at `movedAt` (freshness.ts `arrivalFor`). */
   movedFrom?: LatLon;
+  /** The reading `coarse.city` and `coarse.area` were looked up for. */
+  areaFor?: LatLon;
   /** Written for an older build rolled back onto this database; never read (see schema). */
   staleAfterSec: number;
 }
@@ -43,6 +45,8 @@ interface PresenceRow {
   geohash: string | null;
   city: string | null;
   area: string | null;
+  areaLat: number | null;
+  areaLon: number | null;
   coarsePlaceType: CoarsePlaceType | null;
   motion: Motion | null;
   batteryLevel: number | null;
@@ -96,6 +100,7 @@ function rowToStored(row: PresenceRow): StoredPresence {
     receivedAt: row.receivedAt,
     ...(row.movedAt ? { movedAt: row.movedAt } : {}),
     ...(row.movedLat !== null && row.movedLon !== null ? { movedFrom: { lat: row.movedLat, lon: row.movedLon } } : {}),
+    ...(row.areaLat !== null && row.areaLon !== null ? { areaFor: { lat: row.areaLat, lon: row.areaLon } } : {}),
     staleAfterSec: row.staleAfterSec,
     currentPlaceName: row.currentPlaceName ?? undefined,
     staleEventFired: row.staleEventFired,
@@ -116,6 +121,8 @@ function storedToRow(p: StoredPresence): PresenceRow {
     geohash: p.coarse?.geohash ?? null,
     city: p.coarse?.city ?? null,
     area: p.coarse?.area ?? null,
+    areaLat: p.areaFor?.lat ?? null,
+    areaLon: p.areaFor?.lon ?? null,
     coarsePlaceType: p.coarse?.placeType ?? null,
     motion: p.motion ?? null,
     batteryLevel: p.battery?.level ?? null,
@@ -136,7 +143,7 @@ function storedToRow(p: StoredPresence): PresenceRow {
 
 /** Drop internal bookkeeping fields for external (API/MCP) consumers. */
 export function toPresenceContext(stored: StoredPresence): PresenceContext {
-  const { currentPlaceName: _c, staleEventFired: _s, movedFrom: _m, staleAfterSec: _w, ...ctx } = stored;
+  const { currentPlaceName: _c, staleEventFired: _s, movedFrom: _m, areaFor: _a, staleAfterSec: _w, ...ctx } = stored;
   return ctx;
 }
 
@@ -179,11 +186,16 @@ export class PresenceStore {
       .onConflictDoUpdate({ target: presence.userId, set: rest });
   }
 
-  /** Update only the region names of the current reading (null clears them). */
-  async setArea(userId: UserId, area: { city: string; area: string } | null): Promise<void> {
+  /** Update only the region names of the current reading and the point they are for (null clears them). */
+  async setArea(userId: UserId, area: { city: string; area: string; forPoint: LatLon } | null): Promise<void> {
     await this.db
       .update(presence)
-      .set({ city: area?.city ?? null, area: area?.area ?? null })
+      .set({
+        city: area?.city ?? null,
+        area: area?.area ?? null,
+        areaLat: area?.forPoint.lat ?? null,
+        areaLon: area?.forPoint.lon ?? null,
+      })
       .where(eq(presence.userId, userId));
   }
 

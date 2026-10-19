@@ -51,6 +51,8 @@ export class SharingService {
     private readonly stores: SharingStores,
     private readonly clock: Clock,
     private readonly views: PresenceViews,
+    /** Told when one of `owner`'s shares changes, so their area lookup follows who may see it. */
+    private readonly onShareChanged: (owner: UserId) => void = () => {},
   ) {}
 
   async list(me: Actor): Promise<{ outgoing: OutgoingShare[]; incoming: IncomingShare[] }> {
@@ -82,19 +84,22 @@ export class SharingService {
       );
     }
     if (outcome === "not_found") return notFound();
+    this.onShareChanged(me.userId);
     const share = (await this.stores.shares.listOutgoing(me.userId)).find((s) => s.viewer.id === viewer);
     return share ? ok(share) : notFound();
   }
 
   async revoke(me: Actor, viewer: UserId): Promise<Result<void>> {
-    return (await this.stores.shares.revoke(me.userId, viewer, null)) ? ok(undefined) : notFound();
+    if (!(await this.stores.shares.revoke(me.userId, viewer, null))) return notFound();
+    this.onShareChanged(me.userId);
+    return ok(undefined);
   }
 
   /** Stop seeing `owner`: the viewer's side of ending a share. */
   async decline(me: Actor, owner: UserId): Promise<Result<void>> {
-    return (await this.stores.shares.revoke(owner, me.userId, "viewer_declined"))
-      ? ok(undefined)
-      : notFound();
+    if (!(await this.stores.shares.revoke(owner, me.userId, "viewer_declined"))) return notFound();
+    this.onShareChanged(owner);
+    return ok(undefined);
   }
 
   /** Everyone sharing with me, without coordinates; nothing is audited. */

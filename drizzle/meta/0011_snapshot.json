@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b4b69ef9-02e8-416b-8bbd-c9930ea21315",
+  "id": "b4e1d585-aea0-4c03-8c87-6ef3562fe5f0",
   "prevId": "fa418550-c291-40cc-9dbb-a6e81ce6eebb",
   "tables": {
     "access_codes": {
@@ -1083,6 +1083,20 @@
           "notNull": false,
           "autoincrement": false
         },
+        "area_lat": {
+          "name": "area_lat",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "area_lon": {
+          "name": "area_lon",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "coarse_place_type": {
           "name": "coarse_place_type",
           "type": "text",
@@ -1385,6 +1399,14 @@
           "notNull": true,
           "autoincrement": false,
           "default": false
+        },
+        "area_on_home": {
+          "name": "area_on_home",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": true
         },
         "skip_provider_near_home": {
           "name": "skip_provider_near_home",

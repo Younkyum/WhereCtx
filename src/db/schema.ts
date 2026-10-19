@@ -99,6 +99,9 @@ export const presence = sqliteTable("presence", {
   geohash: text("geohash"),
   city: text("city"),
   area: text("area"),
+  /** The reading `city` and `area` were looked up for; a reading farther than AREA_REFRESH_MOVE_M from it drops them. */
+  areaLat: real("area_lat"),
+  areaLon: real("area_lon"),
   coarsePlaceType: text("coarse_place_type").$type<CoarsePlaceType>(),
 
   motion: text("motion").$type<Motion>(),
@@ -217,6 +220,8 @@ export const privacySettings = sqliteTable("privacy_settings", {
   /** Seeds a new share's show_area. */
   areaToPeople: integer("area_to_people", { mode: "boolean" }).notNull().default(false),
   etaToAgents: integer("eta_to_agents", { mode: "boolean" }).notNull().default(false),
+  /** The owner's own Home shows their neighbourhood (while maps are on). */
+  areaOnHome: integer("area_on_home", { mode: "boolean" }).notNull().default(true),
   skipProviderNearHome: integer("skip_provider_near_home", { mode: "boolean" }).notNull().default(true),
   geoProvider: text("geo_provider").$type<GeoProviderName>(),
   updatedAt: text("updated_at").notNull(),

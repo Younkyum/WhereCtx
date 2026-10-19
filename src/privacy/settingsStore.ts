@@ -29,6 +29,7 @@ interface SettingsRow {
   areaToAgents: boolean;
   areaToPeople: boolean;
   etaToAgents: boolean;
+  areaOnHome: boolean;
   skipProviderNearHome: boolean;
   geoProvider: GeoProviderName | null;
   updatedAt: string;
@@ -49,6 +50,7 @@ function rowToSettings(row: SettingsRow): PrivacySettings {
     areaToAgents: row.areaToAgents,
     areaToPeople: row.areaToPeople,
     etaToAgents: row.etaToAgents,
+    areaOnHome: row.areaOnHome,
     skipProviderNearHome: row.skipProviderNearHome,
     geoProvider: row.geoProvider,
   };
@@ -97,6 +99,7 @@ export class SettingsStore {
         areaToAgents: false,
         areaToPeople: false,
         etaToAgents: false,
+        areaOnHome: true,
         skipProviderNearHome: true,
         geoProvider: null,
         updatedAt: nowIso(this.clock),

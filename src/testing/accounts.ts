@@ -279,7 +279,7 @@ export async function bootApp(
   clock: TestClock,
   overrides: Partial<WhereCtxConfig> = {},
   build: BuildAppOptions = {},
-  options: Pick<AppContextOptions, "oauthFetch" | "geoFetch"> = {},
+  options: Pick<AppContextOptions, "oauthFetch" | "geoFetch" | "geoSchedule"> = {},
 ): Promise<BootedApp> {
   const { ctx, bootstrap } = await createAppContext(
     testConfig({ bootstrapTokens: { admin: OWNER_ADMIN }, ...overrides }),
