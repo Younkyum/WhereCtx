@@ -337,7 +337,10 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   );
 }
 
-/** Set by a DialogForm while its submit runs, so its FormDialog ignores Escape until the request settles. */
+/**
+ * Set while a DialogForm's submit runs, or while a DialogResult must be read
+ * to the end, so its FormDialog ignores Escape until then.
+ */
 const SubmittingContext = createContext<{ current: boolean } | null>(null);
 
 /**
@@ -360,25 +363,33 @@ export function FormDialog({ isOpen, onClose, children }: { isOpen: boolean; onC
   );
 }
 
-/** A refused submit as a localized title over the server's own words, which are often English. */
+/**
+ * A refused submit as a localized title over the server's own words, which
+ * are often English. A cancelled passkey prompt, or an Error the view threw
+ * with its own message, is the title alone.
+ */
 function failureText(e: unknown, t: Translate): { title: string; detail: string } {
+  const passkey = passkeyErrorKey(e);
+  if (passkey) return { title: t(passkey), detail: "" };
   if (e instanceof ApiError) {
     const key = errorKey(e);
     return { title: t(key ?? "err.generic"), detail: [...(key ? [] : [e.message]), ...e.detail].join("; ") };
   }
-  return { title: t("err.generic"), detail: e instanceof Error ? e.message : "" };
+  return { title: e instanceof Error && e.message ? e.message : t("err.generic"), detail: "" };
 }
 
 /**
  * A FormDialog's content: title, fields, Cancel and submit. A submit that
- * succeeds closes the dialog; one that fails keeps it open with the server's
- * answer under the fields. While it runs, nothing closes the dialog.
+ * succeeds closes the dialog, unless `keepOpen` says its result shows next;
+ * one that fails keeps it open with the server's answer under the fields.
+ * While it runs, nothing closes the dialog.
  */
 export function DialogForm({
   title,
   subtitle,
   submitLabel,
   canSubmit,
+  keepOpen = false,
   onSubmit,
   onClose,
   children,
@@ -387,6 +398,7 @@ export function DialogForm({
   subtitle?: ReactNode;
   submitLabel: string;
   canSubmit: boolean;
+  keepOpen?: boolean;
   onSubmit: () => Promise<void>;
   onClose: () => void;
   children: ReactNode;
@@ -397,6 +409,16 @@ export function DialogForm({
   const running = useContext(SubmittingContext) ?? ownRunning;
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
+  // A submit can swap this form for its result before it returns; the
+  // unmount releases the hold so the result can take it.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      running.current = false;
+    };
+  }, [running]);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!canSubmit || running.current) return;
@@ -411,8 +433,11 @@ export function DialogForm({
       if (!isHandled(err)) setFailure(err);
       return;
     }
-    running.current = false;
-    onClose();
+    if (mounted.current) {
+      running.current = false;
+      setBusy(false);
+    }
+    if (!keepOpen) onClose();
   };
   const close = () => {
     if (!running.current) onClose();
@@ -446,6 +471,66 @@ export function DialogForm({
             </HStack>
           </VStack>
         </LayoutFooter>
+      }
+    />
+  );
+}
+
+/**
+ * What a FormDialog shows once its form succeeded: a one-time secret, a link,
+ * setup steps. Done closes it. With `mustConfirm`, only the content's own
+ * button closes it, so recovery codes are not dismissed unread.
+ */
+export function DialogResult({
+  title,
+  subtitle,
+  mustConfirm = false,
+  onClose,
+  children,
+}: {
+  title: string;
+  subtitle?: ReactNode;
+  mustConfirm?: boolean;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const { t } = useApp();
+  const held = useContext(SubmittingContext);
+  useEffect(() => {
+    if (!mustConfirm || !held) return;
+    held.current = true;
+    return () => {
+      held.current = false;
+    };
+  }, [mustConfirm, held]);
+  return (
+    <Layout
+      header={
+        <DialogHeader
+          title={title}
+          subtitle={subtitle}
+          onOpenChange={
+            mustConfirm
+              ? undefined
+              : (open) => {
+                  if (!open) onClose();
+                }
+          }
+        />
+      }
+      content={
+        <LayoutContent>
+          <VStack gap={4}>{children}</VStack>
+        </LayoutContent>
+      }
+      footer={
+        mustConfirm ? undefined : (
+          <LayoutFooter hasDivider>
+            <HStack gap={2} hAlign="end">
+              <Button label={t("common.done")} variant="primary" onClick={onClose} />
+            </HStack>
+          </LayoutFooter>
+        )
       }
     />
   );

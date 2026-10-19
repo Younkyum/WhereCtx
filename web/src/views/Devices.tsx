@@ -15,12 +15,12 @@ import { Table } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import { hostOf, qrFromSvg } from "../lib";
 import type { ApiToken, ConnectedApp, DeviceSummary, IngestEntry, IngestOutcome, Pairing } from "../model";
-import { BearerHeader, Empty, Hint, Loaded, Page, Panel, Row, Rows, Secret, download, useAction, useConfirm, useFormat, useLoad, useNotify, usePaged } from "../ui";
+import { BearerHeader, DialogForm, DialogResult, Empty, FormDialog, Hint, Loaded, Page, Panel, Row, Rows, Secret, download, useConfirm, useFormat, useLoad, useNotify, usePaged } from "../ui";
 
 function useTokens(keep: (k: ApiToken) => boolean) {
   return useLoad(() => api<{ tokens: ApiToken[] }>("/v1/tokens").then((r) => (r.tokens ?? []).filter(keep)), []);
@@ -147,6 +147,45 @@ function RecentUploads() {
   );
 }
 
+function PairDevice({ onClose, onPaired }: { onClose: () => void; onPaired: () => Promise<void> }) {
+  const { t } = useApp();
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<Pairing["kind"]>("owntracks");
+  const [result, setResult] = useState<PairResult | null>(null);
+  const pair = async () => {
+    setResult(null);
+    try {
+      const pairing = await api<Pairing>("/v1/devices/pair", { body: { name: name.trim(), kind } });
+      setResult({ kind: "paired", name: name.trim(), pairing });
+      await onPaired();
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "base_url_unusable") setResult({ kind: "baseUrl", message: e.message });
+      else throw e;
+    }
+  };
+  if (result?.kind === "paired") {
+    return (
+      <DialogResult title={t("devices.pairedTitle", { name: result.name })} onClose={onClose}>
+        <PairingResult name={result.name} pairing={result.pairing} />
+      </DialogResult>
+    );
+  }
+  return (
+    <DialogForm title={t("devices.connect")} submitLabel={t("devices.create")} canSubmit={name.trim() !== ""} keepOpen onSubmit={pair} onClose={onClose}>
+      <TextInput label={t("devices.name")} placeholder={t("devices.namePlaceholder")} value={name} onChange={setName} isRequired />
+      <RadioList label={t("devices.kind")} value={kind} onChange={(v) => setKind(v === "shortcut" ? "shortcut" : "owntracks")}>
+        <RadioListItem value="owntracks" label="OwnTracks" description={t("devices.owntracksDesc")} />
+        <RadioListItem value="shortcut" label={t("devices.shortcut")} description={t("devices.shortcutDesc")} />
+      </RadioList>
+      {result?.kind === "baseUrl" ? (
+        <Banner status="warning" title={t("devices.baseUrl.title")} description={t("devices.baseUrl.desc")} collapsible={false}>
+          <Code>{result.message}</Code>
+        </Banner>
+      ) : null}
+    </DialogForm>
+  );
+}
+
 export function DevicesView() {
   const { t } = useApp();
   const [devices, reloadDevices] = useLoad(() => api<{ devices: DeviceSummary[] }>("/v1/devices").then((r) => r.devices ?? []), []);
@@ -155,67 +194,27 @@ export function DevicesView() {
     setVersion((v) => v + 1);
     await reloadDevices();
   };
-  const [name, setName] = useState("");
-  const [kind, setKind] = useState<Pairing["kind"]>("owntracks");
-  const [result, setResult] = useState<PairResult | null>(null);
-  const [busy, pair] = useAction(async () => {
-    setResult(null);
-    try {
-      const pairing = await api<Pairing>("/v1/devices/pair", { body: { name: name.trim(), kind } });
-      setResult({ kind: "paired", name: name.trim(), pairing });
-      setName("");
-      await reload();
-    } catch (e) {
-      if (e instanceof ApiError && e.code === "base_url_unusable") setResult({ kind: "baseUrl", message: e.message });
-      else throw e;
-    }
-  });
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    if (name.trim()) void pair();
-  };
+  const [pairing, setPairing] = useState(false);
+  const close = () => setPairing(false);
   return (
     <Page title={t("devices.title")} description={t("devices.desc")}>
-      <Panel title={t("devices.connect")}>
-        <VStack gap={4}>
-          <form onSubmit={submit}>
-            <VStack gap={4}>
-              <TextInput
-                label={t("devices.name")}
-                placeholder={t("devices.namePlaceholder")}
-                value={name}
-                onChange={setName}
-                isRequired
-                width="100%"
-              />
-              <RadioList label={t("devices.kind")} value={kind} onChange={(v) => setKind(v === "shortcut" ? "shortcut" : "owntracks")}>
-                <RadioListItem value="owntracks" label="OwnTracks" description={t("devices.owntracksDesc")} />
-                <RadioListItem value="shortcut" label={t("devices.shortcut")} description={t("devices.shortcutDesc")} />
-              </RadioList>
-              <HStack>
-                <Button type="submit" label={t("devices.create")} variant="primary" isLoading={busy} isDisabled={!name.trim()} />
-              </HStack>
-            </VStack>
-          </form>
-          {result?.kind === "baseUrl" ? (
-            <Banner
-              status="warning"
-              title={t("devices.baseUrl.title")}
-              description={t("devices.baseUrl.desc")}
-              collapsible={false}
-            >
-              <Code>{result.message}</Code>
-            </Banner>
-          ) : null}
-          {result?.kind === "paired" ? <PairingResult name={result.name} pairing={result.pairing} /> : null}
-        </VStack>
-      </Panel>
-      <Panel title={t("devices.list")} actions={<Button label={t("devices.refresh")} size="sm" onClick={() => void reload()} />}>
+      <Panel
+        title={t("devices.list")}
+        actions={
+          <HStack gap={2} wrap="wrap">
+            <Button label={t("devices.refresh")} size="sm" onClick={() => void reload()} />
+            <Button label={t("devices.connect")} variant="primary" onClick={() => setPairing(true)} />
+          </HStack>
+        }
+      >
         <Loaded state={devices}>{(list) => <DeviceList devices={list} onChanged={reload} />}</Loaded>
       </Panel>
       <Panel title={t("devices.uploads")}>
         <RecentUploads key={version} />
       </Panel>
+      <FormDialog isOpen={pairing} onClose={close}>
+        <PairDevice onClose={close} onPaired={reload} />
+      </FormDialog>
     </Page>
   );
 }
@@ -347,56 +346,55 @@ function ConnectedApps() {
   );
 }
 
-export function AgentsView() {
+function CreateAgentToken({ onClose, onCreated }: { onClose: () => void; onCreated: () => Promise<void> }) {
   const { t } = useApp();
-  const [tokens, reload] = useTokens((k) => k.role !== "device");
   const [name, setName] = useState("");
   const [created, setCreated] = useState<{ secret: string; mcp: string } | null>(null);
-  const [busy, create] = useAction(async () => {
+  const create = async () => {
     const r = await api<{ secret: string; mcpConfig: unknown }>("/v1/tokens", { body: { name: name.trim(), role: "agent" } });
     setCreated({ secret: r.secret, mcp: JSON.stringify(r.mcpConfig, null, 2) });
-    setName("");
-    await reload();
-  });
+    await onCreated();
+  };
+  if (created) {
+    return (
+      <DialogResult title={t("agents.createdTitle")} onClose={onClose}>
+        <Banner status="success" title={t("agents.created")} />
+        <Secret label={t("agents.token")} value={created.secret} />
+        <BearerHeader token={created.secret} hint={t("header.agentHint")} />
+        <Secret label={t("agents.mcpConfig")} value={created.mcp} language="json" />
+        <Hint>{t("agents.mcpHint")}</Hint>
+        <Hint>{t("devices.secretOnce")}</Hint>
+      </DialogResult>
+    );
+  }
   return (
-    <Page title={t("agents.title")} description={t("agents.desc")}>
-      <Panel title={t("agents.create")}>
-        <VStack gap={4}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (name.trim()) void create();
-            }}
-          >
-            <HStack gap={2} wrap="wrap" vAlign="end">
-              <TextInput
-                label={t("tokens.name")}
-                placeholder={t("agents.namePlaceholder")}
-                value={name}
-                onChange={setName}
-                isRequired
-                width={280}
-              />
-              <Button type="submit" label={t("agents.createButton")} variant="primary" isLoading={busy} isDisabled={!name.trim()} />
-            </HStack>
-          </form>
-          {created ? (
-            <VStack gap={3}>
-              <Banner status="success" title={t("agents.created")} />
-              <Secret label={t("agents.token")} value={created.secret} />
-              <BearerHeader token={created.secret} hint={t("header.agentHint")} />
-              <Secret label={t("agents.mcpConfig")} value={created.mcp} language="json" />
-              <Hint>{t("agents.mcpHint")}</Hint>
-              <Hint>{t("devices.secretOnce")}</Hint>
-            </VStack>
-          ) : null}
-        </VStack>
-      </Panel>
-      <ConnectedApps />
-      <Panel title={t("agents.list")}>
-        <Loaded state={tokens}>{(list) => <TokenTable tokens={list} emptyText={t("agents.empty")} onChanged={reload} />}</Loaded>
-      </Panel>
-    </Page>
+    <DialogForm
+      title={t("agents.create")}
+      submitLabel={t("agents.createButton")}
+      canSubmit={name.trim() !== ""}
+      keepOpen
+      onSubmit={create}
+      onClose={onClose}
+    >
+      <TextInput label={t("tokens.name")} placeholder={t("agents.namePlaceholder")} value={name} onChange={setName} isRequired />
+    </DialogForm>
   );
 }
 
+export function AgentsView() {
+  const { t } = useApp();
+  const [tokens, reload] = useTokens((k) => k.role !== "device");
+  const [creating, setCreating] = useState(false);
+  const close = () => setCreating(false);
+  return (
+    <Page title={t("agents.title")} description={t("agents.desc")}>
+      <Panel title={t("agents.list")} actions={<Button label={t("agents.create")} variant="primary" onClick={() => setCreating(true)} />}>
+        <Loaded state={tokens}>{(list) => <TokenTable tokens={list} emptyText={t("agents.empty")} onChanged={reload} />}</Loaded>
+      </Panel>
+      <ConnectedApps />
+      <FormDialog isOpen={creating} onClose={close}>
+        <CreateAgentToken onClose={close} onCreated={reload} />
+      </FormDialog>
+    </Page>
+  );
+}
