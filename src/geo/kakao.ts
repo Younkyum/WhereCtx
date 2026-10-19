@@ -89,6 +89,16 @@ const ErrorBody = z.object({ code: z.number() }).partial();
 /** Guide types that mark the start, the end and a waypoint rather than a turn. */
 const ENDPOINT_GUIDES = new Set([100, 101, 1000]);
 
+/** Roads' paths end to end, without the point where one road meets the next twice. */
+function joined(paths: readonly LatLon[][]): LatLon[] {
+  const path: LatLon[] = [];
+  for (const point of paths.flat()) {
+    const last = path.at(-1);
+    if (!last || last.lat !== point.lat || last.lon !== point.lon) path.push(point);
+  }
+  return path;
+}
+
 /** A road's `vertexes`, flat [x1, y1, x2, y2, ...], as points. */
 function vertexPath(vertexes: readonly number[] | undefined): LatLon[] {
   const path: LatLon[] = [];
@@ -198,6 +208,7 @@ export class KakaoProvider implements GeoProvider {
       roads: sections.flatMap((s) =>
         (s.roads ?? []).map((r): RouteRoad => ({ name: r.name, distanceM: r.distance, path: vertexPath(r.vertexes) })),
       ),
+      path: joined(sections.flatMap((s) => (s.roads ?? []).map((r) => vertexPath(r.vertexes)))),
       steps: sections
         .flatMap((s) => s.guides ?? [])
         .filter((g) => !ENDPOINT_GUIDES.has(g.type))

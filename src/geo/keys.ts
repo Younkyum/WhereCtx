@@ -2,8 +2,9 @@
  * Which maps key a person's calls use, and the one place a provider is
  * called.
  *
- * - The key: the person's own (BYOK) first, then the operator's, which only
- *   USER_ID may use unless GEO_OPERATOR_KEY_FOR_ALL.
+ * - The key: the person's own (BYOK) for any provider first, then the
+ *   operator's, which only USER_ID may use unless GEO_OPERATOR_KEY_FOR_ALL
+ *   (REST keys) or GEO_OPERATOR_MAP_KEY_FOR_ALL (map keys).
  * - The budget: every provider call counts against the person (a geocode and
  *   a route are two), against the key, and, for anyone but USER_ID on an
  *   operator key, against a daily cap (GEO_OPERATOR_DAILY_CAP). Counters are
@@ -19,12 +20,14 @@ import type { WhereCtxConfig } from "../config.js";
 import type { AccessLogStore } from "../activity/accessLogStore.js";
 import type { AccessAction, AccessSurface, Credential } from "../activity/types.js";
 import { RateLimiter } from "../api/rateLimit.js";
+import { KeyedMutex } from "../util/mutex.js";
 import type { PrivacySettings, TokenScope, UserId } from "../types.js";
 import { log } from "../util/log.js";
 import type { Clock } from "../util/time.js";
 import { UNUSABLE_KEY, type GeoCredentialsStore, type StoredGeoCredential } from "./credentialsStore.js";
 import type { FakeGeoProvider } from "./fake.js";
 import { KakaoProvider } from "./kakao.js";
+import { MAP_SDKS } from "./mapSdk.js";
 import { NaverProvider } from "./naver.js";
 import {
   GEO_PROVIDERS,
@@ -66,10 +69,21 @@ export interface ResolvedKey {
 export interface GeoStatus {
   /** The provider calls would use now, and whose key; null when none is set up. */
   active: { provider: GeoProviderName; source: KeySource } | null;
+  /** The provider whose map the dashboard loads, and whose key; null when none is set up. */
+  map: { provider: GeoProviderName; source: KeySource } | null;
   /** My own saved keys, never the key itself. */
   credentials: StoredGeoCredential[];
   /** Operator keys I may fall back to. */
   operator: GeoProviderName[];
+  /** Operator map keys I may fall back to. */
+  operatorMap: GeoProviderName[];
+}
+
+/** The map key a person's dashboard loads, and whose it is. */
+export interface ResolvedMapKey {
+  provider: GeoProviderName;
+  key: string;
+  source: KeySource;
 }
 
 export type KeyTestOutcome =
@@ -102,6 +116,12 @@ export class GeoKeys {
   private readonly perKey: RateLimiter;
   /** Operator-key calls today per person other than USER_ID, by UTC day. */
   private readonly daily = new Map<UserId, { day: string; count: number }>();
+  /** One key-bag change at a time per person and provider: each reads the bag, changes one part, and writes it back. */
+  private readonly writes = new KeyedMutex();
+
+  private change<T>(userId: UserId, provider: GeoProviderName, fn: () => Promise<T>): Promise<T> {
+    return this.writes.run(`${userId}|${provider}`, fn);
+  }
 
   constructor(private readonly deps: GeoKeysDeps) {
     this.perUser = new RateLimiter({ max: GEO_USER_CALLS_PER_MINUTE, clock: deps.clock });
@@ -117,6 +137,11 @@ export class GeoKeys {
     return GEO_PROVIDERS.filter((p) => this.deps.config.geo.operatorKeys[p] !== undefined);
   }
 
+  private operatorMapProviders(userId: UserId): GeoProviderName[] {
+    if (!this.deps.config.geo.operatorMapKeyForAll && !this.isOperator(userId)) return [];
+    return GEO_PROVIDERS.filter((p) => this.deps.config.geo.operatorMapKeys[p] !== undefined);
+  }
+
   /** Every provider is reached through `roundingProvider`, so no adapter is ever handed an unrounded point. */
   private adapter(credentials: GeoCredentials): GeoProvider {
     const common = { fetch: this.deps.fetch, now: this.deps.clock };
@@ -128,39 +153,96 @@ export class GeoKeys {
     );
   }
 
-  /** The provider to call for this person: their choice, else the first with a key; their own key before the operator's. */
+  /** The chosen provider, else every provider in order. */
+  private static order(settings: PrivacySettings): readonly GeoProviderName[] {
+    return settings.geoProvider ? [settings.geoProvider] : GEO_PROVIDERS;
+  }
+
+  /** The provider to call for this person: their choice, else the first with a key; their own key, for any provider, before the operator's. */
   async resolve(userId: UserId, settings: PrivacySettings): Promise<ResolvedKey | null> {
-    const own = new Set((await this.deps.credentials.list(userId)).filter((c) => c.status === "ok").map((c) => c.provider));
-    const operator = new Set(this.operatorProviders(userId));
-    const order = settings.geoProvider ? [settings.geoProvider] : GEO_PROVIDERS;
-    for (const name of order) {
-      if (own.has(name)) {
-        const keys = await this.deps.credentials.open(userId, name);
-        const credentials = keys && restCredentials(name, keys);
-        if (credentials) return { provider: this.adapter(credentials), name, source: "own" };
-      }
-      if (operator.has(name)) {
-        return { provider: this.adapter(this.deps.config.geo.operatorKeys[name]!), name, source: "operator" };
-      }
+    for (const name of GeoKeys.order(settings)) {
+      const keys = await this.deps.credentials.open(userId, name);
+      const credentials = keys && restCredentials(name, keys);
+      if (credentials) return { provider: this.adapter(credentials), name, source: "own" };
     }
-    return null;
+    const operator = this.operatorProviders(userId);
+    const name = GeoKeys.order(settings).find((p) => operator.includes(p));
+    return name ? { provider: this.adapter(this.deps.config.geo.operatorKeys[name]!), name, source: "operator" } : null;
+  }
+
+  /**
+   * The map key for this person's dashboard: the chosen provider, else the
+   * first with a map key; their own, for any provider, before the
+   * operator's. Nothing here checks the maps switch; GeoService does.
+   */
+  async resolveMap(userId: UserId, settings: PrivacySettings): Promise<ResolvedMapKey | null> {
+    for (const provider of GeoKeys.order(settings)) {
+      const own = (await this.deps.credentials.open(userId, provider))?.[MAP_SDKS[provider].keyKind];
+      if (own) return { provider, key: own, source: "own" };
+    }
+    const operator = this.operatorMapProviders(userId);
+    const provider = GeoKeys.order(settings).find((p) => operator.includes(p));
+    return provider ? { provider, key: this.deps.config.geo.operatorMapKeys[provider]!, source: "operator" } : null;
   }
 
   async status(userId: UserId, settings: PrivacySettings): Promise<GeoStatus> {
-    const resolved = await this.resolve(userId, settings);
+    const [resolved, map] = await Promise.all([this.resolve(userId, settings), this.resolveMap(userId, settings)]);
     return {
       active: resolved && { provider: resolved.name, source: resolved.source },
+      map: map && { provider: map.provider, source: map.source },
       credentials: await this.deps.credentials.list(userId),
       operator: this.operatorProviders(userId),
+      operatorMap: this.operatorMapProviders(userId),
     };
   }
 
-  save(userId: UserId, provider: GeoProviderName, keys: GeoKeyBag): Promise<StoredGeoCredential> {
-    return this.deps.credentials.put(userId, provider, keys);
+  private async stored(userId: UserId, provider: GeoProviderName): Promise<StoredGeoCredential | null> {
+    return (await this.deps.credentials.list(userId)).find((c) => c.provider === provider) ?? null;
   }
 
-  delete(userId: UserId, provider: GeoProviderName): Promise<boolean> {
-    return this.deps.credentials.delete(userId, provider);
+  /** Save a provider's REST keys, keeping its map key; how the old REST keys fared is forgotten. */
+  save(userId: UserId, provider: GeoProviderName, keys: GeoKeyBag): Promise<StoredGeoCredential> {
+    return this.change(userId, provider, async () => {
+      const mapKind = MAP_SDKS[provider].keyKind;
+      const map = (await this.deps.credentials.open(userId, provider))?.[mapKind];
+      return this.deps.credentials.put(userId, provider, { ...keys, ...(map ? { [mapKind]: map } : {}) }, { resetUse: true });
+    });
+  }
+
+  /**
+   * Save or, with null, forget a provider's map key, keeping its REST keys
+   * and how they last fared; the row goes when nothing is left. Forgetting a
+   * map key that is not there changes nothing.
+   */
+  saveMapKey(userId: UserId, provider: GeoProviderName, key: string | null): Promise<StoredGeoCredential | null> {
+    return this.change(userId, provider, async () => {
+      const mapKind = MAP_SDKS[provider].keyKind;
+      const bag = await this.deps.credentials.open(userId, provider);
+      if (!key && !bag?.[mapKind]) return this.stored(userId, provider);
+      const { [mapKind]: _old, ...rest } = bag ?? {};
+      const keys: GeoKeyBag = key ? { ...rest, [mapKind]: key } : rest;
+      if (Object.values(keys).some(Boolean)) return this.deps.credentials.put(userId, provider, keys, { resetUse: false });
+      await this.deps.credentials.delete(userId, provider);
+      return null;
+    });
+  }
+
+  /**
+   * Forget a provider's REST keys, keeping its map key; the row goes when
+   * nothing is left, and an unusable row goes whole. False when there were
+   * no REST keys to forget.
+   */
+  deleteRest(userId: UserId, provider: GeoProviderName): Promise<boolean> {
+    return this.change(userId, provider, async () => {
+      const bag = await this.deps.credentials.open(userId, provider);
+      if (!bag) return this.deps.credentials.delete(userId, provider);
+      if (!restCredentials(provider, bag)) return false;
+      const mapKind = MAP_SDKS[provider].keyKind;
+      const map = bag[mapKind];
+      if (map) await this.deps.credentials.put(userId, provider, { [mapKind]: map }, { resetUse: true });
+      else await this.deps.credentials.delete(userId, provider);
+      return true;
+    });
   }
 
   /** Look up a fixed public landmark with my saved key, never my location. Counts against my budgets. */
@@ -169,7 +251,7 @@ export class GeoKeys {
     const credentials = keys && restCredentials(provider, keys);
     if (!credentials) {
       const saved = (await this.deps.credentials.list(userId)).find((c) => c.provider === provider);
-      return { ok: false, error: "missing", message: saved ? UNUSABLE_KEY : "no REST key saved for this provider" };
+      return { ok: false, error: "missing", message: saved?.status === "unusable" ? UNUSABLE_KEY : "no REST key saved for this provider" };
     }
     const resolved: ResolvedKey = { provider: this.adapter(credentials), name: provider, source: "own" };
     const result = await this.call(userId, { kind: "owner" }, resolved, "geo.reverse", (p) => p.reverse(KEY_TEST_POINT));

@@ -123,8 +123,11 @@ function scopeFor(system: SystemStores, userId: UserId) {
       "saveCredential",
       "deleteCredential",
       "testCredential",
+      "saveMapKey",
+      "mapConfig",
       "search",
       "eta",
+      "ownerEta",
       "refreshArea",
     ]),
     webhooks: bindFirst(system.webhooks, userId, [

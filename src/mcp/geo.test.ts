@@ -3,7 +3,7 @@ import type { Hono } from "hono";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AppContext } from "../app/context.js";
-import { resolveTokenPrincipal } from "../auth/principal.js";
+import { resolveTokenPrincipal, type McpPrincipal } from "../auth/principal.js";
 import type { FakeGeoProvider } from "../geo/fake.js";
 import { OWNER_ADMIN, TestClock, bootApp, setupOwner, type Enrolled } from "../testing/accounts.js";
 import { buildMcpServer } from "./server.js";
@@ -18,8 +18,8 @@ let app: Hono;
 let owner: Enrolled;
 let fake: FakeGeoProvider;
 
-async function connectAs(secret: string): Promise<Client> {
-  const principal = (await resolveTokenPrincipal(ctx, secret))!;
+async function connectAs(secret: string | McpPrincipal): Promise<Client> {
+  const principal = typeof secret === "string" ? (await resolveTokenPrincipal(ctx, secret))! : secret;
   const server = buildMcpServer(ctx.forUser(principal.userId), principal, ctx);
   const client = new Client({ name: "test", version: "0.0.0" }, { capabilities: {} });
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
@@ -28,7 +28,7 @@ async function connectAs(secret: string): Promise<Client> {
   return client;
 }
 
-async function call(secret: string, name: string, args: Record<string, unknown>): Promise<{ text: string; body: any; isError: boolean }> {
+async function call(secret: string | McpPrincipal, name: string, args: Record<string, unknown>): Promise<{ text: string; body: any; isError: boolean }> {
   const res = (await (await connectAs(secret)).callTool({ name, arguments: args })) as any;
   const text = res.content[0].text as string;
   let body: any;
@@ -46,7 +46,7 @@ beforeEach(async () => {
   clock = new TestClock();
   const booted = await bootApp(clock, {
     bootstrapTokens: { admin: OWNER_ADMIN, agent: AGENT },
-    geo: { operatorKeys: { kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" } }, operatorKeyForAll: false, fake: true },
+    geo: { operatorMapKeys: {}, operatorKeys: { kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" } }, operatorKeyForAll: false, fake: true },
   });
   ({ ctx, app } = booted);
   fake = ctx.system.geo.fake!;
@@ -91,6 +91,28 @@ describe("get_eta and get_directions", () => {
     expect((await call(AGENT, "get_directions", { to: "office" })).body).toHaveProperty("stepsWithheld");
     const directions = await call(AGENT, "get_directions", { to: "office", reason: "pick-up" });
     expect(directions.body.steps[0]).toContain("테스트출발로12번길");
+  });
+
+  it("never carry the route's geometry, for a token or an OAuth client, however much they may see", async () => {
+    await settings({ geoEnabled: true, etaToAgents: true, allowPreciseLocation: true, preciseRequiresReason: false });
+    const oauth: McpPrincipal = {
+      via: "oauth",
+      userId: owner.userId,
+      scopes: ["read_presence", "read_precise_location", "manage_places"],
+      grantId: "grant-1",
+      clientId: "https://client.example/meta.json",
+      clientName: "Client",
+    };
+    for (const who of [AGENT, OWNER_ADMIN, oauth]) {
+      for (const tool of ["get_eta", "get_directions"]) {
+        const res = await call(who, tool, { to: "office", reason: "pick-up" });
+        expect(res.isError, tool).toBe(false);
+        expect(res.body, tool).not.toHaveProperty("path");
+        expect(res.body.precision, tool).toBe("approximate");
+      }
+    }
+    expect((await call(oauth, "get_directions", { to: "office", reason: "pick-up" })).body.steps.length).toBeGreaterThan(0);
+    expect((await owner.browser.json("/v1/geo/eta?to=office")).eta.path.length).toBeGreaterThan(1);
   });
 
   it("are hidden in hidden mode and refuse a reading too old to start from", async () => {

@@ -17,7 +17,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { RouteContext, UserScope } from "../app/context.js";
-import type { Principal } from "../auth/principal.js";
+import type { McpPrincipal } from "../auth/principal.js";
 import { haversineMeters } from "../geofence/distance.js";
 import {
   accessAtLeast,
@@ -37,7 +37,7 @@ import { accessRecorder, type AccessRecorder } from "../activity/record.js";
 import type { AccessAction, AccessDecision } from "../activity/types.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
 import { credentialOf } from "../activity/record.js";
-import type { GeoCaller } from "../geo/keys.js";
+import type { AgentCaller } from "../geo/service.js";
 import { candidateViews, pickCandidate } from "../geo/service.js";
 import { etaReply, numbered, searchReply } from "../geo/replies.js";
 import { ROUTE_AVOID } from "../geo/types.js";
@@ -137,7 +137,7 @@ function recordToolCalls(
 
 export function buildMcpServer(
   scope: UserScope,
-  principal: Principal,
+  principal: McpPrincipal,
   ctx: RouteContext,
 ): McpServer {
   const server = new McpServer(
@@ -335,10 +335,7 @@ export function buildMcpServer(
   );
 
   // Maps calls made for this agent are logged under its credential (GeoService).
-  const credential = credentialOf(principal);
-  const geoCaller: GeoCaller = credential
-    ? { kind: "agent", credential, surface: "mcp", scopes: principal.scopes }
-    : { kind: "owner" };
+  const geoCaller: AgentCaller = { kind: "agent", credential: credentialOf(principal), surface: "mcp", scopes: principal.scopes };
 
   const etaInput = {
     to: z.string().min(1).max(200).describe("A registered place name (preferred, e.g. 'home', 'office') or an address / place to search"),

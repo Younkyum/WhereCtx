@@ -61,7 +61,7 @@ export function loadDashboardFiles(dir: string): Map<string, DashboardFile> {
 export function dashboardRouter(dir: string = DASHBOARD_DIR): Hono {
   const files = loadDashboardFiles(dir);
   const app = new Hono();
-  app.use("/dashboard", etag());
+  // "/dashboard/*" matches "/dashboard" as well, so this runs once per request.
   app.use("/dashboard/*", etag());
   const handler = (c: Context) => {
     const path = c.req.path.slice("/dashboard/".length) || "index.html";

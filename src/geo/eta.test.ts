@@ -5,9 +5,8 @@ import type { WhereCtxConfig } from "../config.js";
 import type { NormalizedReading } from "../normalizer/types.js";
 import { asUserId, type PrivacySettings, type TokenScope } from "../types.js";
 import { TestClock, bootApp } from "../testing/accounts.js";
-import type { GeoCaller } from "./keys.js";
 import { agentRoads } from "./eta.js";
-import type { EtaOutcome, EtaRequest } from "./service.js";
+import type { AgentCaller, EtaOutcome, EtaRequest } from "./service.js";
 
 const OWNER = asUserId("owner");
 const HOUR = 3600_000;
@@ -39,6 +38,7 @@ async function boot(geo: Partial<WhereCtxConfig["geo"]>, fetch?: typeof fetch): 
     clock,
     {
       geo: {
+        operatorMapKeys: {},
         operatorKeys: {
           kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" },
           naver: { provider: "naver", clientId: "operator-naver-id", clientSecret: "operator-naver-secret" },
@@ -63,7 +63,7 @@ afterEach(async () => {
   ctx.handle.client.close();
 });
 
-const agent = (scopes: TokenScope[] = ["read_presence"]): GeoCaller => ({
+const agent = (scopes: TokenScope[] = ["read_presence"]): AgentCaller => ({
   kind: "agent",
   credential: { kind: "token", id: "tok-1", name: "Claude" },
   surface: "mcp",
@@ -80,7 +80,8 @@ const read = (at: { lat: number; lon: number }, motion?: NormalizedReading["moti
     ...(motion ? { motion } : {}),
     updatedAt: clock.fn().toISOString(),
   });
-const eta = (request: EtaRequest, caller: GeoCaller = agent()): Promise<EtaOutcome> => ctx.system.geo.eta(OWNER, request, caller);
+const eta = (request: EtaRequest, caller: AgentCaller | { kind: "owner" } = agent()): Promise<EtaOutcome> =>
+  caller.kind === "agent" ? ctx.system.geo.eta(OWNER, request, caller) : ctx.system.geo.ownerEta(OWNER, request);
 
 describe("the roads an agent is told", () => {
   const at = (km: number) => ({ lat: ORIGIN.lat + km / 111, lon: ORIGIN.lon });

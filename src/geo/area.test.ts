@@ -42,7 +42,7 @@ async function boot(geo: Partial<WhereCtxConfig["geo"]> = {}): Promise<void> {
     clock,
     {
       bootstrapTokens: { admin: OWNER_ADMIN, agent: AGENT },
-      geo: { operatorKeys: { kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" } }, operatorKeyForAll: false, operatorDailyCap: 200, fake: true, ...geo },
+      geo: { operatorMapKeys: {}, operatorKeys: { kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" } }, operatorKeyForAll: false, operatorDailyCap: 200, fake: true, ...geo },
     },
     {},
     { geoSchedule: schedule },

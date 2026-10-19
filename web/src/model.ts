@@ -100,6 +100,10 @@ export interface GeoCredential {
   provider: GeoProviderName;
   /** unusable: the saved row cannot be opened; save the key again. */
   status: "ok" | "unusable";
+  /** The REST keys are saved. */
+  rest: boolean;
+  /** The map key is saved. */
+  map: boolean;
   /** Each key kind held, with its last four characters ("" for a secret). */
   kinds: Record<string, string>;
   updatedAt: string;
@@ -109,8 +113,11 @@ export interface GeoCredential {
 
 export interface GeoStatus {
   active: { provider: GeoProviderName; source: "own" | "operator" } | null;
+  /** The provider whose map this dashboard loads, and whose key. */
+  map: { provider: GeoProviderName; source: "own" | "operator" } | null;
   credentials: GeoCredential[];
   operator: GeoProviderName[];
+  operatorMap: GeoProviderName[];
 }
 
 export interface GeoCandidate {
@@ -131,6 +138,8 @@ export interface Eta {
   traffic: "live" | "predicted";
   arriveAt: string;
   summary: string[];
+  /** The route as drawn on a map (the owner's own answers). */
+  path?: { lat: number; lon: number }[];
   provider: GeoProviderName;
   deepLinks?: { kakaoMap: string; naverMap: string };
 }
@@ -141,6 +150,16 @@ export interface PreciseLocation {
   accuracyM?: number | null;
   updatedAgoMin: number;
   mapUrl?: string;
+}
+
+/** My own point (GET /v1/presence/precise, signed in). */
+export interface MyPoint {
+  lat: number;
+  lon: number;
+  accuracyM?: number | null;
+  updatedAgoSec: number;
+  /** I am near this home place while the map provider is kept away from there: a map shows the place, not my point. */
+  nearHome?: { name: string; lat: number; lon: number; radiusM: number };
 }
 
 export interface Person {

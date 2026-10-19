@@ -1,7 +1,9 @@
 /**
  * Presence REST API (plan section 9.7).
- *   GET /v1/presence            -> coarse presence (read_presence)
- *   GET /v1/presence/precise    -> precise location, policy-gated (read_precise_location)
+ *   GET /v1/presence            -> coarse presence (read_presence); the signed-in owner
+ *                                  reads their own without the agent policy
+ *   GET /v1/presence/precise    -> precise location, policy-gated (read_precise_location);
+ *                                  the signed-in owner reads their own without the agent policy
  *   GET /v1/presence/history?from=&to=&limit=
  *                               -> raw history in [from, to] (default: the last
  *                                  24 hours, and 5 minutes ahead for clock skew),
@@ -17,6 +19,7 @@ import type { RouteContext } from "../app/context.js";
 import { authorizePrecise, buildPreciseView } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
 import { haversineMeters } from "../geofence/distance.js";
+import { nearHomePlace } from "../geo/eta.js";
 import type { Place } from "../types.js";
 import { decide, refuse } from "./accessAudit.js";
 import { noStore, requireScope } from "./middleware.js";
@@ -58,11 +61,9 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
     if (!stored) return c.json({ error: "no presence recorded yet" }, 404);
     const settings = await scope.settings.getOrSeed();
 
+    // The owner in the dashboard sees themself whatever agents may.
+    if (c.get("principal").via === "session") return c.json(ctx.views.ownerCoarse(toPresenceContext(stored), settings));
     const view = ctx.views.agentCoarse(toPresenceContext(stored), settings);
-    if (view && c.get("principal").via === "session") {
-      // The owner in the dashboard sees their own area whether or not agents may.
-      return c.json(ctx.views.ownerCoarse(toPresenceContext(stored), settings));
-    }
     if (!view) {
       decide(c, { outcome: "hidden" });
       return c.json({ error: "presence is hidden from agents by policy", privacy: "hidden" }, 403);
@@ -86,12 +87,16 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
     const settings = await scope.settings.getOrSeed();
 
     const presence = toPresenceContext(stored);
-    const auth = authorizePrecise({
-      scopes,
-      settings,
-      presence,
-      reason,
-    });
+    if (c.get("principal").via === "session") {
+      // The owner in the dashboard reads their own point whatever agents may (the Home map).
+      const home =
+        settings.skipProviderNearHome && presence.precise
+          ? nearHomePlace(presence.precise, await scope.places.list(), ctx.config.geofence.nearRadiusMultiplier)
+          : null;
+      const own = ctx.views.ownerPrecise(presence, home);
+      return own ? c.json(own) : c.json({ error: "no precise location available" }, 404);
+    }
+    const auth = authorizePrecise({ scopes, settings, presence, reason });
     if (!auth.allowed) {
       decide(c, auth.outcome === "hidden" ? { outcome: "hidden" } : { outcome: "denied", denial: `precise location denied: ${auth.reason}` });
       return c.json({ error: "precise location denied", detail: auth.reason }, 403);
