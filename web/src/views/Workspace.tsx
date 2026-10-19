@@ -13,13 +13,13 @@ import { Table } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { WORKSPACE_ROLES, can } from "../../../src/accounts/types";
 import { ApiError, api } from "../api";
 import { useApp, useMe } from "../context";
 import { inviteRoles, memberActions } from "../lib";
 import { oneOf, type Invite, type Member, type WorkspaceMembership, type WorkspaceRole } from "../model";
-import { Empty, Loaded, Page, Panel, Row, Rows, Secret, useAction, useConfirm, useFormat, useLoad, useNotify } from "../ui";
+import { DialogForm, DialogResult, Empty, FormDialog, Loaded, Page, Panel, Row, Rows, Secret, useConfirm, useFormat, useLoad, useNotify } from "../ui";
 
 const PICK_KEY = "wherectx_workspace";
 
@@ -41,6 +41,9 @@ export function selectWorkspace(id: string | null): void {
   }
 }
 
+/** Which form the dialog holds, if any. */
+type WorkspaceDialog = { kind: "rename" } | { kind: "role"; member: Member } | null;
+
 export function WorkspaceView() {
   const { t } = useApp();
   const [picked, setPicked] = useState(storedPick);
@@ -48,32 +51,37 @@ export function WorkspaceView() {
     () => api<{ workspaces: WorkspaceMembership[] }>("/v1/workspaces").then((r) => r.workspaces ?? []),
     [],
   );
+  const [creating, setCreating] = useState(false);
   const pick = (id: string | null) => {
     selectWorkspace(id);
     setPicked(id);
   };
+  const close = () => setCreating(false);
+  const newButton = <Button label={t("ws.create")} onClick={() => setCreating(true)} />;
   return (
     <Page title={t("ws.title")} description={t("ws.desc")}>
       <Loaded state={spaces}>
         {(list) => {
           const ws = list.find((w) => w.id === picked) ?? list[0];
-          return (
-            <VStack gap={6}>
-              {ws ? (
-                <CurrentWorkspace key={ws.id} ws={ws} all={list} onPick={pick} onChanged={reload} />
-              ) : (
-                <Empty text={t("ws.none")} />
-              )}
-              <CreateWorkspace
-                onCreated={async (id) => {
-                  pick(id);
-                  await reload();
-                }}
-              />
+          return ws ? (
+            <CurrentWorkspace key={ws.id} ws={ws} all={list} onPick={pick} onChanged={reload} newButton={newButton} />
+          ) : (
+            <VStack gap={3}>
+              <Empty text={t("ws.none")} />
+              <HStack>{newButton}</HStack>
             </VStack>
           );
         }}
       </Loaded>
+      <FormDialog isOpen={creating} onClose={close}>
+        <CreateWorkspace
+          onClose={close}
+          onCreated={async (id) => {
+            pick(id);
+            await reload();
+          }}
+        />
+      </FormDialog>
     </Page>
   );
 }
@@ -83,11 +91,13 @@ function CurrentWorkspace({
   all,
   onPick,
   onChanged,
+  newButton,
 }: {
   ws: WorkspaceMembership;
   all: WorkspaceMembership[];
   onPick: (id: string | null) => void;
   onChanged: () => Promise<void>;
+  newButton: ReactNode;
 }) {
   const { t, refreshMe } = useApp();
   const me = useMe();
@@ -95,14 +105,9 @@ function CurrentWorkspace({
   const confirm = useConfirm();
   const fmt = useFormat();
   const base = `/v1/workspaces/${encodeURIComponent(ws.id)}`;
-  const [name, setName] = useState(ws.name);
+  const [dialog, setDialog] = useState<WorkspaceDialog>(null);
+  const close = () => setDialog(null);
   const [members, reloadMembers] = useLoad(() => api<{ members: Member[] }>(`${base}/members`).then((r) => r.members ?? []), [base]);
-  const [renaming, rename] = useAction(async () => {
-    await api(base, { method: "PATCH", body: { name: name.trim() } });
-    notify.ok(t("toast.saved"));
-    await refreshMe();
-    await onChanged();
-  });
   const leave = async () => {
     if (!(await confirm({ title: t("ws.leaveConfirm", { name: ws.name }), action: t("ws.leave") }))) return;
     try {
@@ -114,15 +119,6 @@ function CurrentWorkspace({
     } catch (e) {
       notify.fail(e);
     }
-  };
-  const changeRole = async (m: Member, role: WorkspaceRole) => {
-    try {
-      await api(`${base}/members/${encodeURIComponent(m.userId)}`, { method: "PATCH", body: { role } });
-      notify.ok(t("toast.saved"));
-    } catch (e) {
-      notify.fail(e);
-    }
-    await reloadMembers();
   };
   const remove = async (m: Member) => {
     if (!(await confirm({ title: t("ws.removeConfirm", { name: m.displayName }), action: t("ws.remove") }))) return;
@@ -138,7 +134,15 @@ function CurrentWorkspace({
 
   return (
     <VStack gap={6}>
-      <Panel title={t("ws.overview")}>
+      <Panel
+        title={t("ws.overview")}
+        actions={
+          <HStack gap={2} wrap="wrap">
+            {can(ws.role, "rename") ? <Button label={t("ws.rename")} onClick={() => setDialog({ kind: "rename" })} /> : null}
+            {newButton}
+          </HStack>
+        }
+      >
         <VStack gap={4}>
           <HStack gap={3} vAlign="center" wrap="wrap">
             <StackItem size="fill">
@@ -159,19 +163,6 @@ function CurrentWorkspace({
               width={320}
             />
           ) : null}
-          {can(ws.role, "rename") ? (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (name.trim()) void rename();
-              }}
-            >
-              <HStack gap={2} wrap="wrap" vAlign="end">
-                <TextInput label={t("ws.name")} value={name} onChange={setName} isRequired width={280} />
-                <Button type="submit" label={t("ws.rename")} isLoading={renaming} isDisabled={!name.trim() || name.trim() === ws.name} />
-              </HStack>
-            </form>
-          ) : null}
         </VStack>
       </Panel>
       <Panel title={t("ws.members")}>
@@ -190,21 +181,8 @@ function CurrentWorkspace({
                     }
                     subtitle={`${t("ws.joined")} ${fmt.date(m.joinedAt)}`}
                   >
-                    {a.changeRole ? (
-                      <Selector
-                        label={t("ws.roleFor", { name: m.displayName })}
-                        isLabelHidden
-                        size="sm"
-                        width={140}
-                        value={m.role}
-                        options={a.roleChoices.map((r) => ({ value: r, label: t(`role.${r}`) }))}
-                        onChange={(r) => {
-                          if (oneOf(WORKSPACE_ROLES, r) && r !== m.role) void changeRole(m, r);
-                        }}
-                      />
-                    ) : (
-                      <Text>{t(`role.${m.role}`)}</Text>
-                    )}
+                    <Text>{t(`role.${m.role}`)}</Text>
+                    {a.changeRole ? <Button label={t("ws.changeRole")} size="sm" onClick={() => setDialog({ kind: "role", member: m })} /> : null}
                     {a.remove ? <Button label={t("ws.remove")} variant="destructive" size="sm" clickAction={() => remove(m)} /> : null}
                   </Row>
                 );
@@ -214,7 +192,111 @@ function CurrentWorkspace({
         </Loaded>
       </Panel>
       {invitable.length ? <Invites base={base} myRole={ws.role} roles={invitable} /> : null}
+      <FormDialog isOpen={dialog !== null} onClose={close}>
+        {dialog?.kind === "rename" ? (
+          <RenameWorkspace ws={ws} base={base} onClose={close} onSaved={onChanged} />
+        ) : dialog?.kind === "role" ? (
+          <ChangeRole
+            member={dialog.member}
+            choices={memberActions(ws.role, me.user.id, dialog.member).roleChoices}
+            base={base}
+            onClose={close}
+            onSaved={reloadMembers}
+          />
+        ) : null}
+      </FormDialog>
     </VStack>
+  );
+}
+
+function RenameWorkspace({ ws, base, onClose, onSaved }: { ws: WorkspaceMembership; base: string; onClose: () => void; onSaved: () => Promise<void> }) {
+  const { t, refreshMe } = useApp();
+  const notify = useNotify();
+  const [name, setName] = useState(ws.name);
+  const save = async () => {
+    await api(base, { method: "PATCH", body: { name: name.trim() } });
+    notify.ok(t("toast.saved"));
+    await refreshMe();
+    await onSaved();
+  };
+  return (
+    <DialogForm
+      title={t("ws.renameTitle")}
+      submitLabel={t("common.save")}
+      canSubmit={name.trim() !== "" && name.trim() !== ws.name}
+      onSubmit={save}
+      onClose={onClose}
+    >
+      <TextInput label={t("ws.name")} value={name} onChange={setName} isRequired />
+    </DialogForm>
+  );
+}
+
+function ChangeRole({
+  member,
+  choices,
+  base,
+  onClose,
+  onSaved,
+}: {
+  member: Member;
+  choices: WorkspaceRole[];
+  base: string;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const { t } = useApp();
+  const notify = useNotify();
+  const [role, setRole] = useState<WorkspaceRole>(member.role);
+  const save = async () => {
+    await api(`${base}/members/${encodeURIComponent(member.userId)}`, { method: "PATCH", body: { role } });
+    notify.ok(t("toast.saved"));
+    await onSaved();
+  };
+  return (
+    <DialogForm
+      title={t("ws.roleTitle", { name: member.displayName })}
+      submitLabel={t("common.save")}
+      canSubmit={role !== member.role}
+      onSubmit={save}
+      onClose={onClose}
+    >
+      <Selector
+        label={t("ws.role")}
+        value={role}
+        options={choices.map((r) => ({ value: r, label: t(`role.${r}`) }))}
+        onChange={(r) => oneOf(WORKSPACE_ROLES, r) && setRole(r)}
+      />
+    </DialogForm>
+  );
+}
+
+function CreateInvite({ base, roles, onClose, onCreated }: { base: string; roles: WorkspaceRole[]; onClose: () => void; onCreated: () => Promise<void> }) {
+  const { t } = useApp();
+  const fmt = useFormat();
+  const [role, setRole] = useState<WorkspaceRole>(roles.includes("member") ? "member" : roles[0]!);
+  const [created, setCreated] = useState<{ url: string; expiresAt: string } | null>(null);
+  const create = async () => {
+    setCreated(await api<{ url: string; expiresAt: string }>(`${base}/invites`, { body: { role } }));
+    await onCreated();
+  };
+  if (created) {
+    return (
+      <DialogResult title={t("ws.inviteReady")} onClose={onClose}>
+        <Text>{t("ws.inviteCreated", { date: fmt.time(created.expiresAt) })}</Text>
+        <Secret label={t("ws.inviteLink")} value={created.url} />
+      </DialogResult>
+    );
+  }
+  return (
+    <DialogForm title={t("ws.inviteTitle")} submitLabel={t("ws.inviteButton")} canSubmit keepOpen onSubmit={create} onClose={onClose}>
+      <Selector
+        label={t("ws.inviteRole")}
+        value={role}
+        options={roles.map((r) => ({ value: r, label: t(`role.${r}`) }))}
+        onChange={(r) => oneOf(WORKSPACE_ROLES, r) && setRole(r)}
+      />
+    </DialogForm>
   );
 }
 
@@ -222,15 +304,9 @@ function Invites({ base, myRole, roles }: { base: string; myRole: WorkspaceRole;
   const { t } = useApp();
   const notify = useNotify();
   const confirm = useConfirm();
-  const fmt = useFormat();
-  const [role, setRole] = useState<WorkspaceRole>(roles.includes("member") ? "member" : roles[0]!);
-  const [created, setCreated] = useState<{ url: string; expiresAt: string } | null>(null);
+  const [inviting, setInviting] = useState(false);
   const [invites, reload] = useLoad(() => api<{ invites: Invite[] }>(`${base}/invites`).then((r) => r.invites ?? []), [base]);
-  const [busy, create] = useAction(async () => {
-    const r = await api<{ url: string; expiresAt: string }>(`${base}/invites`, { body: { role } });
-    setCreated(r);
-    await reload();
-  });
+  const close = () => setInviting(false);
   const revoke = async (i: Invite) => {
     if (!(await confirm({ title: t("ws.revokeInviteConfirm"), action: t("common.revoke") }))) return;
     try {
@@ -242,60 +318,45 @@ function Invites({ base, myRole, roles }: { base: string; myRole: WorkspaceRole;
     await reload();
   };
   return (
-    <Panel title={t("ws.invites")}>
-      <VStack gap={4}>
-        <HStack gap={2} wrap="wrap" vAlign="end">
-          <Selector
-            label={t("ws.inviteRole")}
-            value={role}
-            options={roles.map((r) => ({ value: r, label: t(`role.${r}`) }))}
-            onChange={(r) => oneOf(WORKSPACE_ROLES, r) && setRole(r)}
-            width={200}
-          />
-          <Button label={t("ws.inviteButton")} variant="primary" isLoading={busy} onClick={() => void create()} />
-        </HStack>
-        {created ? (
-          <VStack gap={2}>
-            <Text>{t("ws.inviteCreated", { date: fmt.time(created.expiresAt) })}</Text>
-            <Secret label={t("ws.inviteLink")} value={created.url} />
-          </VStack>
-        ) : null}
-        <Loaded state={invites}>
-          {(list) =>
-            list.length ? (
-              <Table
-                data={list.map((i) => ({ ...i }))}
-                idKey="id"
-                columns={[
-                  { key: "role", header: t("ws.role"), renderCell: (i) => t(`role.${i.role}`) },
-                  { key: "createdAt", header: t("ws.createdAt"), renderCell: (i) => <Timestamp value={i.createdAt} format="date_time" /> },
-                  { key: "expiresAt", header: t("ws.expires"), renderCell: (i) => <Timestamp value={i.expiresAt} format="date_time" /> },
-                  {
-                    key: "actions",
-                    header: "",
-                    align: "end",
-                    renderCell: (i) =>
-                      can(myRole, "revokeInvite") && roles.includes(i.role) ? (
-                        <Button label={t("common.revoke")} variant="destructive" size="sm" clickAction={() => revoke(i)} />
-                      ) : null,
-                  },
-                ]}
-              />
-            ) : (
-              <Empty text={t("ws.noInvites")} />
-            )
-          }
-        </Loaded>
-      </VStack>
+    <Panel title={t("ws.invites")} actions={<Button label={t("ws.inviteButton")} variant="primary" onClick={() => setInviting(true)} />}>
+      <Loaded state={invites}>
+        {(list) =>
+          list.length ? (
+            <Table
+              data={list.map((i) => ({ ...i }))}
+              idKey="id"
+              columns={[
+                { key: "role", header: t("ws.role"), renderCell: (i) => t(`role.${i.role}`) },
+                { key: "createdAt", header: t("ws.createdAt"), renderCell: (i) => <Timestamp value={i.createdAt} format="date_time" /> },
+                { key: "expiresAt", header: t("ws.expires"), renderCell: (i) => <Timestamp value={i.expiresAt} format="date_time" /> },
+                {
+                  key: "actions",
+                  header: "",
+                  align: "end",
+                  renderCell: (i) =>
+                    can(myRole, "revokeInvite") && roles.includes(i.role) ? (
+                      <Button label={t("common.revoke")} variant="destructive" size="sm" clickAction={() => revoke(i)} />
+                    ) : null,
+                },
+              ]}
+            />
+          ) : (
+            <Empty text={t("ws.noInvites")} />
+          )
+        }
+      </Loaded>
+      <FormDialog isOpen={inviting} onClose={close}>
+        <CreateInvite base={base} roles={roles} onClose={close} onCreated={reload} />
+      </FormDialog>
     </Panel>
   );
 }
 
-function CreateWorkspace({ onCreated }: { onCreated: (id: string) => Promise<void> }) {
+function CreateWorkspace({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => Promise<void> }) {
   const { t, refreshMe } = useApp();
   const notify = useNotify();
   const [name, setName] = useState("");
-  const [busy, create] = useAction(async () => {
+  const create = async () => {
     let r: { workspace: { id: string } };
     try {
       r = await api(`/v1/workspaces`, { body: { name: name.trim() } });
@@ -303,24 +364,13 @@ function CreateWorkspace({ onCreated }: { onCreated: (id: string) => Promise<voi
       if (e instanceof ApiError && e.code === "forbidden") throw new Error(t("ws.createForbidden"));
       throw e;
     }
-    setName("");
     notify.ok(t("ws.created"));
     await refreshMe();
     await onCreated(r.workspace.id);
-  });
+  };
   return (
-    <Panel title={t("ws.create")}>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (name.trim()) void create();
-        }}
-      >
-        <HStack gap={2} wrap="wrap" vAlign="end">
-          <TextInput label={t("ws.name")} placeholder={t("ws.namePlaceholder")} value={name} onChange={setName} isRequired width={280} />
-          <Button type="submit" label={t("ws.createButton")} variant="primary" isLoading={busy} isDisabled={!name.trim()} />
-        </HStack>
-      </form>
-    </Panel>
+    <DialogForm title={t("ws.create")} submitLabel={t("ws.createButton")} canSubmit={name.trim() !== ""} onSubmit={create} onClose={onClose}>
+      <TextInput label={t("ws.name")} placeholder={t("ws.namePlaceholder")} value={name} onChange={setName} isRequired />
+    </DialogForm>
   );
 }

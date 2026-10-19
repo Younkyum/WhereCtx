@@ -721,4 +721,9 @@ export const KO: Record<I18nKey, string> = {
   "common.done": "완료",
   "agents.createdTitle": "에이전트 토큰을 만들었어요",
   "devices.pairedTitle": "{name} 설정하기",
+  "ws.renameTitle": "워크스페이스 이름 바꾸기",
+  "ws.changeRole": "역할 바꾸기",
+  "ws.roleTitle": "{name}님의 역할 바꾸기",
+  "ws.inviteTitle": "초대하기",
+  "ws.inviteReady": "초대 링크를 만들었어요",
 };

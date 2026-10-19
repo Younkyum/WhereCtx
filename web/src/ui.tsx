@@ -363,13 +363,19 @@ export function FormDialog({ isOpen, onClose, children }: { isOpen: boolean; onC
   );
 }
 
-/** A refused submit as a localized title over the server's own words, which are often English. */
+/**
+ * A refused submit as a localized title over the server's own words, which
+ * are often English. A cancelled passkey prompt, or an Error the view threw
+ * with its own message, is the title alone.
+ */
 function failureText(e: unknown, t: Translate): { title: string; detail: string } {
+  const passkey = passkeyErrorKey(e);
+  if (passkey) return { title: t(passkey), detail: "" };
   if (e instanceof ApiError) {
     const key = errorKey(e);
     return { title: t(key ?? "err.generic"), detail: [...(key ? [] : [e.message]), ...e.detail].join("; ") };
   }
-  return { title: t("err.generic"), detail: e instanceof Error ? e.message : "" };
+  return { title: e instanceof Error && e.message ? e.message : t("err.generic"), detail: "" };
 }
 
 /**

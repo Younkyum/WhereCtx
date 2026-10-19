@@ -1225,6 +1225,11 @@ describe("create and edit dialogs", () => {
     await settle();
   }
 
+  async function choose(scope: ParentNode, option: string) {
+    await click(scope.querySelector<HTMLElement>('[role="combobox"]')!);
+    await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) => o.textContent?.trim() === option)!);
+  }
+
   const dialog = () => {
     const d = openDialog();
     if (!d) throw new Error(`no open dialog in: ${host.textContent}`);
@@ -1288,6 +1293,69 @@ describe("create and edit dialogs", () => {
     expect(calls.filter((c) => c === "GET /v1/devices").length).toBeGreaterThan(1);
     await click(dialogButton("Done"));
     expect(openDialog()).toBeUndefined();
+  });
+
+  function serveWorkspace() {
+    const sent: Record<string, unknown[]> = { rename: [], role: [], invite: [], create: [] };
+    let wsName = "Home";
+    route("GET /v1/workspaces", () => ({ status: 200, body: { workspaces: [{ id: "w1", name: wsName, role: "owner" }] } }));
+    route("GET /v1/workspaces/w1/members", () => ({
+      status: 200,
+      body: {
+        members: [
+          { userId: "u1", displayName: "Me", role: "owner", joinedAt: "2026-01-01T00:00:00.000Z" },
+          { userId: "u2", displayName: "Kim", role: "member", joinedAt: "2026-01-02T00:00:00.000Z" },
+        ],
+      },
+    }));
+    route("GET /v1/workspaces/w1/invites", () => ({ status: 200, body: { invites: [] } }));
+    route("PATCH /v1/workspaces/w1", (b: any) => (sent.rename!.push(b), (wsName = b.name), { status: 200, body: { ok: true } }));
+    route("PATCH /v1/workspaces/w1/members/u2", (b) => (sent.role!.push(b), { status: 200, body: { ok: true } }));
+    route("POST /v1/workspaces/w1/invites", (b) => (
+      sent.invite!.push(b), { status: 201, body: { url: "https://where.example/invite/abc", expiresAt: "2026-10-26T00:00:00.000Z" } }
+    ));
+    route("POST /v1/workspaces", (b) => (sent.create!.push(b), { status: 403, body: { error: "forbidden", code: "forbidden" } }));
+    return sent;
+  }
+
+  it("Workspace renames, changes a member's role, and invites in dialogs; nothing is edited on the page", async () => {
+    const sent = serveWorkspace();
+    await open("#workspace");
+    expect(host.querySelector("form")).toBeNull();
+    expect(host.textContent).toContain("Member");
+
+    await click(button("Rename"));
+    expect(dialogButton("Save").disabled).toBe(true);
+    await fill(inputLabelled(dialog(), "Workspace name"), "Family");
+    await pressEnterIn(inputLabelled(dialog(), "Workspace name"));
+    expect(sent.rename).toEqual([{ name: "Family" }]);
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).toContain("Family");
+
+    await click(button("Change role"));
+    expect(dialog().textContent).toContain("Change Kim's role");
+    await choose(dialog(), "Admin");
+    await click(dialogButton("Save"));
+    expect(sent.role).toEqual([{ role: "admin" }]);
+    expect(openDialog()).toBeUndefined();
+
+    await click(button("Create invite link"));
+    await click(dialogButton("Create invite link"));
+    expect(sent.invite).toEqual([{ role: "member" }]);
+    expect(dialog().textContent).toContain("https://where.example/invite/abc");
+    await click(dialogButton("Done"));
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).not.toContain("https://where.example/invite/abc");
+  });
+
+  it("Workspace says inside the dialog when this server lets only owners and admins create a workspace", async () => {
+    const sent = serveWorkspace();
+    await open("#workspace");
+    await click(button("New workspace"));
+    await fill(inputLabelled(dialog(), "Workspace name"), "Club");
+    await click(dialogButton("Create"));
+    expect(sent.create).toEqual([{ name: "Club" }]);
+    expect(dialog().textContent).toContain("Only workspace owners and admins can create workspaces on this server.");
   });
 
   it("Agents shows a refused create inside the dialog and keeps the name", async () => {

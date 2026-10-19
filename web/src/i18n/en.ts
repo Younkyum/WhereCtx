@@ -719,6 +719,11 @@ export const EN = {
   "common.done": "Done",
   "agents.createdTitle": "Agent token created",
   "devices.pairedTitle": "Set up {name}",
+  "ws.renameTitle": "Rename workspace",
+  "ws.changeRole": "Change role",
+  "ws.roleTitle": "Change {name}'s role",
+  "ws.inviteTitle": "Invite someone",
+  "ws.inviteReady": "Invite link ready",
 } as const;
 
 export type I18nKey = keyof typeof EN;
