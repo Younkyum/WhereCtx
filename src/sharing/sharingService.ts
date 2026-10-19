@@ -72,6 +72,7 @@ export class SharingService {
     const outcome = await this.stores.shares.put(me.userId, viewer, grant, {
       mayWiden: hasFreshAuth(me.reauthAt, this.clock()),
       defaultHideHomeExact: settings.hideHomeExactCoordinates,
+      defaultShowArea: settings.areaToPeople,
     });
     if (outcome === "reauth_required") {
       return fail(

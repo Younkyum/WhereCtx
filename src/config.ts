@@ -9,6 +9,7 @@
 
 import { asUserId, type PrivacyMode, type UserId } from "./types.js";
 import { normalizeDatabaseUrl } from "./db/url.js";
+import type { GeoCredentials } from "./geo/types.js";
 
 export { normalizeDatabaseUrl };
 
@@ -140,6 +141,40 @@ export interface Config {
      */
     dynamicRegistration: boolean;
   };
+  geo: {
+    /** Operator maps keys, the fallback when a person has saved none of their own. */
+    operatorKeys: {
+      kakao?: Extract<GeoCredentials, { provider: "kakao" }>;
+      naver?: Extract<GeoCredentials, { provider: "naver" }>;
+    };
+    /** Let every person fall back to the operator keys, not only USER_ID. */
+    operatorKeyForAll: boolean;
+    /** Answer every maps call from the fake provider (tests and the HTTP end-to-end run only). */
+    fake: boolean;
+  };
+}
+
+function operatorKeys(): Config["geo"]["operatorKeys"] {
+  const restKey = envOptional("KAKAO_REST_API_KEY");
+  const clientId = envOptional("NAVER_MAPS_CLIENT_ID");
+  const clientSecret = envOptional("NAVER_MAPS_CLIENT_SECRET");
+  if ((clientId === undefined) !== (clientSecret === undefined)) {
+    throw new Error("NAVER_MAPS_CLIENT_ID and NAVER_MAPS_CLIENT_SECRET must be set together");
+  }
+  return {
+    ...(restKey ? { kakao: { provider: "kakao" as const, restKey } } : {}),
+    ...(clientId && clientSecret ? { naver: { provider: "naver" as const, clientId, clientSecret } } : {}),
+  };
+}
+
+/** The fake maps provider never answers in production: only under NODE_ENV test or development. */
+function geoFake(): boolean {
+  const fake = envBool("GEO_PROVIDER_FAKE", false);
+  const nodeEnv = process.env.NODE_ENV;
+  if (fake && nodeEnv !== "test" && nodeEnv !== "development") {
+    throw new Error("GEO_PROVIDER_FAKE is only allowed with NODE_ENV=test or NODE_ENV=development");
+  }
+  return fake;
 }
 
 export function loadConfig(): Config {
@@ -195,6 +230,11 @@ export function loadConfig(): Config {
     },
     oauth: {
       dynamicRegistration: envBool("OAUTH_DYNAMIC_REGISTRATION", false),
+    },
+    geo: {
+      operatorKeys: operatorKeys(),
+      operatorKeyForAll: envBool("GEO_OPERATOR_KEY_FOR_ALL", false),
+      fake: geoFake(),
     },
   });
 }

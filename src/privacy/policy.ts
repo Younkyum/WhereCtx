@@ -136,12 +136,16 @@ export interface ShareTerms {
   level: ShareLevel;
   /** Withhold coordinates while the owner is at or near home. */
   hideHomeExact: boolean;
+  /** Show the owner's neighbourhood (presence area). */
+  showArea: boolean;
 }
 
 /** The owner-side facts a person view depends on, beyond the presence row. */
 export interface SharingOwnerContext {
   sharingPaused: boolean;
   hasHomePlace: boolean;
+  /** The owner's maps switch: no area is shown while it is off. */
+  geoEnabled: boolean;
 }
 
 /**
@@ -162,6 +166,8 @@ export interface PersonPresence {
   motion: Motion;
   updatedAgoMin: number;
   stale: boolean;
+  /** The neighbourhood, when the share shows it. */
+  area?: string;
 }
 
 export interface PersonPrecise {
@@ -210,12 +216,14 @@ export function buildPersonView(
   clock: Clock = systemClock,
 ): PersonView {
   if (owner.sharingPaused) return { paused: true, presence: null, precise: null };
+  const area = share.showArea && owner.geoEnabled ? presence?.coarse?.area : undefined;
   const summary: PersonPresence | null = presence && {
     status: presence.status,
     label: labelForStatus(presence.status),
     motion: presence.motion ?? "unknown",
     updatedAgoMin: minutesSince(presence.updatedAt, clock),
     stale: isStale(presence.updatedAt, presence.staleAfterSec, clock),
+    ...(area ? { area } : {}),
   };
   if (share.level !== "precise") return { paused: false, presence: summary, precise: null };
   const withheld = preciseWithheld(presence, share, owner);

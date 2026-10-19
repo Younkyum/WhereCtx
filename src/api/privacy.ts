@@ -7,6 +7,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
+import { GEO_PROVIDERS } from "../geo/types.js";
 import { requireScope } from "./middleware.js";
 import { zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
@@ -22,6 +23,12 @@ const PatchSchema = z
     retentionHours: z.number().int().min(0).max(8760),
     storeRawHistory: z.boolean(),
     sharingPaused: z.boolean(),
+    geoEnabled: z.boolean(),
+    areaToAgents: z.boolean(),
+    areaToPeople: z.boolean(),
+    etaToAgents: z.boolean(),
+    skipProviderNearHome: z.boolean(),
+    geoProvider: z.enum(GEO_PROVIDERS).nullable(),
   })
   .partial();
 

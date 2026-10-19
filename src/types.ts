@@ -6,6 +6,8 @@
  * downstream component (privacy engine, geofence, store, MCP, REST) consumes.
  */
 
+import type { GeoProviderName } from "./geo/types.js";
+
 /**
  * Owner of every row of user data. Branded so a raw string (a place name, a
  * token id) can never be passed where a tenant key is expected; construct one
@@ -210,6 +212,21 @@ export interface PrivacySettings {
    * touching the shares. Agents are governed by `defaultAgentAccess` alone.
    */
   sharingPaused: boolean;
+  /**
+   * Master switch for maps: no provider call is made with this person's
+   * location, and no area is kept, while it is off. Off by default.
+   */
+  geoEnabled: boolean;
+  /** Agents' coarse presence may include the neighbourhood (presence area). */
+  areaToAgents: boolean;
+  /** The default `showArea` of a new location share. */
+  areaToPeople: boolean;
+  /** Agents may ask for an ETA or directions from the current location. */
+  etaToAgents: boolean;
+  /** No provider call with the live location while at or near home. On by default. */
+  skipProviderNearHome: boolean;
+  /** The provider to use; null picks the first one with a key. */
+  geoProvider: GeoProviderName | null;
 }
 
 /** Most points one GET /v1/presence/history returns, and how many by default. */

@@ -74,10 +74,12 @@ describe("env documentation", () => {
     expect([...active(text)].filter((v) => !configVars.has(v) && !extra.includes(v))).toEqual([]);
   });
 
-  it("the NAS compose file passes every variable config.ts reads except the fixed listen address", () => {
+  it("the NAS compose file passes every variable config.ts reads except the fixed listen address and the test-only fake", () => {
     const compose = read("../deploy/docker-compose.nas.yml");
     const passed = keys(compose, /^ {6}([A-Z0-9_]+):/gm);
     const fixed = ["PORT", "HOST"];
-    expect([...configVars].filter((v) => !passed.has(v) && !fixed.includes(v))).toEqual([]);
+    // The fake maps provider is refused in production, so the NAS file never passes it.
+    const testOnly = ["GEO_PROVIDER_FAKE"];
+    expect([...configVars].filter((v) => !passed.has(v) && !fixed.includes(v) && !testOnly.includes(v))).toEqual([]);
   });
 });

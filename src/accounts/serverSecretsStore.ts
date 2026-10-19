@@ -1,7 +1,8 @@
 /**
  * Per-install secrets kept in the database, so every instance sharing it
  * agrees: the key that signs WebAuthn ceremony state, the OAuth server's token
- * signing key and cookie key, and the hash of the first-owner setup code.
+ * signing key and cookie key, the key that seals people's maps provider keys,
+ * and the hash of the first-owner setup code.
  */
 
 import { generateKeyPairSync, randomBytes } from "node:crypto";
@@ -15,6 +16,7 @@ const CEREMONY_KEY = "ceremony_key";
 const OAUTH_SIGNING_KEY = "oauth_signing_jwk";
 const OAUTH_COOKIE_KEY = "oauth_cookie_key";
 const SETUP_CODE_HASH = "setup_code_hash";
+const GEO_CREDENTIAL_KEY = "geo_credential_key";
 
 export interface OAuthKeys {
   /** Private JWK the authorization server signs with (published at /oauth/jwks). */
@@ -44,6 +46,11 @@ export class ServerSecretsStore {
     );
     const cookieKey = await this.getOrCreate(OAUTH_COOKIE_KEY, () => randomBytes(32).toString("base64url"));
     return { signingKey: JSON.parse(jwk) as JWK, cookieKey };
+  }
+
+  /** Seals people's maps provider keys (geo_credentials), created on first boot. */
+  geoCredentialKey(): Promise<string> {
+    return this.getOrCreate(GEO_CREDENTIAL_KEY, () => randomBytes(32).toString("base64url"));
   }
 
   setupCodeHash(): Promise<string | null> {
