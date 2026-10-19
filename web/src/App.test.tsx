@@ -103,6 +103,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
   vi.unstubAllGlobals();
+  location.hash = "";
 });
 
 describe("dashboard app", () => {
@@ -156,7 +157,6 @@ describe("dashboard app", () => {
     await settle();
     expect(calls).toContain("DELETE /v1/places/Gym");
     expect(host.textContent).toContain("No places yet.");
-    location.hash = "";
   });
 
   it("returns to sign-in when the session ends mid-use", async () => {
@@ -297,7 +297,6 @@ describe("dashboard app", () => {
     await settle();
     expect(calls).toContain("DELETE /v1/oauth/grants/g1");
     expect(host.textContent).toContain("No connected apps yet.");
-    location.hash = "";
   });
 
   it("shows how long ago, never a stale badge, and 'device offline' only when the device is offline", async () => {
@@ -348,10 +347,6 @@ describe("log views", () => {
     await act(async () => root.render(<App />));
     await settle();
   }
-
-  afterEach(() => {
-    location.hash = "";
-  });
 
   it("History explains that history is off and links to Privacy", async () => {
     route("GET /v1/presence/history", () => ({
@@ -767,10 +762,6 @@ describe("maps", () => {
     return input as HTMLInputElement;
   };
 
-  afterEach(() => {
-    location.hash = "";
-  });
-
   it("shows a saved key only by its hint, saves a new one write-only, and turns maps on", async () => {
     const bodies: unknown[] = [];
     route("GET /v1/me", () => ({ status: 200, body: ME }));
@@ -973,10 +964,6 @@ describe("place rules and webhook places", () => {
     route("POST /v1/places", (b) => (posted.push(b), { status: 201, body: { place: b } }));
     return posted;
   }
-
-  afterEach(() => {
-    location.hash = "";
-  });
 
   it("lists each place's rules read-only and edits them in a dialog that keeps a polygon's outline", async () => {
     const posted = servePlaces([OFFICE_PLACE]);
@@ -1247,10 +1234,6 @@ describe("create and edit dialogs", () => {
     if (!d) throw new Error(`no open dialog in: ${host.textContent}`);
     return d;
   };
-
-  afterEach(() => {
-    location.hash = "";
-  });
 
   it("Agents creates a token in a dialog and shows its secret there once, then lists it", async () => {
     let tokens: unknown[] = [];
