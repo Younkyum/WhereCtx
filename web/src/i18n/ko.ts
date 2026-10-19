@@ -733,4 +733,6 @@ export const KO: Record<I18nKey, string> = {
   "sharing.edit": "편집",
   "sharing.levelLabel": "보여 줄 정보",
   "sharing.areaOn": "동네 공개",
+  "privacy.edit": "개인정보 설정 편집",
+  "privacy.editTitle": "에이전트가 볼 수 있는 정보",
 };

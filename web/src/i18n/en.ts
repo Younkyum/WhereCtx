@@ -731,6 +731,8 @@ export const EN = {
   "sharing.edit": "Edit",
   "sharing.levelLabel": "What they see",
   "sharing.areaOn": "neighbourhood shown",
+  "privacy.edit": "Edit privacy settings",
+  "privacy.editTitle": "What agents can see",
 } as const;
 
 export type I18nKey = keyof typeof EN;

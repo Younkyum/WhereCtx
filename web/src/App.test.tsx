@@ -1456,6 +1456,47 @@ describe("create and edit dialogs", () => {
     expect(sent[2]).toBe("DELETE u2");
   });
 
+  it("Privacy shows the settings read-only, edits agent access in a dialog, and pauses sharing with one switch", async () => {
+    let settings: any = {
+      defaultAgentAccess: "coarse",
+      allowPreciseLocation: false,
+      preciseRequiresReason: true,
+      preciseRequiresApproval: false,
+      hideHomeExactCoordinates: true,
+      protectHomePlace: true,
+      storeRawHistory: false,
+      retentionHours: 24,
+      sharingPaused: false,
+    };
+    const puts: unknown[] = [];
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings } }));
+    route("PUT /v1/privacy", (b: any) => (puts.push(b), (settings = { ...settings, ...b }), { status: 200, body: { settings } }));
+    await open("#privacy");
+    expect(host.querySelector("form")).toBeNull();
+    expect(host.querySelector('input[type="checkbox"]:not([role="switch"])')).toBeNull();
+    expect(host.textContent).toContain("Keep history for (hours)24");
+
+    await click(button("Edit privacy settings"));
+    await click(inputLabelled(dialog(), "Keep raw location history"));
+    await click(dialogButton("Save"));
+    expect(puts).toEqual([
+      {
+        defaultAgentAccess: "coarse",
+        retentionHours: 24,
+        allowPreciseLocation: false,
+        preciseRequiresReason: true,
+        preciseRequiresApproval: false,
+        hideHomeExactCoordinates: true,
+        protectHomePlace: true,
+        storeRawHistory: true,
+      },
+    ]);
+    expect(openDialog()).toBeUndefined();
+
+    await click(host.querySelector<HTMLInputElement>('input[role="switch"]')!);
+    expect(puts[1]).toEqual({ sharingPaused: true });
+  });
+
   it("Agents shows a refused create inside the dialog and keeps the name", async () => {
     route("GET /v1/tokens", () => ({ status: 200, body: { tokens: [] } }));
     route("GET /v1/oauth/grants", () => ({ status: 200, body: { grants: [] } }));
