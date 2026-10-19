@@ -1358,6 +1358,63 @@ describe("create and edit dialogs", () => {
     expect(dialog().textContent).toContain("Only workspace owners and admins can create workspaces on this server.");
   });
 
+  it("Account changes the display name in a dialog submitted with Enter", async () => {
+    let me = { ...ME, user: { id: "u1", displayName: "Jin" } };
+    const sent: unknown[] = [];
+    route("PATCH /v1/me", (b: any) => (sent.push(b), (me = { ...me, user: { ...me.user, displayName: b.displayName } }), { status: 200, body: { ok: true } }));
+    route("GET /v1/me", () => ({ status: 200, body: me }));
+    location.hash = "#account";
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.querySelector("form")).toBeNull();
+    await click(button("Change display name"));
+    await fill(inputLabelled(dialog(), "Display name"), "Younkyum");
+    await pressEnterIn(inputLabelled(dialog(), "Display name"));
+    expect(sent).toEqual([{ displayName: "Younkyum" }]);
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).toContain("Younkyum");
+  });
+
+  it("Account keeps a cancelled passkey prompt inside the Add a passkey dialog", async () => {
+    route("POST /v1/me/passkeys/options", () => ({ status: 200, body: { ceremony: "c1", options: { challenge: "AQID", user: { id: "AQ" } } } }));
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true,
+      value: { create: vi.fn(async () => Promise.reject(Object.assign(new Error("cancelled"), { name: "NotAllowedError" }))) },
+    });
+    await open("#account");
+    await click(button("Add a passkey"));
+    await click(dialogButton("Create passkey"));
+    expect(calls).not.toContain("POST /v1/me/passkeys/verify");
+    expect(dialog().textContent).toMatch(/cancel/i);
+    expect(dialogButton("Create passkey").disabled).toBe(false);
+  });
+
+  it("Account makes new recovery codes after a passkey step-up, and holds the dialog until they are saved", async () => {
+    let reauthed = false;
+    route("POST /v1/me/reauth/options", () => ({ status: 200, body: { ceremony: "c1", options: { challenge: "AQID" } } }));
+    route("POST /v1/me/reauth/verify", () => ((reauthed = true), { status: 200, body: { ok: true } }));
+    route("POST /v1/me/recovery-codes", () =>
+      reauthed
+        ? { status: 200, body: { recoveryCodes: ["aaaa-bbbb", "cccc-dddd"] } }
+        : { status: 403, body: { error: "confirm with your passkey first", code: "reauth_required" } },
+    );
+    await open("#account");
+    await click(button("Make new recovery codes"));
+    expect(dialog().textContent).toContain("Your current codes stop working.");
+    await click(dialogButton("Make new codes"));
+    expect(calls).toContain("POST /v1/me/reauth/verify");
+    expect(dialog().textContent).toContain("aaaa-bbbb");
+    expect(dialog().querySelector('button[aria-label="Close"]')).toBeNull();
+    dialog().querySelector<HTMLInputElement>('input[type="checkbox"]')!.focus();
+    await pressEscape();
+    expect(dialog().textContent).toContain("aaaa-bbbb");
+    expect(dialogButton("Continue").disabled).toBe(true);
+    await click(dialog().querySelector<HTMLInputElement>('input[type="checkbox"]')!);
+    await click(dialogButton("Continue"));
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).not.toContain("aaaa-bbbb");
+  });
+
   it("Agents shows a refused create inside the dialog and keeps the name", async () => {
     route("GET /v1/tokens", () => ({ status: 200, body: { tokens: [] } }));
     route("GET /v1/oauth/grants", () => ({ status: 200, body: { grants: [] } }));

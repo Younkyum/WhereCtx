@@ -726,4 +726,8 @@ export const KO: Record<I18nKey, string> = {
   "ws.roleTitle": "{name}님의 역할 바꾸기",
   "ws.inviteTitle": "초대하기",
   "ws.inviteReady": "초대 링크를 만들었어요",
+  "account.editName": "표시 이름 바꾸기",
+  "account.addPasskeyDesc": "브라우저나 휴대폰이 WhereCtx용 패스키를 만들라고 안내해요. 로그인하는 기기마다 하나씩 추가해 두면 하나를 잃어도 계정에 들어올 수 있어요.",
+  "account.addPasskeyButton": "패스키 만들기",
+  "account.newCodesButton": "새 코드 만들기",
 };

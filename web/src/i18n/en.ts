@@ -724,6 +724,10 @@ export const EN = {
   "ws.roleTitle": "Change {name}'s role",
   "ws.inviteTitle": "Invite someone",
   "ws.inviteReady": "Invite link ready",
+  "account.editName": "Change display name",
+  "account.addPasskeyDesc": "Your browser or phone asks you to create a passkey for WhereCtx. Add one on each device you sign in from, so losing one doesn't lock you out.",
+  "account.addPasskeyButton": "Create passkey",
+  "account.newCodesButton": "Make new codes",
 } as const;
 
 export type I18nKey = keyof typeof EN;
