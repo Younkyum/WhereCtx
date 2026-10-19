@@ -4,13 +4,20 @@
  * path, so a request can only ever name a file that is in the build: there is
  * no filesystem lookup to traverse. Nothing here needs a session; the page
  * signs in through the API.
+ *
+ * The page's CSP and referrer policy depend on whose browser asks: for a
+ * signed-in person whose map is set up, they allow that provider's map hosts
+ * (app/securityHeaders.ts); for anyone else they stay strict. They are set
+ * after the ETag check, so a revalidated page gets the current ones too.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { etag } from "hono/etag";
+import { contentSecurityPolicy, referrerPolicy } from "../app/securityHeaders.js";
+import type { GeoProviderName } from "../geo/types.js";
 
 /** dist/web from both src/dashboard (tsx, tests) and dist/dashboard (the build). */
 export const DASHBOARD_DIR = fileURLToPath(new URL("../../dist/web", import.meta.url));
@@ -58,13 +65,26 @@ export function loadDashboardFiles(dir: string): Map<string, DashboardFile> {
   return files;
 }
 
-export function dashboardRouter(dir: string = DASHBOARD_DIR): Hono {
+/** Whose map, if any, the page loads for this request's browser; null for anyone signed out. */
+export type MapProviderOf = (c: Context) => Promise<GeoProviderName | null>;
+
+const pagePath = (c: Context) => c.req.path.slice("/dashboard/".length) || "index.html";
+
+export function dashboardRouter(dir: string = DASHBOARD_DIR, mapProviderOf: MapProviderOf = async () => null): Hono {
   const files = loadDashboardFiles(dir);
   const app = new Hono();
-  app.use("/dashboard", etag());
-  app.use("/dashboard/*", etag());
+  const pageHeaders: MiddlewareHandler = async (c, next) => {
+    await next();
+    if (pagePath(c) !== "index.html") return;
+    const map = await mapProviderOf(c);
+    c.header("content-security-policy", contentSecurityPolicy(map));
+    c.header("referrer-policy", referrerPolicy(map));
+    c.header("vary", "Cookie");
+  };
+  app.use("/dashboard", pageHeaders, etag());
+  app.use("/dashboard/*", pageHeaders, etag());
   const handler = (c: Context) => {
-    const path = c.req.path.slice("/dashboard/".length) || "index.html";
+    const path = pagePath(c);
     const file = files.get(path);
     if (file) return c.body(file.body, 200, { "content-type": file.contentType, "cache-control": file.cacheControl });
     if (path === "index.html") return c.text("The dashboard is not built. Run npm run build.", 503);

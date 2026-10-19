@@ -7,7 +7,8 @@ import { build } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAppContext } from "../app/context.js";
 import { buildApp } from "../app/server.js";
-import { testConfig } from "../testing/accounts.js";
+import { TestClock, bootApp, setupOwner, signUpByInvite, testConfig, type Enrolled } from "../testing/accounts.js";
+import { contentSecurityPolicy } from "../app/securityHeaders.js";
 import { loadDashboardFiles } from "./router.js";
 
 const WEB = fileURLToPath(new URL("../../web/", import.meta.url));
@@ -106,6 +107,82 @@ describe("dashboard router (serving a real build)", () => {
   });
 });
 
+describe("the page's CSP follows whose map it loads", () => {
+  const STRICT = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+  let mapped: Hono;
+  let owner: Enrolled;
+
+  const directive = (csp: string, name: string) => csp.split("; ").find((d) => d.startsWith(`${name} `));
+
+  beforeAll(async () => {
+    const booted = await bootApp(new TestClock(), {}, { dashboardDir: dir });
+    mapped = booted.app;
+    owner = await setupOwner(mapped, booted.setupCode);
+  });
+
+  async function page(browser?: Enrolled["browser"], headers: Record<string, string> = {}) {
+    if (!browser) return mapped.request("/dashboard/", { headers });
+    return browser.send("/dashboard/");
+  }
+
+  it("is the strict policy signed out, signed in without a map, and with a map key while maps are off", async () => {
+    expect(contentSecurityPolicy(null)).toBe(STRICT);
+    for (const res of [await page(), await mapped.request("/dashboard/", { headers: { cookie: "wctx_session=forged" } }), await page(owner.browser)]) {
+      expect(res.headers.get("content-security-policy")).toBe(STRICT);
+      expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    }
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: "0123456789abcdef0123456789abcdef" } });
+    expect((await page(owner.browser)).headers.get("content-security-policy")).toBe(STRICT);
+  });
+
+  it("adds exactly the provider's hosts for its owner, never eval or a wildcard, and nothing for anyone else", async () => {
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true, geoProvider: null } });
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: "0123456789abcdef0123456789abcdef" } });
+    const res = await page(owner.browser);
+    const csp = res.headers.get("content-security-policy")!;
+    expect(directive(csp, "script-src")).toBe("script-src 'self' https://dapi.kakao.com https://t1.kakaocdn.net");
+    expect(directive(csp, "img-src")).toBe("img-src 'self' https://mts.kakaocdn.net https://t1.kakaocdn.net");
+    expect(directive(csp, "connect-src")).toBe("connect-src 'self'");
+    expect(directive(csp, "default-src")).toBe("default-src 'self'");
+    expect(directive(csp, "frame-ancestors")).toBe("frame-ancestors 'none'");
+    expect(csp).not.toMatch(/unsafe-eval|\*/);
+    expect(res.headers.get("referrer-policy")).toBe("strict-origin");
+    expect(res.headers.get("vary")).toContain("Cookie");
+
+    const tag = res.headers.get("etag")!;
+    const again = await owner.browser.send("/dashboard/", {});
+    expect(again.headers.get("content-security-policy")).toBe(csp);
+    const revalidate = (cookie?: string) =>
+      mapped.request("/dashboard/", { headers: { "if-none-match": tag, ...(cookie ? { cookie: `wctx_session=${cookie}` } : {}) } });
+    const mine = await revalidate(owner.browser.cookie);
+    expect(mine.status).toBe(304);
+    expect(mine.headers.get("content-security-policy")).toBe(csp);
+    const anonymous = await revalidate();
+    expect(anonymous.status).toBe(304);
+    expect(anonymous.headers.get("content-security-policy")).toBe(STRICT);
+
+    const ws = (await owner.browser.json("/v1/workspaces")).workspaces[0].id;
+    const { url } = await owner.browser.json(`/v1/workspaces/${ws}/invites`, { body: { role: "member" } });
+    const mina = await signUpByInvite(mapped, url, "Mina");
+    await mina.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
+    expect((await mina.browser.send("/dashboard/")).headers.get("content-security-policy")).toBe(STRICT);
+
+    for (const path of ["/dashboard/assets/none.js", "/v1/geo", "/healthz"]) {
+      expect((await owner.browser.send(path)).headers.get("content-security-policy"), path).toBe(STRICT);
+    }
+  });
+
+  it("names Naver's hosts, not Kakao's, when Naver's map is the one", async () => {
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true, geoProvider: "naver" } });
+    await owner.browser.json("/v1/geo/credentials/naver/map", { method: "PUT", body: { key: "naverkeyid01" } });
+    const csp = (await page(owner.browser)).headers.get("content-security-policy")!;
+    expect(directive(csp, "script-src")).toBe("script-src 'self' https://oapi.map.naver.com https://nrbe.pstatic.net");
+    expect(directive(csp, "img-src")).toBe("img-src 'self' https://nrbe.pstatic.net https://ssl.pstatic.net");
+    expect(directive(csp, "connect-src")).toBe("connect-src 'self' https://nrbe.pstatic.net");
+    expect(csp).not.toContain("kakao");
+  });
+});
+
 describe("the built page", () => {
   it("has no inline script, no inline handler, and loads one module script from /dashboard/assets/", () => {
     const scripts = [...index.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
@@ -131,6 +208,8 @@ describe("the built page", () => {
       expect(body, file).not.toMatch(/url\(\s*["']?data:/i);
       expect(body, file).not.toMatch(/@import\s+url\(\s*["']?https?:/i);
       expect(body, file).not.toContain("fonts.googleapis.com");
+      // A map script comes only from GET /v1/geo/map-config, never from the bundle.
+      expect(body, file).not.toMatch(/dapi\.kakao\.com|kakaocdn\.net|oapi\.map\.naver\.com|pstatic\.net/);
     }
   });
 });

@@ -9,7 +9,9 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
-import { SECURE_HEADERS_OPTIONS } from "./securityHeaders.js";
+import { SECURE_HEADERS_OPTIONS, pageSecurity } from "./securityHeaders.js";
+import { resolveSessionPrincipal } from "../auth/principal.js";
+import { readSessionCookie, setSessionCookie } from "../api/session.js";
 import { RateLimiter, authFailureGuard } from "../api/rateLimit.js";
 import { authenticate, sessionAuth } from "../api/middleware.js";
 import { auditAccess, restActionOf } from "../api/accessAudit.js";
@@ -48,7 +50,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
 
   // Security headers (defense-in-depth on the admin dashboard especially): CSP,
   // nosniff, frame-deny, no referrer leakage (review finding D3).
-  app.use("*", secureHeaders(SECURE_HEADERS_OPTIONS));
+  app.use("*", secureHeaders(SECURE_HEADERS_OPTIONS), pageSecurity);
 
   // Cap request bodies well above any legitimate payload (ingest/admin bodies
   // are tiny) to close the OOM/DoS vector on an internet-exposed bind (P8).
@@ -80,7 +82,17 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   );
   app.get("/healthz", (c) => c.json({ status: "ok" }));
 
-  app.route("/", dashboardRouter(options.dashboardDir));
+  // The dashboard page allows a map provider's hosts only for a signed-in
+  // person whose map is set up; it reads the session cookie a navigation sends.
+  app.route(
+    "/",
+    dashboardRouter(options.dashboardDir, async (c) => {
+      const session = await resolveSessionPrincipal(ctx, readSessionCookie(c, ctx.config.baseUrl));
+      if (!session) return null;
+      if (session.renewed) setSessionCookie(c, readSessionCookie(c, ctx.config.baseUrl)!, ctx.config.baseUrl);
+      return (await ctx.forUser(session.principal.userId).geo.mapConfig()).provider;
+    }),
+  );
   app.route("/", oauthRouter(ctx));
 
   // Auth is mounted here, the one REST place holding the full context; routers
