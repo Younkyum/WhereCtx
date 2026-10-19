@@ -568,7 +568,8 @@ describe("WebhookDispatcher auth header", () => {
       const dead = await webhooks.listDeadLetters(USER);
       expect(dead).toHaveLength(2);
       const everywhere = [JSON.stringify(dead), JSON.stringify(recentLogs()), written.join("")].join("\n");
-      expect(everywhere).toContain("invalid header value");
+      expect(dead.map((d) => d.error)).toEqual(["request_failed", "request_failed"]);
+      expect(everywhere).not.toContain("invalid header value");
       for (const leaked of ["plain-api-key", "api-key-77aa", "n8n-header-credential", "credential-9f3k"]) {
         expect(everywhere).not.toContain(leaked);
       }

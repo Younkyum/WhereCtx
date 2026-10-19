@@ -110,3 +110,33 @@ describe("a delivery over a real connection", () => {
     }
   });
 });
+
+describe("a failed delivery of a hook with an auth header", () => {
+  async function failureOf(url: string, over: Partial<DispatcherOptions> = {}): Promise<string | undefined> {
+    await deliverOnce(url, { allowPrivateTargets: true, ...over });
+    return (await webhooks.listDeadLetters(USER))[0]?.error;
+  }
+
+  it("is recorded as connect_error when nothing listens", async () => {
+    const r = await receiver();
+    await new Promise((resolve) => servers.pop()!.close(resolve));
+    expect(await failureOf(`http://127.0.0.1:${r.port}/hook`)).toBe("connect_error");
+  });
+
+  it("is recorded as tls_error when the receiver does not speak TLS", async () => {
+    const r = await receiver();
+    expect(await failureOf(`https://127.0.0.1:${r.port}/hook`)).toBe("tls_error");
+  });
+
+  it("is recorded as timeout when the receiver does not answer in time", async () => {
+    const r = await receiver(() => undefined);
+    expect(await failureOf(`http://127.0.0.1:${r.port}/hook`, { timeoutMs: 100 })).toBe("timeout");
+  });
+
+  it("keeps the raw error for a hook without one", async () => {
+    const r = await receiver();
+    await new Promise((resolve) => servers.pop()!.close(resolve));
+    await deliverOnce(`http://127.0.0.1:${r.port}/hook`, { allowPrivateTargets: true }, { auth: false });
+    expect((await webhooks.listDeadLetters(USER))[0]!.error).toContain("ECONNREFUSED");
+  });
+});

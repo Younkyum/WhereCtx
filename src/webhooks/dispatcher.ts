@@ -28,7 +28,7 @@ import type { PresenceEvent } from "../types.js";
 import type { Clock } from "../util/time.js";
 import { authHeaderNeedsHttps } from "./authHeader.js";
 import { WEBHOOK_HEADERS, WEBHOOK_USER_AGENT, eventPayload } from "./payload.js";
-import { assertSafeWebhookUrl, type Resolver } from "./ssrf.js";
+import { assertSafeWebhookUrl, SsrfError, type Resolver } from "./ssrf.js";
 import { connectTransport, type Transport } from "./transport.js";
 import { log } from "../util/log.js";
 
@@ -51,6 +51,23 @@ export interface DispatcherOptions {
   perUserSlots?: number;
   /** A drain stops starting deliveries after this long. Default 10 s. */
   drainBudgetMs?: number;
+}
+
+const CONNECT_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "EPIPE"]);
+
+/**
+ * What a failed request is recorded as when the hook has an auth header: a
+ * fixed category, never the error's own text, which can quote request headers.
+ * An SsrfError is this server's own wording about the address.
+ */
+export function failureCategory(e: unknown): string {
+  if (e instanceof SsrfError) return e.message;
+  const err = (e ?? {}) as { name?: string; code?: string };
+  const code = err.code ?? "";
+  if (err.name === "AbortError" || err.name === "TimeoutError" || code === "ABORT_ERR" || code === "ETIMEDOUT") return "timeout";
+  if (code === "EPROTO" || /^(ERR_TLS|ERR_SSL|ERR_OSSL|CERT_|UNABLE_TO_|DEPTH_ZERO|SELF_SIGNED)/.test(code)) return "tls_error";
+  if (CONNECT_CODES.has(code)) return "connect_error";
+  return "request_failed";
 }
 
 function subscribed(hook: Webhook, type: string): boolean {
@@ -245,8 +262,9 @@ export class WebhookDispatcher {
   }
 
   /**
-   * A failed delivery's error is logged and kept as a dead letter, and a
-   * fetch error can quote a header; the auth header's value never survives.
+   * A failed delivery's error is logged and kept as a dead letter. For a hook
+   * with an auth header it is a fixed category (failureCategory); the value is
+   * also cut out of whatever comes back, in case a category ever quotes it.
    */
   private async deliver(
     hook: Webhook,
@@ -309,6 +327,7 @@ export class WebhookDispatcher {
       });
       return res.ok ? { ok: true } : { ok: false, error: `status ${res.status}` };
     } catch (e) {
+      if (hook.authHeader) return { ok: false, error: failureCategory(e) };
       return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
     } finally {
       clearTimeout(t);
