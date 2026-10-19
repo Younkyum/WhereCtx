@@ -263,14 +263,15 @@ describe("maps in the dashboard", () => {
     });
   });
 
-  it("Places draws each place's circle, and a click on the map fills in the new place's coordinates", async () => {
+  it("Places draws each place's circle, and a click on the map opens Add by coordinates with the point filled in", async () => {
     withTiles();
     await open("#places");
     expect(lastScene().circles.map((c) => [c.at.lat, c.at.lon, c.radiusM])).toEqual([[37.5, 127, 100]]);
     expect(live()[0]!.draws.at(-1)!.pickable).toBe(true);
     await act(async () => live()[0]!.pick({ lat: 37.1234567, lon: 127.7654321 }));
     await settle();
-    const values = [...host.querySelectorAll("input")].map((i) => i.value);
+    expect(document.querySelector("dialog")?.textContent).toContain("Add by coordinates");
+    const values = [...document.querySelectorAll("dialog input")].map((i) => (i as HTMLInputElement).value);
     expect(values).toContain("37.123457");
     expect(values).toContain("127.765432");
     expect(lastScene().markers.map((m) => [m.at.lat, m.at.lon])).toEqual([[37.1234567, 127.7654321]]);

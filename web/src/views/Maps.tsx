@@ -14,7 +14,7 @@ import { Selector } from "@astryxdesign/core/Selector";
 import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../context";
 import type { I18nKey } from "../i18n";
@@ -31,7 +31,7 @@ import {
 } from "../model";
 import { routeScene } from "../mapScene";
 import { MapView, tileHost, useMapTiles } from "../MapView";
-import { Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useFormat, useLoad, useNotify } from "../ui";
+import { FormDialog, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useFormat, useLoad, useNotify } from "../ui";
 
 /** Where each provider documents getting a key (checked 2026-10-19). */
 const KEY_DOCS: Record<GeoProviderName, string> = {
@@ -171,15 +171,19 @@ function KeyRow({
   const notify = useNotify();
   const confirm = useConfirm();
   const fields = KEY_FIELDS[provider];
+  const [editing, setEditing] = useState(false);
   const [values, setValues] = useState<Record<string, string>>({});
   const complete = fields.every((f) => (values[f.kind] ?? "").trim().length >= 8);
-  const [saving, save] = useAction(async () => {
+  const save = async () => {
     const body = Object.fromEntries(fields.map((f) => [f.kind, values[f.kind]!.trim()]));
     await api(`/v1/geo/credentials/${provider}`, { method: "PUT", body });
-    setValues({});
     notify.ok(t("maps.keySaved"));
     await onChanged();
-  });
+  };
+  const edit = (open: boolean) => {
+    setValues({});
+    setEditing(open);
+  };
   const [refusal, setRefusal] = useState<Extract<KeyTest, { ok: false }> | null>(null);
   const [testing, test] = useAction(async () => {
     setRefusal(null);
@@ -199,10 +203,6 @@ function KeyRow({
       notify.fail(e);
     }
     await onChanged();
-  };
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    if (complete) void save();
   };
   const hint = saved ? fields.map((f) => saved.kinds[f.kind]).find(Boolean) : undefined;
   const subtitle = (
@@ -228,12 +228,20 @@ function KeyRow({
   return (
     <VStack gap={2}>
       <Row title={t(`maps.p.${provider}`)} subtitle={subtitle}>
+        <Button label={t(saved ? "maps.replaceKey" : "maps.addKey")} size="sm" variant={saved ? "secondary" : "primary"} onClick={() => edit(true)} />
         {saved ? <Button label={t("maps.test")} size="sm" isLoading={testing} onClick={() => void test()} /> : null}
         {saved ? <Button label={t("common.delete")} size="sm" variant="destructive" clickAction={remove} /> : null}
       </Row>
       {refusal?.code ? <Refusal provider={provider} refusal={refusal} onDismiss={() => setRefusal(null)} /> : null}
-      <form onSubmit={submit}>
-        <HStack gap={2} wrap="wrap" vAlign="end">
+      {editing ? (
+        <FormDialog
+          isOpen
+          onOpenChange={edit}
+          title={t(saved ? "maps.replaceKeyTitle" : "maps.addKeyTitle", { provider: t(`maps.p.${provider}`) })}
+          submitLabel={t("maps.saveKey")}
+          canSubmit={complete}
+          onSubmit={save}
+        >
           {fields.map((f) => (
             <TextInput
               key={f.kind}
@@ -242,12 +250,11 @@ function KeyRow({
               autoComplete="off"
               value={values[f.kind] ?? ""}
               onChange={(v) => setValues({ ...values, [f.kind]: v })}
-              width={260}
             />
           ))}
-          <Button type="submit" label={t(saved ? "maps.replaceKey" : "maps.saveKey")} variant="primary" isLoading={saving} isDisabled={!complete} />
-        </HStack>
-      </form>
+          <Hint>{t("maps.keyWriteOnly")}</Hint>
+        </FormDialog>
+      ) : null}
     </VStack>
   );
 }

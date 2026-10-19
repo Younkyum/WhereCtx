@@ -207,6 +207,8 @@ export const EN = {
   "places.addHereButton": "Add",
   "places.addHereHint": "Uses your latest location reading.",
   "places.byCoords": "Add by coordinates",
+  "places.searchAgain": "Search again",
+  "places.byCoordsHint": "Or close this and click the map: that opens this form with the point filled in.",
   "places.save": "Save place",
   "places.deleteConfirm": "Delete the place \"{name}\"?",
   "ptype.home": "Home",
@@ -589,6 +591,10 @@ export const EN = {
   "maps.lastError": "Last error: {why}",
   "maps.usingOperator": "No key of yours. This server's key is used.",
   "maps.noKey": "No key",
+  "maps.addKey": "Add key",
+  "maps.addKeyTitle": "Add your {provider} key",
+  "maps.replaceKeyTitle": "Replace your {provider} key",
+  "maps.keyWriteOnly": "Saved encrypted on this server and never shown again; only its last four characters are.",
   "maps.saveKey": "Save key",
   "maps.replaceKey": "Replace key",
   "maps.keySaved": "Key saved. It is not shown again.",
@@ -649,7 +655,7 @@ export const EN = {
   "map.start": "Start",
   "map.picked": "New place",
   "places.map": "Map",
-  "places.mapHint": "Click the map to fill in the coordinates under Add by coordinates.",
+  "places.mapHint": "Click the map to add a place there: it opens Add by coordinates with the point filled in.",
 } as const;
 
 export type I18nKey = keyof typeof EN;

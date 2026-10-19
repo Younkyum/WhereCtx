@@ -612,6 +612,11 @@ describe("maps", () => {
     expect(host.textContent).toContain("Saved key ••••cdef");
     expect(host.textContent).toContain("Routes and addresses go to Kakao with your key.");
 
+    expect(host.querySelector('input[type="password"]')).toBeNull();
+    const add = [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Add key");
+    await act(async () => add[0]!.click());
+    await settle();
+    expect(document.querySelector("dialog")?.textContent).toContain("Add your Naver key");
     await fill(inputLabelled("Client ID"), "naver-client-id-1234");
     await fill(inputLabelled("Client Secret"), "naver-client-secret-5678");
     await act(async () => button("Save key").click());
@@ -699,6 +704,10 @@ describe("maps", () => {
     location.hash = "#places";
     await act(async () => root.render(<App />));
     await settle();
+    expect(host.querySelector("input")).toBeNull();
+    await act(async () => button("Add by address or name").click());
+    await settle();
+    expect(document.querySelector("dialog")?.textContent).toContain("Add by address or name");
     await fill(inputLabelled("Address or place name"), "판교역");
     await act(async () => button("Search").click());
     await settle();
@@ -711,5 +720,6 @@ describe("maps", () => {
     await act(async () => button("Save place").click());
     await settle();
     expect(posted).toMatchObject({ name: "판교역 경강선", type: "custom", lat: 37.3951, lon: 127.1109 });
+    expect(document.querySelector("dialog[open]")).toBeNull();
   });
 });

@@ -1,7 +1,8 @@
 /**
  * Shared building blocks for the screens: data loading with its three states,
- * actions that report failures as toasts, the confirm dialog, page and panel
- * headings, one-time secrets and recovery codes.
+ * actions that report failures as toasts, the confirm dialog, the dialog
+ * every create or edit form opens in, page and panel headings, one-time
+ * secrets and recovery codes.
  */
 
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
@@ -10,6 +11,7 @@ import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { CodeBlock } from "@astryxdesign/core/CodeBlock";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Divider } from "@astryxdesign/core/Divider";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
@@ -332,6 +334,54 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
         />
       ) : null}
     </ConfirmContext.Provider>
+  );
+}
+
+/**
+ * A create or edit form in a dialog, opened by a button on the page. Submit
+ * runs `onSubmit` while `canSubmit`; the dialog closes when it succeeds and
+ * stays open (its failure shown as a toast) when it throws.
+ */
+export function FormDialog({
+  isOpen,
+  onOpenChange,
+  title,
+  submitLabel,
+  canSubmit,
+  onSubmit,
+  children,
+}: {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  submitLabel: string;
+  canSubmit: boolean;
+  onSubmit: () => Promise<void>;
+  children: ReactNode;
+}) {
+  const { t } = useApp();
+  const [busy, run] = useAction(async () => {
+    await onSubmit();
+    onOpenChange(false);
+  });
+  return (
+    <Dialog isOpen={isOpen} onOpenChange={onOpenChange} purpose="form" width={520}>
+      <DialogHeader title={title} onOpenChange={onOpenChange} />
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (canSubmit && !busy) void run();
+        }}
+      >
+        <VStack gap={4}>
+          {children}
+          <HStack gap={2} hAlign="end">
+            <Button label={t("common.cancel")} onClick={() => onOpenChange(false)} />
+            <Button type="submit" label={submitLabel} variant="primary" isLoading={busy} isDisabled={!canSubmit} />
+          </HStack>
+        </VStack>
+      </form>
+    </Dialog>
   );
 }
 
