@@ -614,7 +614,9 @@ The owner asked to see things on a map. Agents still get none.
 - **A quiet place's name never reaches a webhook.** `notifyWebhooks: false`
   stores the place's events, and `presence.updated` while inside it (it
   names the place too), with `webhook = 0`; the dispatcher filters in SQL.
-  A `left_place` for a deleted place uses the defaults.
+  A place that no longer exists is quiet too, and leaves at once: its
+  `left_place` is stored with `webhook = 0` whatever it used to emit, since
+  the rules that said otherwise are gone.
 - **Webhook place filter is one pure match.** `wants(hook, event)`: the
   event type filter as before, and for place events the place must be in
   `places` when set. Changing the place filter stops an in-flight drain, as

@@ -89,10 +89,16 @@ function drivingBy(p: StoredPresence): boolean {
   return p.motion === "driving" || p.motion === "transit" || (p.precise?.speedMps ?? 0) > DRIVE_BY_SPEED_MPS;
 }
 
-/** The rules of a place by name; a deleted place gets the defaults. */
+/**
+ * A place that no longer exists is quiet: its rules are gone, and it may
+ * have been quiet, so its leave is recorded but never reaches a webhook.
+ */
+const GONE_PLACE_RULES: PlaceRules = { ...DEFAULT_PLACE_RULES, notifyWebhooks: false };
+
+/** The rules of a place by name; a deleted place is quiet. */
 function rulesIn(places: readonly Place[]): (name: string) => PlaceRules {
   const byName = new Map(places.map((p) => [p.name, p]));
-  return (name) => byName.get(name) ?? DEFAULT_PLACE_RULES;
+  return (name) => byName.get(name) ?? GONE_PLACE_RULES;
 }
 
 /** Where a position stands after a dwell step: the confirmed place's status, refined by motion. */
@@ -276,7 +282,7 @@ export class PresenceService {
    * Record this step's events. Each place event is recorded only when its
    * place emits that type, and is kept from webhooks when the place has
    * notifyWebhooks off; so is `presence.updated` while inside such a place,
-   * since it names the place too. A deleted place gets the defaults.
+   * since it names the place too. A deleted place is quiet.
    */
   private async emitEvents(
     userId: UserId,

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { WhereCtxConfig } from "../config.js";
 import { createDb, ensureSchema, type DbHandle } from "../db/index.js";
+import { places as placesTable } from "../db/schema.js";
 import { SettingsStore } from "../privacy/settingsStore.js";
 import { EventsStore, HistoryStore, PlacesStore, PresenceStore, RemindersStore, toPresenceContext } from "../store/index.js";
 import { authorizePrecise, presenceViews } from "../privacy/policy.js";
@@ -186,6 +187,30 @@ describe("place rules", () => {
     );
     const deliverable = (await events.listSince(USER, null)).map((e) => `${e.type} ${e.placeName ?? "-"}`);
     expect(deliverable).toEqual(["presence.updated -"]);
+  });
+
+  it("treats a deleted place as quiet: its leave is recorded but never delivered, whatever it emitted", async () => {
+    await gym({ notifyWebhooks: false, emits: ["presence.entered_place"] });
+    await service.processReading(USER, reading(north(0)));
+    await places.deleteByName(USER, "gym");
+    const result = await service.reevaluateCurrent(USER);
+    expect(placeEvents(result!.events)).toEqual(["left_place gym"]);
+    expect((await presence.getCurrent(USER))!.currentPlaceName).toBeUndefined();
+    const deliverable = (await events.listSince(USER, null)).map((e) => `${e.type} ${e.placeName ?? "-"}`);
+    expect(deliverable.filter((e) => e.includes("gym"))).toEqual([]);
+  });
+
+  it("keeps the leave of a place deleted before the next reading away from delivery too", async () => {
+    await gym({ exitAfterSec: 600 });
+    await service.processReading(USER, reading(north(0)));
+    advance(10);
+    await service.processReading(USER, reading(north(2000), { motion: "walking" }));
+    await handle.db.delete(placesTable);
+    advance(10);
+    const later = await service.processReading(USER, reading(north(2100), { motion: "walking" }));
+    expect(placeEvents(later.events)).toEqual(["left_place gym"]);
+    const deliverable = (await events.listSince(USER, null)).map((e) => `${e.type} ${e.placeName ?? "-"}`);
+    expect(deliverable.filter((e) => e.startsWith("presence.left_place"))).toEqual([]);
   });
 
   it("never triggers reminders for a place with notifyReminders off", async () => {

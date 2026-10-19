@@ -399,8 +399,10 @@ code (README, "Recover access").
 A place with `notifyWebhooks` off keeps its name away from every webhook:
 its events, and `presence.updated` while inside it, are stored with
 `webhook = 0` and the dispatcher reads only `webhook = 1` rows, in SQL. They
-still appear in the person's own history and to their agents. A hook's
-place filter narrows place events further.
+still appear in the person's own history and to their agents. A place
+that no longer exists counts as quiet: its rules went with it, so leaving a
+deleted place is recorded and never delivered. A hook's place filter
+narrows place events further.
 
 Webhook delivery is a server-side outbound request to an operator-supplied URL.
 WhereCtx blocks targets that resolve to private/reserved addresses (loopback,
