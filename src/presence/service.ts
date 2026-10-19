@@ -18,6 +18,7 @@ import type { WhereCtxConfig } from "../config.js";
 import { computeGeofence, labelForStatus, statusFor } from "../geofence/engine.js";
 import { encodeGeohash, haversineMeters } from "../geofence/distance.js";
 import { approach } from "../geofence/approach.js";
+import { nearHomePlace } from "../geofence/shape.js";
 import { step, sweepRaw, type DwellState, type DwellTransition } from "../geofence/dwell.js";
 import { AREA_REFRESH_MOVE_M, type AreaUpdate } from "../geo/area.js";
 import type { NormalizedReading } from "../normalizer/types.js";
@@ -103,9 +104,9 @@ interface Verdict {
   label: string;
 }
 
-/** The pending enter, pending leave and approached places, compared to skip writes that change nothing. */
+/** The pending enter, pending leave, approached places and home flag, compared to skip writes that change nothing. */
 const bookkeeping = (p: StoredPresence): string =>
-  JSON.stringify([p.pendingExitSince ?? null, p.pendingPlace ?? null, p.approachedPlaces ?? []]);
+  JSON.stringify([p.pendingExitSince ?? null, p.pendingPlace ?? null, p.approachedPlaces ?? [], p.atOrNearHome]);
 
 export class PresenceService {
   private readonly clock: Clock;
@@ -204,6 +205,7 @@ export class PresenceService {
       updatedAt: reading.updatedAt,
       receivedAt,
       ...arrivalFor(prev, reading.precise, receivedAt),
+      atOrNearHome: this.atOrNearHome(reading.precise, places),
       staleAfterSec: offlineAfterSec(reading.source, config.privacy),
       ...dwellFields(verdict.dwell),
       approachedPlaces: approached.approached,
@@ -264,6 +266,10 @@ export class PresenceService {
       label = labelForStatus("transit");
     }
     return { dwell: stepped.state, transitions: stepped.transitions, confirmed, status, label };
+  }
+
+  private atOrNearHome(point: { lat: number; lon: number }, places: readonly Place[]): boolean {
+    return nearHomePlace(point, places, this.deps.config.geofence.nearRadiusMultiplier) !== null;
   }
 
   /**
@@ -438,6 +444,7 @@ export class PresenceService {
         },
         ...dwellFields(verdict.dwell),
         approachedPlaces: (prev.approachedPlaces ?? []).filter((n) => names.has(n)),
+        atOrNearHome: this.atOrNearHome(prev.precise, places),
       };
 
       if (next.status === prev.status && next.currentPlaceName === prev.currentPlaceName) {

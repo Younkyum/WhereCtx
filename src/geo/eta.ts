@@ -15,7 +15,6 @@
  */
 
 import { haversineMeters } from "../geofence/distance.js";
-import { measurePlace } from "../geofence/shape.js";
 import type { Place, PresenceStatus } from "../types.js";
 import type { FreshnessView } from "../presence/freshness.js";
 import { mainRoads } from "./roads.js";
@@ -39,17 +38,6 @@ const INSIDE_PLACE: ReadonlySet<PresenceStatus> = new Set(["home", "work", "cust
  */
 export function freshEnoughToRoute(fresh: FreshnessView, status: PresenceStatus): boolean {
   return fresh.freshness === "live" || (fresh.freshness === "stationary" && INSIDE_PLACE.has(status));
-}
-
-/** The home place the point is at or near (inside it or in its near band), nearest first. */
-export function nearHomePlace(point: LatLon, places: readonly Place[], nearMultiplier: number): Place | null {
-  let best: { place: Place; d: number } | null = null;
-  for (const place of places) {
-    if (place.type !== "home") continue;
-    const m = measurePlace(place, point.lat, point.lon, nearMultiplier);
-    if (m.near && (!best || m.anchorDistanceM < best.d)) best = { place, d: m.anchorDistanceM };
-  }
-  return best?.place ?? null;
 }
 
 /** Whether every point of the road is farther than AGENT_ROAD_CLEARANCE_M from every point in `avoid`. */

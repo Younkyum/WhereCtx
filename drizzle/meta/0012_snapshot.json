@@ -1228,6 +1228,14 @@
           "notNull": false,
           "autoincrement": false
         },
+        "at_or_near_home": {
+          "name": "at_or_near_home",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": false
+        },
         "approached_places": {
           "name": "approached_places",
           "type": "text",

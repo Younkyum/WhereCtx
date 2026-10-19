@@ -66,8 +66,13 @@ when **all** hold:
 When `hideHomeExactCoordinates` is on (default) and you are at or near a `home`
 place, precise location is **denied outright** — not rounded or blurred.
 Coordinate rounding is not home-address anonymization, so WhereCtx refuses
-instead. Disable `HIDE_HOME_EXACT_COORDINATES` if you want home coordinates
-exposed to authorized agents.
+instead. "At or near" is measured: your last point is inside a home place
+or within its near band, whatever your status says. A place with a dwell
+time can leave your status at a café for a few minutes after you are home;
+your coordinates are protected from the first reading at home all the same.
+The same check covers agents, REST, precise shares and the dashboard map.
+Disable `HIDE_HOME_EXACT_COORDINATES` if you want home coordinates exposed to
+authorized agents.
 
 ### Home *place* protection
 

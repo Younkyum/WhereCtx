@@ -24,7 +24,8 @@ import type { GeoCacheStore } from "./cacheStore.js";
 import type { GeoCredentialsStore, StoredGeoCredential } from "./credentialsStore.js";
 import { FakeGeoProvider } from "./fake.js";
 import { GeoKeys, type CallResult, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
-import { agentNumbers, agentRoads, freshEnoughToRoute, nearHomePlace, ownerNumbers } from "./eta.js";
+import { agentNumbers, agentRoads, freshEnoughToRoute, ownerNumbers } from "./eta.js";
+import { nearHomePlace } from "../geofence/shape.js";
 import { MAP_SDKS, type MapConfig } from "./mapSdk.js";
 import { mainRoads } from "./roads.js";
 import {

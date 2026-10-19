@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { WhereCtxConfig } from "../config.js";
 import { createDb, ensureSchema, type DbHandle } from "../db/index.js";
 import { SettingsStore } from "../privacy/settingsStore.js";
-import { EventsStore, HistoryStore, PlacesStore, PresenceStore, RemindersStore } from "../store/index.js";
+import { EventsStore, HistoryStore, PlacesStore, PresenceStore, RemindersStore, toPresenceContext } from "../store/index.js";
+import { authorizePrecise, presenceViews } from "../privacy/policy.js";
 import type { PlaceInput } from "../store/placesStore.js";
 import type { NormalizedReading } from "../normalizer/types.js";
 import { asUserId, type PresenceEvent } from "../types.js";
@@ -203,5 +204,54 @@ describe("place rules", () => {
     expect(placeEvents(closer.events)).toEqual(["approaching_place gym"]);
     const closerStill = await service.processReading(USER, reading(north(300), { motion: "walking" }));
     expect(placeEvents(closerStill.events)).toEqual([]);
+  });
+});
+
+describe("home coordinate protection", () => {
+  const preciseSettings = async () => ({
+    ...(await new SettingsStore(handle.db, config, clock).getOrSeed(USER)),
+    defaultAgentAccess: "precise" as const,
+    allowPreciseLocation: true,
+    preciseRequiresApproval: false,
+    hideHomeExactCoordinates: true,
+  });
+
+  it("holds while standing at home even though the presence still counts a cafe whose leave is pending", async () => {
+    await places.upsert(USER, { name: "home", type: "home", ...GYM, radiusM: 100 });
+    await places.upsert(USER, { name: "cafe", type: "custom", ...north(500), radiusM: 60, exitAfterSec: 600 });
+    await service.processReading(USER, reading(north(500)));
+    advance(60);
+    const atHome = await service.processReading(USER, reading(north(0)));
+    expect(atHome.presence.status).toBe("custom");
+
+    const stored = toPresenceContext((await presence.getCurrent(USER))!);
+    const auth = authorizePrecise({ scopes: ["read_precise_location"], settings: await preciseSettings(), presence: stored, reason: "x" });
+    expect(auth).toMatchObject({ allowed: false, outcome: "denied" });
+    const shared = presenceViews(config.privacy, clock).person(
+      stored,
+      { level: "precise", hideHomeExact: true, showArea: false },
+      { sharingPaused: false, hasHomePlace: true, geoEnabled: false },
+    );
+    expect(shared).toMatchObject({ precise: null, preciseWithheld: "at_home" });
+  });
+
+  it("holds while an arrival at home is pending inside a work place's near band", async () => {
+    await places.upsert(USER, { name: "home", type: "home", ...GYM, radiusM: 300, enterAfterSec: 300 });
+    await places.upsert(USER, { name: "work", type: "work", ...north(400), radiusM: 100 });
+    await service.processReading(USER, reading(north(5000)));
+    const arriving = await service.processReading(USER, reading(north(250)));
+    expect(arriving.presence.status).toBe("near_work");
+
+    const stored = toPresenceContext((await presence.getCurrent(USER))!);
+    const auth = authorizePrecise({ scopes: ["read_precise_location"], settings: await preciseSettings(), presence: stored, reason: "x" });
+    expect(auth).toMatchObject({ allowed: false, outcome: "denied" });
+  });
+
+  it("lets coordinates through away from home", async () => {
+    await places.upsert(USER, { name: "home", type: "home", ...GYM, radiusM: 100 });
+    await service.processReading(USER, reading(north(5000)));
+    const stored = toPresenceContext((await presence.getCurrent(USER))!);
+    const auth = authorizePrecise({ scopes: ["read_precise_location"], settings: await preciseSettings(), presence: stored, reason: "x" });
+    expect(auth).toEqual({ allowed: true });
   });
 });

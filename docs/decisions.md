@@ -619,6 +619,12 @@ The owner asked to see things on a map. Agents still get none.
   event type filter as before, and for place events the place must be in
   `places` when set. Changing the place filter stops an in-flight drain, as
   changing the events does.
+- **Home protection is measured, not read off the status.** With dwell
+  times the status follows the confirmed place, which can still say "café"
+  while the point stands at home. Every step stores `atOrNearHome` from
+  `nearHomePlace` (the stored point against the home places, near band
+  included), and every precise gate reads that flag. The migration
+  backfills it from the status, which before dwell was the same verdict.
 - **`emits` drops the event, not the transition.** A type a place does not
   emit is not recorded at all; presence still moves.
 - **Agents see transitions, not rules.** `is_near_place` adds `confirmed`

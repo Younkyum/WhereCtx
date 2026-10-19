@@ -142,6 +142,12 @@ export const presence = sqliteTable("presence", {
   /** The place readings are inside but whose enter waits out enter_after_sec, and since when. */
   pendingPlaceName: text("pending_place_name"),
   pendingPlaceSince: text("pending_place_since"),
+  /**
+   * Whether the stored point is inside or in the near band of a home place,
+   * measured on every step whatever the dwell-confirmed status says. Home
+   * coordinate protection reads this.
+   */
+  atOrNearHome: integer("at_or_near_home", { mode: "boolean" }).notNull().default(false),
   /** Names of places presence.approaching_place fired for and has not re-armed yet (approach.ts). */
   approachedPlaces: text("approached_places", { mode: "json" }).$type<string[]>(),
   /** Whether a `presence.became_stale` event has already fired for this reading. */

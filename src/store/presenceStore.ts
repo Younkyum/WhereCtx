@@ -68,6 +68,7 @@ interface PresenceRow {
   pendingPlaceName: string | null;
   pendingPlaceSince: string | null;
   approachedPlaces: string[] | null;
+  atOrNearHome: boolean;
   staleEventFired: boolean;
   updatedAt: string;
   receivedAt: string;
@@ -112,6 +113,7 @@ function rowToStored(row: PresenceRow): StoredPresence {
     updatedAt: row.updatedAt,
     receivedAt: row.receivedAt,
     ...(row.movedAt ? { movedAt: row.movedAt } : {}),
+    atOrNearHome: row.atOrNearHome,
     ...(row.movedLat !== null && row.movedLon !== null ? { movedFrom: { lat: row.movedLat, lon: row.movedLon } } : {}),
     ...(row.areaLat !== null && row.areaLon !== null ? { areaFor: { lat: row.areaLat, lon: row.areaLon } } : {}),
     staleAfterSec: row.staleAfterSec,
@@ -153,6 +155,7 @@ function storedToRow(p: StoredPresence): PresenceRow {
     pendingPlaceName: p.pendingPlace?.name ?? null,
     pendingPlaceSince: p.pendingPlace?.since ?? null,
     approachedPlaces: p.approachedPlaces?.length ? p.approachedPlaces : null,
+    atOrNearHome: p.atOrNearHome,
     staleEventFired: p.staleEventFired,
     updatedAt: p.updatedAt,
     receivedAt: p.receivedAt,

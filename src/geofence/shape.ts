@@ -55,3 +55,14 @@ export function measurePlace(place: Shaped, lat: number, lon: number, nearMultip
     }
   }
 }
+
+/** The home place the point is at or near (inside it or in its near band), nearest first. */
+export function nearHomePlace(point: { lat: number; lon: number }, places: readonly Place[], nearMultiplier: number): Place | null {
+  let best: { place: Place; d: number } | null = null;
+  for (const place of places) {
+    if (place.type !== "home") continue;
+    const m = measurePlace(place, point.lat, point.lon, nearMultiplier);
+    if (m.near && (!best || m.anchorDistanceM < best.d)) best = { place, d: m.anchorDistanceM };
+  }
+  return best?.place ?? null;
+}

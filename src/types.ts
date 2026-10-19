@@ -101,6 +101,12 @@ export interface PresenceContext {
   receivedAt: string;
   /** Server time of the first report at the current spot (pings and readings at rest keep it). */
   movedAt?: string;
+  /**
+   * The point is inside or near a home place (shape.ts `nearHomePlace`),
+   * whatever the status says while a dwell is pending. Home coordinate
+   * protection decides from this, never from `status`.
+   */
+  atOrNearHome: boolean;
 }
 
 /** A closed polygon ring in GeoJSON [lon, lat] order: the first position repeats as the last. */
