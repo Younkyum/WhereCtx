@@ -140,5 +140,15 @@ not an interactive login.
 - **Webhooks to Home Assistant on the LAN:** set
   `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` in `.env`. Otherwise the SSRF guard
   blocks private addresses.
+- **Dashboard maps** need no maps key: they are drawn on OpenStreetMap's
+  tiles by default. Those servers are run by volunteers for light use under
+  the [tile usage policy](https://operations.osmfoundation.org/policies/tiles/)
+  (attribution shown on every map, a valid Referer, no heavy or offline
+  use). For more than a household, set `MAP_TILE_URL` in `.env` to your own
+  or a paid tile server (an https Leaflet template with `{z}`, `{x}`, `{y}`
+  on one host; the CSP allows exactly that host), with its
+  `MAP_TILE_ATTRIBUTION` and `MAP_TILE_ATTRIBUTION_URL`. `MAP_TILE_URL=off`
+  draws no maps. A malformed value stops the server at boot. The Kakao or
+  Naver keys in Maps & routes are only for drive times and addresses.
 - **Rate limiting at the edge** (optional): add a Cloudflare WAF rate-limiting
   rule on the zone to throttle abusive clients before they reach the NAS.

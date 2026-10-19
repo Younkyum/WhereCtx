@@ -28,6 +28,9 @@ passkey dashboard and share their location with each other, like Find My.
   with live traffic, and which neighbourhood you are in, through Kakao or
   Naver with your own key. Off until you turn it on; your position leaves the
   server rounded to about 100 m, and never from home.
+- Shows you, your places, your history and your routes on maps in the
+  dashboard, drawn on OpenStreetMap tiles with no maps key
+  (`MAP_TILE_URL` points them at another tile server, or turns them off).
 
 ## Quick start with Docker
 

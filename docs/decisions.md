@@ -495,6 +495,10 @@ than the switches promise. Each fix below is enforced in one place.
 
 ## 2026-10-19: maps in the dashboard
 
+Superseded the same day by "dashboard maps on open tiles" below: the map
+frame, the map keys and their CSP are gone. Kept for why the frame was
+built as it was.
+
 The owner asked to see things on a map. Agents still get none.
 
 - **The providers we already use, with the person's key.** Kakao Maps or
@@ -569,3 +573,48 @@ The owner asked to see things on a map. Agents still get none.
 - **The owner reads themself whatever the agent policy.** Coarse and
   precise alike; hidden mode used to refuse the owner's coarse read while
   the map placed them exactly.
+
+## 2026-10-19: dashboard maps on open tiles, and key tests that say why
+
+In production the Kakao map showed only "the map script failed" and the
+REST key test only "the provider refused the key". The operator then chose
+maps that need neither provider.
+
+- **Leaflet, bundled, on OpenStreetMap raster tiles.** No maps key, no
+  provider account, and maps show with `geoEnabled` off. Leaflet 1.9.4 is
+  pinned and bundled as its own chunk, loaded from this origin with the
+  first map, so `script-src` stays `'self'` and nothing is framed. The map
+  draws in the page; the iframe, `map.html`, the per-path CSP and the
+  `postMessage` protocol are deleted.
+- **One CSP opening, from configuration.** `MAP_TILE_URL` (a Leaflet
+  template, OSM's by default, `off` for no maps) is parsed at boot: https,
+  one host, `{z}`, `{x}`, `{y}` and optionally `{r}`; `{s}` subdomains are
+  refused so `img-src` names exactly one origin. A bad value stops the
+  server instead of shipping a policy that blocks every tile.
+- **OSM's tile policy.** Tiles ask with `referrerpolicy="strict-origin"`
+  (the page itself stays `no-referrer`), since the policy wants a valid
+  Referer; every map shows the attribution as text, linked to
+  `MAP_TILE_ATTRIBUTION_URL`, because Leaflet's own control writes HTML and
+  the text comes from the environment. The deploy docs say OSM's servers
+  are for light use and how to point at another tile server.
+- **Map keys deleted, old rows tolerated.** `jsKey`/`mapKeyId`,
+  `KAKAO_JS_KEY`, `NAVER_MAPS_KEY_ID`, `GEO_OPERATOR_MAP_KEY_FOR_ALL` and
+  the map key routes are gone. A sealed bag that still holds a map key opens
+  for its REST key alone; a row holding only a map key is not listed and the
+  next save or removal drops it. No migration, since the bag is sealed and
+  only the server can open it. With nothing left to merge, the key-bag mutex
+  went too, and a save takes a complete `GeoCredentials`.
+- **Key tests say why.** The test now also times a route (Kakao enables
+  Local and Mobility apart), and maps the provider's error body to a
+  `KeyProblem` the dashboard turns into a fix: Kakao Local
+  `AccessDeniedError ... does not exist` and Mobility `-401`/`-903` are
+  `key_invalid`; `NotAuthorizedError ... disabled OPEN_MAP_AND_LOCAL
+  service.` is `map_service_disabled` (제품 설정 > 카카오맵 > 사용 설정 ON,
+  per Kakao staff on DevTalk); Mobility `-3` is `service_not_enabled`, `-5`
+  `review_required`, `-10` `quota`; Naver gateway `200` is `key_invalid`,
+  `210` and `429/400` (which Naver documents as also meaning the API is not
+  selected for the Application) are `service_not_enabled`, `410`/`420`
+  `quota`. A 429 stays a `quota` failure for agents whatever the fix. The
+  provider's own text comes back with every key masked, since Kakao echoes
+  the key it was sent.
+
