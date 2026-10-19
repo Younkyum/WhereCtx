@@ -66,7 +66,12 @@ export class WebhookDispatcher {
   private readonly maxConcurrent: number;
   private readonly perUserSlots: number;
   private readonly drainBudgetMs: number;
-  private readonly attempts = new Map<string, number>();
+  /**
+   * Failed attempts per hook and event, counted against one credential: when
+   * the hook's stored auth header changes, the count starts over, so failures
+   * under the old value never dead-letter under the new one.
+   */
+  private readonly attempts = new Map<string, { sealed: string | null; counts: Map<string, number> }>();
 
   /** The slot table: one entry per running drain. */
   private readonly slots = new Map<string, { userId: string; done: Promise<void> }>();
@@ -135,8 +140,8 @@ export class WebhookDispatcher {
     // Forget hooks that no longer exist or were deactivated so the maps
     // cannot accumulate orphaned entries (review P7).
     const activeIds = new Set(hooks.map((h) => h.id));
-    for (const key of this.attempts.keys()) {
-      if (!activeIds.has(key.slice(0, key.indexOf(":")))) this.attempts.delete(key);
+    for (const id of this.attempts.keys()) {
+      if (!activeIds.has(id)) this.attempts.delete(id);
     }
     for (const id of [...this.due, ...this.touched.keys()]) {
       if (!activeIds.has(id)) {
@@ -159,6 +164,14 @@ export class WebhookDispatcher {
       started.push(this.run(hook));
     }
     return started;
+  }
+
+  private attemptsFor(hook: Webhook): Map<string, number> {
+    const held = this.attempts.get(hook.id);
+    if (held && held.sealed === hook.authHeaderSealed) return held.counts;
+    const fresh = { sealed: hook.authHeaderSealed, counts: new Map<string, number>() };
+    this.attempts.set(hook.id, fresh);
+    return fresh.counts;
   }
 
   private slotsHeldBy(userId: string): number {
@@ -191,33 +204,38 @@ export class WebhookDispatcher {
       hook.cursor ?? null,
       this.batchSize,
     );
+    const attempts = this.attemptsFor(hook);
     for (const ev of events) {
       if (this.halt.signal.aborted) return;
       // Out of budget: the persisted cursor is where the next tick resumes.
       if (this.opts.clock().getTime() - startedAt >= this.drainBudgetMs) return;
       // Each advance also checks the hook is still as this drain read it; when
-      // it is not (paused, resumed, re-subscribed), stop and let the next tick
-      // start from the stored hook.
-      const advance = () => this.opts.webhooksStore.setCursor(hook, ev.createdAt, ev.id);
+      // it is not (paused, resumed, re-subscribed, its auth header replaced or
+      // removed), stop, forget its attempts, and let the next tick start from
+      // the stored hook, so nothing more goes out with the old credential.
+      const advance = async () => {
+        if (await this.opts.webhooksStore.setCursor(hook, ev.createdAt, ev.id)) return true;
+        this.attempts.delete(hook.id);
+        return false;
+      };
       if (!subscribed(hook, ev.type)) {
         if (!(await advance())) return;
         continue;
       }
-      const key = `${hook.id}:${ev.id}`;
       const result = await this.deliver(hook, ev);
       if (result.ok) {
-        this.attempts.delete(key);
+        attempts.delete(ev.id);
         if (!(await advance())) return;
         continue;
       }
       if (this.halt.signal.aborted) return;
       // Failed: count attempts; dead-letter + skip after maxAttempts (no HOL block).
-      const n = (this.attempts.get(key) ?? 0) + 1;
-      this.attempts.set(key, n);
+      const n = (attempts.get(ev.id) ?? 0) + 1;
+      attempts.set(ev.id, n);
       if (n >= this.maxAttempts) {
         log.warn("webhook event dead-lettered", { webhookId: hook.id, eventId: ev.id, attempts: n, error: result.error });
         await this.opts.webhooksStore.recordDeadLetter(hook.id, ev, result.error);
-        this.attempts.delete(key);
+        attempts.delete(ev.id);
         if (!(await advance())) return;
         continue;
       }

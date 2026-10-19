@@ -285,11 +285,16 @@ export class WebhooksStore {
   /**
    * Advance a drain's hook to the composite cursor (createdAt, eventId), only
    * forward, only while the hook is active, and only while its event
-   * selection is the one the drain read. False means the hook was paused,
-   * resumed (which moves the cursor to then), re-subscribed or rewound since,
-   * and the drain must stop: its copy of the hook is stale.
+   * selection and stored auth header are the ones the drain read. False means
+   * the hook was paused, resumed (which moves the cursor to then),
+   * re-subscribed, given another auth header or none, or rewound since, and
+   * the drain must stop: its copy of the hook is stale.
    */
-  async setCursor(hook: Pick<Webhook, "id" | "events">, createdAt: string, eventId: string): Promise<boolean> {
+  async setCursor(
+    hook: Pick<Webhook, "id" | "events" | "authHeaderSealed">,
+    createdAt: string,
+    eventId: string,
+  ): Promise<boolean> {
     const cursor = formatCursor(createdAt, eventId);
     const result = await this.db
       .update(webhooks)
@@ -299,6 +304,7 @@ export class WebhooksStore {
           eq(webhooks.id, hook.id),
           eq(webhooks.active, true),
           eq(webhooks.events, hook.events),
+          hook.authHeaderSealed === null ? isNull(webhooks.authHeader) : eq(webhooks.authHeader, hook.authHeaderSealed),
           or(isNull(webhooks.cursor), lt(webhooks.cursor, cursor)),
         ),
       );

@@ -503,6 +503,46 @@ describe("WebhookDispatcher auth header", () => {
     expect(sent.map((s) => s.init.headers.get("authorization"))).toEqual([VALUE]);
   });
 
+  it.each([
+    ["replaced", { name: "X-Api-Key", value: "replacement-credential-0042" }],
+    ["removed", null],
+  ])("is not sent again once it is %s in the middle of a drain", async (_case, next) => {
+    const hook = await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], authHeader });
+    for (const type of ["presence.updated", "presence.left_place", "presence.entered_place"] as const) {
+      nowMs += 1000;
+      await events.append(USER, { type, placeName: "home" });
+    }
+    let changed = false;
+    const during = await capture(async () => {
+      if (!changed) {
+        changed = true;
+        await webhooks.update(USER, hook.id, { authHeader: next });
+      }
+      return new Response(null, { status: 200 });
+    });
+    expect(during.map((s) => s.init.headers.get("authorization"))).toEqual([VALUE]);
+
+    const after = await capture(async () => new Response(null, { status: 200 }));
+    expect(after).toHaveLength(3);
+    for (const { init } of after) {
+      expect(JSON.stringify([...init.headers])).not.toContain(VALUE);
+      expect(init.headers.get("x-api-key")).toBe(next?.value ?? null);
+    }
+  });
+
+  it("counts failed attempts afresh once it is replaced", async () => {
+    const hook = await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], authHeader });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    const dispatcher = makeDispatcher({ fetchFn: (async () => new Response(null, { status: 401 })) as any, maxAttempts: 2 });
+    await dispatcher.tick();
+    await webhooks.update(USER, hook.id, { authHeader: { name: "Authorization", value: "Bearer corrected-credential-00042" } });
+    await dispatcher.tick();
+    expect(await webhooks.listDeadLetters(USER)).toEqual([]);
+    await dispatcher.tick();
+    expect((await webhooks.listDeadLetters(USER)).map((d) => d.error)).toEqual(["status 401"]);
+  });
+
   it("never reaches a log line or a dead letter when a delivery fails quoting it", async () => {
     const { clearLogs, recentLogs } = await import("../util/log.js");
     clearLogs();
