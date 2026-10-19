@@ -102,8 +102,8 @@ PUT    /v1/geo/credentials/naver             # session, step-up: { "clientId":"�
 DELETE /v1/geo/credentials/:provider         # session, step-up: forget my keys for it
 POST   /v1/geo/credentials/:provider/test    # session: looks up Seoul City Hall, then times a route to Seoul Station, with the saved key
 GET    /v1/geo/search?q=                     # manage_places, maps on: address or place search, with coordinates
-GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
-                                             # read_presence: drive time from my current location
+GET    /v1/geo/eta?to=&mode=&pick=&departAt=&avoid=&directions=&reason=
+                                             # read_presence: travel time from my current location
 ```
 
 `GET /v1/geo`:
@@ -161,7 +161,12 @@ shows it beside a fix for the `code`. Success is `{ "ok": true, "label": "…" }
 presence it may see.
 
 `GET /v1/geo/eta`: `to` is a registered place's name, else an address or a
-place name to search. When a search finds several, the answer is `409` with
+place name to search. `mode` is `car` (the default), `transit` (bus and
+subway), `walk` or `bike`. Kakao routes all four; transit, walking and
+cycling take no `departAt` and no `avoid` (`502` `kind:"unsupported"`).
+Naver routes `car` only and answers any other mode `409`
+`{ "error", "unsupported":"mode", "mode", "provider", "supported":["car"] }`
+before any provider call. When a search finds several, the answer is `409` with
 `candidates` numbered by `pick` (coordinates only for a session or a
 `manage_places` token); pass `pick`. `departAt` is an ISO 8601 time with an
 offset for a future departure (Kakao only; Naver answers `502`
@@ -181,6 +186,23 @@ whole route as the provider drew it, start to end:
   "deepLinks": { "kakaoMap":"https://map.kakao.com/link/to/…", "naverMap":"nmap://navigation?…&appname=wherectx" } } }
 ```
 
+Every answer names its `mode`; `traffic` is present for `car` only. The
+owner's transit answer adds the fare, the transfers, the minutes on foot and
+each leg with its lines, every stop and its geometry; `summary` is the lines
+ridden and `steps` the provider's words for each leg:
+
+```json
+{ "eta": { "mode":"transit", "precision":"exact", "durationMin":62, "distanceKm":27.4,
+  "summary":["신분당선","간선 472"], "transfers":1, "walkMin":8, "fare":2650,
+  "legs":[{ "kind":"walk", "durationMin":5, "distanceM":310, "lines":[], "stops":[], "path":[…] },
+          { "kind":"subway", "durationMin":16, "distanceM":15800, "lines":["신분당선"],
+            "stops":["판교","청계산입구","양재시민의숲","양재","강남"], "path":[…] }, …],
+  "steps":["신분당선 (판교 > 강남)", …], "path":[…], … } }
+```
+
+Walking and cycling give the owner `steps` (the provider's instructions)
+and `path`, with an empty `summary`.
+
 A token gets `precision: "approximate"`: `durationMin` in 5-minute steps
 (at least 5), `distanceKm` in whole kilometres, `arriveAt` to 5 minutes, no
 fares, no `path`, and `summary` without any road within 1.5 km of either end, any side
@@ -190,6 +212,14 @@ token may route only to a registered place, and gets `steps` (with
 `read_precise_location`, the person allows precise location, `reason` is
 given if the person requires one, and they are not at home. An address
 destination needs the same. Otherwise `stepsWithheld` says why.
+
+By transit a token gets `transfers`, `walkMin` (minutes on foot, in 5-minute
+steps, `0` when there is no walk) and in `summary` the lines ridden, but
+only lines whose ride has geometry and runs, boarding to alighting, farther
+than 1.5 km from the start and from a registered destination. With precise
+access it gets every line. It never gets a stop name, the fare, the legs or
+`steps` (`stepsWithheld` says so when `directions=true`). On foot and by
+bicycle `summary` is empty, and `steps` follow the same gate as a car's.
 
 `origin` is `home` only for the owner at or near home with
 `skipProviderNearHome` on: the route starts at the home place. `freshness`
@@ -208,6 +238,7 @@ address the caller named.
 | no such place and nothing found | `404` |
 | several matches | `409` with numbered `candidates` |
 | no key set up | `409` |
+| the provider in use does not route this `mode` | `409` `{ "unsupported":"mode", … }` |
 | the person's 30 provider calls a minute, the key's 60, or (operator key, anyone but `USER_ID`) `GEO_OPERATOR_DAILY_CAP` a day are spent | `429` |
 | the provider refused or failed | `502` `{ "error", "kind" }` (`auth`, `quota`, `no_route`, `unsupported`, `bad_request`, `timeout`, `upstream`) |
 
@@ -416,7 +447,8 @@ GET /v1/activity/ingest?limit=50&before=               # device uploads (max 200
     `devices.list`, `devices.pair`, `activity.read`, `admin.logs`,
     `geo.settings`, `geo.credentials.write`, `geo.credentials.delete`,
     `geo.credentials.test`, `geo.search`, `geo.eta`; the maps provider calls
-    `geo.reverse`, `geo.geocode`, `geo.route`; `account`
+    `geo.reverse`, `geo.geocode`, `geo.route` (a car's),
+    `geo.route.transit`, `geo.route.walk`, `geo.route.bike`; `account`
     for any `/v1/me`, `/v1/workspaces`, `/v1/shares`, `/v1/people` or
     `/v1/oauth` route, or the OAuth consent API under `/oauth/interaction/`
     (a token is always refused there); an MCP tool name; `mcp.request` for an

@@ -618,3 +618,60 @@ maps that need neither provider.
   provider's own text comes back with every key masked, since Kakao echoes
   the key it was sent.
 
+
+## 2026-10-19: routes by transit, on foot and by bicycle
+
+The operator asked for public transit beside driving. The Kakao Map API
+added transit, walking and cycling routes on 2026-07-21
+(devtalk.kakao.com/t/api-notice-on-new-kakao-map-api-features-and-free-quota-policy/150222),
+on `dapi.kakao.com` with the same REST key.
+
+- **One route type, a mode, a capability table.** `RouteMode` is `car`,
+  `transit`, `walk` or `bike`; `RouteResult` is a union by mode (a car has
+  roads and fares, transit has legs with lines, stops and geometry, walking
+  and cycling have instructions). `PROVIDER_ROUTE_MODES` names Kakao for
+  all four and Naver for `car` alone: Naver Cloud Maps lists Directions 5
+  and 15, both driving, and no transit, walking or cycling API. GeoService
+  answers `unsupported_mode` before any call, and the Naver adapter refuses
+  any other mode itself too. Rejected: falling back to another provider for
+  a mode, since that would send the location somewhere the person did not
+  choose.
+- **The endpoints, as documented** (developers.kakao.com/docs/ko/kakaomap/rest-api):
+  `GET /v2/routing/publictraffic`, `/v2/routing/walk`, `/v2/routing/bicycle`
+  with `start_x`, `start_y`, `end_x`, `end_y` (WGS84 by default) and
+  `Authorization: KakaoAK <key>`. Transit answers `status` (`OK`,
+  `STARTNODES_NULL`, `ENDNODES_NULL`, `EQUAL_POINTS`, `INVALID_REQUEST`,
+  `NO_RESULTS`) and `routes[]` of `properties` (`totalTime` s,
+  `totalDistance` m, `transfers`, `fare.value`) and `steps[]` (`type` `BUS`,
+  `SUBWAY` or `WALKING`, `time`, `distance`, `guidance`, `stops[].name`,
+  `vehicles[]` of `type` and `name`, `path.points` as [x, y]). Walking and
+  cycling answer `route.properties` and `legs[].steps[]` with `guidance`
+  and `path.points`. None takes a departure time, so a future `departAt`
+  and `avoid` are `unsupported` for them. The first transit route is used,
+  in Kakao's order. A bus is named with its kind (`간선 472`), a subway line
+  by its name. Each path is one constant in `kakao.ts`.
+- **Quota.** Kakao's `-10` ("API limit has been exceeded.", HTTP 400) is
+  `quota`, as it already was for Mobility. DevTalk threads report it on
+  transit from test apps with a small separate daily quota. Each route call
+  counts against the same per-person and per-key budgets as a car's.
+- **What an agent hears of transit.** The stops at either end are the
+  ones nearest the person and the destination, so stop names never reach an
+  agent, nor the fare, the legs or the provider's step text, which names
+  stops. It hears the transfers, the minutes on foot in 5-minute steps, and
+  the lines of rides that run, boarding to alighting, farther than
+  `AGENT_ROAD_CLEARANCE_M` (1.5 km) from the origin and a registered
+  destination, the same rule as roads. The whole ride must be clear, not
+  only the boarding stop, so a line alighting beside the destination is
+  left out too. Precise access (the gate `get_precise_location` uses) lifts
+  the line filter only, and the answer is then logged as precise. Walking
+  and cycling give an agent no street at all without precise access and
+  `directions`.
+- **Logged by mode.** A route call is `geo.route` (car, unchanged so old
+  rows read the same), `geo.route.transit`, `geo.route.walk` or
+  `geo.route.bike`. New actions instead of a column: no migration, and the
+  activity page already names each action.
+- **Fixtures.** The documented examples elide most steps (`// ...`), so the
+  fixtures keep every value the docs print and fill the elided steps per the
+  documented schema; a second transit fixture with two transfers is built
+  per that schema to test the line filter at both ends. They were not
+  recorded from a live key.

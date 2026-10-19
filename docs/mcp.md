@@ -202,8 +202,9 @@ A POST may batch at most 10 JSON-RPC messages; a larger batch is refused with
 ### ETA and directions
 
 `to` is the name of one of the user's registered places (`home`,
-`office`). The route starts at the user's current location, rounded to about
-100 m before it leaves the server.
+`office`). `mode` is `car` (the default), `transit`, `walk` or `bike`. The
+route starts at the user's current location, rounded to about 100 m before
+it leaves the server.
 
 The answer is approximate on purpose, so it cannot be worked back to where
 the user is: `durationMin` in 5-minute steps (at least 5), `distanceKm` in
@@ -211,6 +212,14 @@ whole kilometres, `arriveAt` to 5 minutes, no fares, and `summary` only the
 main roads at least 1.5 km from both ends, without side streets (…번길,
 …로12길). It still reveals roughly how far away the user is, which is why the
 user turns it on separately (`etaToAgents`).
+
+By transit, `summary` lists the lines ridden (`"2호선"`, `"간선 472"`) whose
+ride runs farther than 1.5 km from both ends, with `transfers` and `walkMin`
+(minutes on foot, in 5-minute steps). The first and last stops would name
+where the user is and where they are going, so no stop name, fare or leg is
+ever given, and `get_directions` answers `stepsWithheld` for transit. With
+precise access every line is listed. On foot and by bicycle, `summary` is
+empty and the steps follow the same gate as a car's.
 
 Precise access opens two more things: the turn-by-turn `steps` of
 `get_directions` (they name the streets around the user) and an address or
@@ -228,14 +237,17 @@ provider calls a minute, a route to an address being two), or the reading is
 too old to start from. A route starts only from a `live` reading or a
 `stationary` one inside a registered place; the refusal carries `freshness`
 and `originAgeMin`, as every answer does. Each call also writes a
-`geo.geocode` or `geo.route` row to the user's access log under the same
-credential.
+`geo.geocode` or `geo.route` row (`geo.route.transit`, `.walk`, `.bike` by
+mode) to the user's access log under the same credential.
 
-Provider support: Kakao (Kakao Mobility Directions) times a future
+Provider support: by car, Kakao (Kakao Mobility Directions) times a future
 `departAt` on predicted traffic (`traffic:"predicted"`); Naver Directions 5
-always uses live traffic and refuses `departAt`. Neither offers walking or
-public transit routes through these APIs, so the tools answer for driving
-only.
+always uses live traffic and refuses `departAt`. Transit, walking and
+cycling come from the Kakao Map API (added 2026-07-21) and time a departure
+now only: `departAt` and `avoid` are refused for them. Naver Cloud Maps has
+no transit, walking or cycling API, so on Naver those modes answer
+`unsupported_mode` with the modes it does route, and nothing is sent.
+Transit times are the provider's estimate, not a live timetable.
 
 ## Agent usage policy
 

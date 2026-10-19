@@ -162,8 +162,9 @@ cannot pin presence permanently "fresh".
 
 ## Maps: directions, ETA and neighbourhood names
 
-Agents can ask roughly how long it takes you to drive to one of your places
-(MCP `get_eta`, `get_directions`, REST `GET /v1/geo/eta`), and your presence
+Agents can ask roughly how long it takes you to get to one of your places,
+by car, transit, on foot or by bicycle (MCP `get_eta`, `get_directions`,
+REST `GET /v1/geo/eta`), and your presence
 can carry the neighbourhood you are in (`area`, such as "성남시 분당구
 삼평동"). Both need a call to Kakao or Naver with your location. Everything
 is off by default.
@@ -220,6 +221,21 @@ What leaves the server, and when:
   address, need precise access: `read_precise_location`, your
   `allowPreciseLocation`, a reason, and not at home. Every answer carries
   `freshness` and `originAgeMin`.
+- **By transit.** The stop you board at and the stop you get off at are the
+  stops nearest you and your destination, so an agent never hears a stop
+  name, the fare (it tracks the distance) or the legs. It hears the number
+  of transfers, the minutes on foot in 5-minute steps, and the lines ridden
+  (`2호선`, `간선 472`), but only a line whose ride runs, from boarding to
+  alighting, farther than 1.5 km from your position and from the registered
+  place it routes to, and has geometry. A village bus from beside your
+  home is never named. With precise access (the gate above) an agent hears
+  every line, still no stop.
+- **On foot and by bicycle.** An agent hears the coarse minutes and
+  kilometres and no street; the instructions, which name the streets you
+  start on, need precise access and `directions`.
+- **Only Kakao.** Transit, walking and cycling routes come from Kakao.
+  Naver has none, and while Naver answers your routes an agent asking for
+  them gets `unsupported_mode`; nothing is sent.
 - **Only a fresh start.** A route starts only from a `live` reading, or a
   `stationary` one inside a registered place. Anything else is refused with
   its freshness and age.
@@ -231,7 +247,8 @@ What leaves the server, and when:
   presence it may see. It sends only the text typed.
 - **Logged.** Each provider call an agent causes, and each background area
   lookup (credential `system`), is an access log row: `geo.reverse`,
-  `geo.geocode`, `geo.route`. No coordinates. A provider failure is
+  `geo.geocode`, `geo.route` (by car), `geo.route.transit`,
+  `geo.route.walk`, `geo.route.bike`. No coordinates. A provider failure is
   `error`. Your own calls from the dashboard (the drive-time check, a
   search, a key test) are not logged, as your own reads are not.
 - **Limits.** Every provider call counts against you (30 a minute, whoever
