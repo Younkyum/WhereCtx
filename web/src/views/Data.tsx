@@ -13,7 +13,7 @@ import { Table } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "@astryxdesign/core/Link";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
@@ -30,8 +30,8 @@ import {
   type PrivacySettings,
 } from "../model";
 import { placesScene, type LatLon } from "../mapScene";
-import { MapView, useMapConfig } from "../MapView";
-import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
+import { MapView, useMapTiles } from "../MapView";
+import { DialogForm, Empty, FormDialog, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
 import { PlaceRules } from "./PlaceRules";
 
 function usePlaceTypes() {
@@ -39,13 +39,16 @@ function usePlaceTypes() {
   return PLACE_TYPES.map((k) => ({ value: k, label: t(`ptype.${k}`) }));
 }
 
+type AddDialog = "address" | "here" | "coords" | null;
+
 export function PlacesView() {
   const { t } = useApp();
   const notify = useNotify();
   const confirm = useConfirm();
   const [places, reload] = useLoad(() => api<{ places: Place[] }>("/v1/places").then((r) => r.places ?? []), []);
-  const mapConfig = useMapConfig();
+  const tiles = useMapTiles();
   const [picked, setPicked] = useState<LatLon | null>(null);
+  const [adding, setAdding] = useState<AddDialog>(null);
   const list = places.kind === "ready" ? places.data : null;
   const scene = useMemo(() => placesScene(list ?? [], picked, t("map.picked")), [list, picked, t]);
   const remove = async (p: Place) => {
@@ -58,9 +61,24 @@ export function PlacesView() {
     }
     await reload();
   };
+  const close = () => {
+    setAdding(null);
+    setPicked(null);
+  };
+  const added = async () => {
+    notify.ok(t("toast.saved"));
+    await reload();
+  };
+  const actions = (
+    <HStack gap={2} wrap="wrap">
+      <Button label={t("places.byAddress")} size="sm" onClick={() => setAdding("address")} />
+      <Button label={t("places.addHere")} size="sm" onClick={() => setAdding("here")} />
+      <Button label={t("places.byCoords")} size="sm" onClick={() => setAdding("coords")} />
+    </HStack>
+  );
   return (
     <Page title={t("places.title")} description={t("places.desc")}>
-      <Panel title={t("places.list")}>
+      <Panel title={t("places.list")} actions={actions}>
         <Loaded state={places}>
           {(list) =>
             list.length ? (
@@ -89,17 +107,26 @@ export function PlacesView() {
           }
         </Loaded>
       </Panel>
-      <MapView config={mapConfig} scene={scene} title={t("places.map")} hint={t("places.mapHint")} onPick={setPicked} />
-      <PlaceRules state={places} onSaved={reload} />
-      <AddByAddress onAdded={reload} />
-      <AddHere onAdded={reload} />
-      <AddByCoordinates
-        picked={picked}
-        onAdded={async () => {
-          setPicked(null);
-          await reload();
+      <MapView
+        tiles={tiles}
+        scene={scene}
+        title={t("places.map")}
+        hint={t("places.mapHint")}
+        onPick={(at) => {
+          setPicked(at);
+          setAdding("coords");
         }}
       />
+      <PlaceRules state={places} onSaved={reload} />
+      <FormDialog isOpen={adding !== null} onClose={close}>
+        {adding === "address" ? (
+          <AddByAddress onClose={close} onAdded={added} />
+        ) : adding === "here" ? (
+          <AddHere onClose={close} onAdded={added} />
+        ) : adding === "coords" ? (
+          <AddByCoordinates picked={picked} onClose={close} onAdded={added} />
+        ) : null}
+      </FormDialog>
     </Page>
   );
 }
@@ -107,9 +134,13 @@ export function PlacesView() {
 /** Kakao Map's documented web link to a point (apis.map.kakao.com/web/guide, "지도 URL"). */
 const mapLink = (c: GeoCandidate) => `https://map.kakao.com/link/map/${encodeURIComponent(c.label)},${c.lat},${c.lon}`;
 
-function AddByAddress({ onAdded }: { onAdded: () => Promise<void> }) {
+interface AddProps {
+  onClose: () => void;
+  onAdded: () => Promise<void>;
+}
+
+function AddByAddress({ onClose, onAdded }: AddProps) {
   const { t } = useApp();
-  const notify = useNotify();
   const types = usePlaceTypes();
   const [query, setQuery] = useState("");
   const [found, setFound] = useState<GeoCandidate[] | null>(null);
@@ -135,111 +166,82 @@ function AddByAddress({ onAdded }: { onAdded: () => Promise<void> }) {
       );
     }
   });
-  const [saving, save] = useAction(async () => {
+  const save = async () => {
     if (!chosen) return;
     await api("/v1/places", { body: { name: name.trim(), type, lat: chosen.lat, lon: chosen.lon, label: chosen.label } });
-    notify.ok(t("toast.saved"));
-    setChosen(null);
-    setFound(null);
-    setQuery("");
-    setName("");
     await onAdded();
-  });
-  return (
-    <Panel title={t("places.byAddress")}>
-      <VStack gap={3}>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (query.trim()) void search();
-          }}
-        >
-          <HStack gap={2} wrap="wrap" vAlign="end">
-            <TextInput label={t("places.byAddressQuery")} value={query} onChange={setQuery} width={320} />
-            <Button type="submit" label={t("places.byAddressSearch")} isLoading={searching} isDisabled={!query.trim()} />
-          </HStack>
-        </form>
-        <Hint>{t("places.byAddressHint")}</Hint>
-        {problem ? <Text type="supporting">{problem}</Text> : null}
-        {found && !found.length ? <Empty text={t("places.byAddressNone")} /> : null}
-        {found?.length && !chosen ? (
-          <Rows items={found} keyOf={(c) => `${c.lat},${c.lon},${c.label}`}>
-            {(c) => (
-              <Row title={c.label} subtitle={c.roadAddress && c.roadAddress !== c.label ? `${c.roadAddress} · ${c.address}` : c.address}>
-                <Link href={mapLink(c)} isExternalLink>
-                  {t("places.viewOnMap")}
-                </Link>
-                <Button
-                  label={t("places.useThis")}
-                  size="sm"
-                  onClick={() => {
-                    setChosen(c);
-                    if (!name.trim()) setName(c.label.slice(0, 64));
-                  }}
-                />
-              </Row>
-            )}
-          </Rows>
-        ) : null}
-        {chosen ? (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (name.trim()) void save();
-            }}
-          >
-            <VStack gap={2}>
-              <Text>{t("places.chosen", { place: chosen.roadAddress ?? chosen.address })}</Text>
-              <HStack gap={2} wrap="wrap" vAlign="end">
-                <TextInput label={t("places.name")} value={name} onChange={setName} isRequired width={240} />
-                <Selector label={t("places.type")} value={type} options={types} onChange={(v) => oneOf(PLACE_TYPES, v) && setType(v)} width={160} />
-                <Button type="submit" label={t("places.save")} variant="primary" isLoading={saving} isDisabled={!name.trim()} />
-                <Button label={t("common.cancel")} onClick={() => setChosen(null)} />
-              </HStack>
-            </VStack>
-          </form>
-        ) : null}
-      </VStack>
-    </Panel>
-  );
-}
-
-function AddHere({ onAdded }: { onAdded: () => Promise<void> }) {
-  const { t } = useApp();
-  const notify = useNotify();
-  const types = usePlaceTypes();
-  const [name, setName] = useState("");
-  const [type, setType] = useState<PlaceType>("custom");
-  const [busy, add] = useAction(async () => {
-    await api("/v1/places", { body: { name: name.trim(), type, useCurrentLocation: true } });
-    notify.ok(t("toast.saved"));
-    setName("");
-    await onAdded();
-  });
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    if (name.trim()) void add();
   };
   return (
-    <Panel title={t("places.addHere")}>
-      <form onSubmit={submit}>
+    <DialogForm
+      title={t("places.byAddress")}
+      submitLabel={t("places.save")}
+      canSubmit={chosen !== null && name.trim() !== ""}
+      onSubmit={save}
+      onClose={onClose}
+    >
+      <HStack gap={2} wrap="wrap" vAlign="end">
+        <TextInput label={t("places.byAddressQuery")} value={query} onChange={setQuery} width={320} />
+        <Button label={t("places.byAddressSearch")} isLoading={searching} isDisabled={!query.trim()} onClick={() => void search()} />
+      </HStack>
+      <Hint>{t("places.byAddressHint")}</Hint>
+      {problem ? <Text type="supporting">{problem}</Text> : null}
+      {found && !found.length ? <Empty text={t("places.byAddressNone")} /> : null}
+      {found?.length && !chosen ? (
+        <Rows items={found} keyOf={(c) => `${c.lat},${c.lon},${c.label}`}>
+          {(c) => (
+            <Row title={c.label} subtitle={c.roadAddress && c.roadAddress !== c.label ? `${c.roadAddress} · ${c.address}` : c.address}>
+              <Link href={mapLink(c)} isExternalLink>
+                {t("places.viewOnMap")}
+              </Link>
+              <Button
+                label={t("places.useThis")}
+                size="sm"
+                onClick={() => {
+                  setChosen(c);
+                  if (!name.trim()) setName(c.label.slice(0, 64));
+                }}
+              />
+            </Row>
+          )}
+        </Rows>
+      ) : null}
+      {chosen ? (
         <VStack gap={2}>
+          <Text>{t("places.chosen", { place: chosen.roadAddress ?? chosen.address })}</Text>
           <HStack gap={2} wrap="wrap" vAlign="end">
             <TextInput label={t("places.name")} value={name} onChange={setName} isRequired width={240} />
             <Selector label={t("places.type")} value={type} options={types} onChange={(v) => oneOf(PLACE_TYPES, v) && setType(v)} width={160} />
-            <Button type="submit" label={t("places.addHereButton")} variant="primary" isLoading={busy} isDisabled={!name.trim()} />
+            <Button label={t("places.searchAgain")} onClick={() => setChosen(null)} />
           </HStack>
-          <Hint>{t("places.addHereHint")}</Hint>
         </VStack>
-      </form>
-    </Panel>
+      ) : null}
+    </DialogForm>
+  );
+}
+
+function AddHere({ onClose, onAdded }: AddProps) {
+  const { t } = useApp();
+  const types = usePlaceTypes();
+  const [name, setName] = useState("");
+  const [type, setType] = useState<PlaceType>("custom");
+  const add = async () => {
+    await api("/v1/places", { body: { name: name.trim(), type, useCurrentLocation: true } });
+    await onAdded();
+  };
+  return (
+    <DialogForm title={t("places.addHere")} submitLabel={t("places.addHereButton")} canSubmit={name.trim() !== ""} onSubmit={add} onClose={onClose}>
+      <HStack gap={2} wrap="wrap" vAlign="end">
+        <TextInput label={t("places.name")} value={name} onChange={setName} isRequired width={240} />
+        <Selector label={t("places.type")} value={type} options={types} onChange={(v) => oneOf(PLACE_TYPES, v) && setType(v)} width={160} />
+      </HStack>
+      <Hint>{t("places.addHereHint")}</Hint>
+    </DialogForm>
   );
 }
 
 /** `picked`: a point clicked on the map, which fills in the coordinates. */
-function AddByCoordinates({ picked, onAdded }: { picked: LatLon | null; onAdded: () => Promise<void> }) {
+function AddByCoordinates({ picked, onClose, onAdded }: AddProps & { picked: LatLon | null }) {
   const { t } = useApp();
-  const notify = useNotify();
   const types = usePlaceTypes();
   const [name, setName] = useState("");
   const [type, setType] = useState<PlaceType>("home");
@@ -256,36 +258,21 @@ function AddByCoordinates({ picked, onAdded }: { picked: LatLon | null; onAdded:
     lat != null && lat >= -90 && lat <= 90 &&
     lon != null && lon >= -180 && lon <= 180 &&
     radius != null && radius >= 1;
-  const [busy, save] = useAction(async () => {
+  const save = async () => {
     await api("/v1/places", { body: { name: name.trim(), type, lat, lon, radiusM: radius } });
-    notify.ok(t("toast.saved"));
-    setName("");
-    setLat(null);
-    setLon(null);
-    setRadius(150);
     await onAdded();
-  });
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    if (valid) void save();
   };
   return (
-    <Panel title={t("places.byCoords")}>
-      <form onSubmit={submit}>
-        <VStack gap={3}>
-          <Grid columns={{ minWidth: 180, max: 3 }} gap={3}>
-            <TextInput label={t("places.name")} value={name} onChange={setName} isRequired />
-            <Selector label={t("places.type")} value={type} options={types} onChange={(v) => oneOf(PLACE_TYPES, v) && setType(v)} />
-            <NumberInput label={t("places.radius")} value={radius} onChange={setRadius} min={1} step={10} isRequired />
-            <NumberInput label={t("places.lat")} value={lat} onChange={setLat} min={-90} max={90} step={0.000001} isRequired />
-            <NumberInput label={t("places.lon")} value={lon} onChange={setLon} min={-180} max={180} step={0.000001} isRequired />
-          </Grid>
-          <HStack>
-            <Button type="submit" label={t("places.save")} variant="primary" isLoading={busy} isDisabled={!valid} />
-          </HStack>
-        </VStack>
-      </form>
-    </Panel>
+    <DialogForm title={t("places.byCoords")} submitLabel={t("places.save")} canSubmit={valid} onSubmit={save} onClose={onClose}>
+      <Grid columns={{ minWidth: 180, max: 2 }} gap={3}>
+        <TextInput label={t("places.name")} value={name} onChange={setName} isRequired />
+        <Selector label={t("places.type")} value={type} options={types} onChange={(v) => oneOf(PLACE_TYPES, v) && setType(v)} />
+        <NumberInput label={t("places.lat")} value={lat} onChange={setLat} min={-90} max={90} step={0.000001} isRequired />
+        <NumberInput label={t("places.lon")} value={lon} onChange={setLon} min={-180} max={180} step={0.000001} isRequired />
+        <NumberInput label={t("places.radius")} value={radius} onChange={setRadius} min={1} step={10} isRequired />
+      </Grid>
+      <Hint>{t("places.byCoordsHint")}</Hint>
+    </DialogForm>
   );
 }
 

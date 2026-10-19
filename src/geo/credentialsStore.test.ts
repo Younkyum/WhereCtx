@@ -32,8 +32,8 @@ async function rawRows(): Promise<string> {
 
 describe("maps credentials at rest", () => {
   it("stores no key in plaintext, and lists only a hint", async () => {
-    await store.put(ana, "kakao", { restKey: KAKAO_KEY }, { resetUse: true });
-    await store.put(ana, "naver", { clientId: NAVER.clientId, clientSecret: NAVER.clientSecret }, { resetUse: true });
+    await store.put(ana, { provider: "kakao", restKey: KAKAO_KEY });
+    await store.put(ana, NAVER);
     const raw = await rawRows();
     for (const secret of [KAKAO_KEY, NAVER.clientSecret, NAVER.clientId]) expect(raw).not.toContain(secret);
     expect(raw).toContain("enc:v1:");
@@ -46,7 +46,7 @@ describe("maps credentials at rest", () => {
   });
 
   it("opens a key only for its owner", async () => {
-    await store.put(ana, "kakao", { restKey: KAKAO_KEY }, { resetUse: true });
+    await store.put(ana, { provider: "kakao", restKey: KAKAO_KEY });
     expect(await store.open(ana, "kakao")).toEqual({ restKey: KAKAO_KEY });
     expect(await store.open(ben, "kakao")).toBeNull();
     expect(await store.list(ben)).toEqual([]);
@@ -55,15 +55,15 @@ describe("maps credentials at rest", () => {
   });
 
   it("cannot be opened with another install's key, and says so instead of failing", async () => {
-    await store.put(ana, "kakao", { restKey: KAKAO_KEY }, { resetUse: true });
+    await store.put(ana, { provider: "kakao", restKey: KAKAO_KEY });
     const other = new GeoCredentialsStore(handle.db, new SecretBox("another-install"));
     expect(await other.open(ana, "kakao")).toBeNull();
     expect(await other.list(ana)).toEqual([expect.objectContaining({ provider: "kakao", status: "unusable", lastError: UNUSABLE_KEY })]);
   });
 
   it("is bound to its person and provider: a row copied to another does not open", async () => {
-    await store.put(ana, "kakao", { restKey: KAKAO_KEY }, { resetUse: true });
-    await store.put(ben, "kakao", { restKey: "ben-key-0000000000000000" }, { resetUse: true });
+    await store.put(ana, { provider: "kakao", restKey: KAKAO_KEY });
+    await store.put(ben, { provider: "kakao", restKey: "ben-key-0000000000000000" });
     await handle.client.execute(
       "UPDATE geo_credentials SET secret = (SELECT secret FROM geo_credentials WHERE user_id = 'ana') WHERE user_id = 'ben'",
     );
@@ -73,8 +73,8 @@ describe("maps credentials at rest", () => {
   });
 
   it("treats a corrupted, unsealed or incomplete row as unusable, and still replaces or removes it", async () => {
-    await store.put(ana, "kakao", { restKey: KAKAO_KEY }, { resetUse: true });
-    await store.put(ana, "naver", { clientId: NAVER.clientId, clientSecret: NAVER.clientSecret }, { resetUse: true });
+    await store.put(ana, { provider: "kakao", restKey: KAKAO_KEY });
+    await store.put(ana, NAVER);
     await handle.client.execute("UPDATE geo_credentials SET secret = 'enc:v1:AAAAbroken' WHERE provider = 'kakao'");
     await handle.client.execute({ sql: "UPDATE geo_credentials SET secret = ? WHERE provider = 'naver'", args: [JSON.stringify({ clientId: "x" })] });
     expect((await store.list(ana)).map((c) => [c.provider, c.status])).toEqual([
@@ -82,28 +82,45 @@ describe("maps credentials at rest", () => {
       ["naver", "unusable"],
     ]);
     expect(await store.open(ana, "kakao")).toBeNull();
-    await store.put(ana, "kakao", { restKey: KAKAO_KEY }, { resetUse: true });
+    await store.put(ana, { provider: "kakao", restKey: KAKAO_KEY });
     expect(await store.open(ana, "kakao")).toEqual({ restKey: KAKAO_KEY });
     expect(await store.delete(ana, "naver")).toBe(true);
     expect((await store.list(ana)).map((c) => [c.provider, c.status])).toEqual([["kakao", "ok"]]);
-
-    const incomplete = await store.put(ana, "naver", { clientId: NAVER.clientId }, { resetUse: true });
-    expect(incomplete.status).toBe("unusable");
   });
 
   it("replacing a key clears how the old one fared", async () => {
-    await store.put(ana, "kakao", { restKey: KAKAO_KEY }, { resetUse: true });
+    await store.put(ana, { provider: "kakao", restKey: KAKAO_KEY });
     await store.markUsed(ana, "kakao", "the maps provider refused the key");
     expect((await store.list(ana))[0]!.lastError).toBe("the maps provider refused the key");
-    await store.put(ana, "kakao", { restKey: "fedcba9876543210fedcba9876543210" }, { resetUse: true });
+    await store.put(ana, { provider: "kakao", restKey: "fedcba9876543210fedcba9876543210" });
     expect((await store.list(ana))[0]).toMatchObject({ kinds: { restKey: "3210" }, lastError: null, lastUsedAt: null });
   });
 
-  it("a save replaces the whole bag; it can still hold more than the REST kinds", async () => {
-    await store.put(ana, "kakao", { restKey: KAKAO_KEY, jsKey: "javascript-key-abcd" }, { resetUse: true });
-    expect(await store.open(ana, "kakao")).toEqual({ restKey: KAKAO_KEY, jsKey: "javascript-key-abcd" });
-    await store.put(ana, "kakao", { restKey: KAKAO_KEY }, { resetUse: true });
-    expect(await store.open(ana, "kakao")).toEqual({ restKey: KAKAO_KEY });
+  describe("a row saved with a map key, before maps were drawn on open tiles", () => {
+    const box = new SecretBox("install-key");
+    async function legacy(keys: Record<string, string>) {
+      const hints = Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, v.slice(-4)]));
+      await handle.client.execute({
+        sql: "INSERT INTO geo_credentials (user_id, provider, secret, hints, created_at, updated_at) VALUES (?, 'kakao', ?, ?, ?, ?)",
+        args: [ana, box.encrypt(JSON.stringify(keys), `${ana}|kakao`), JSON.stringify(hints), "2026-10-01T00:00:00Z", "2026-10-01T00:00:00Z"],
+      });
+    }
+
+    it("opens for its REST key alone, never lists the map key, and loses it on the next save", async () => {
+      await legacy({ restKey: KAKAO_KEY, jsKey: "javascript-key-abcd" });
+      expect(await store.open(ana, "kakao")).toEqual({ restKey: KAKAO_KEY });
+      expect(await store.list(ana)).toEqual([expect.objectContaining({ provider: "kakao", status: "ok", kinds: { restKey: "cdef" } })]);
+      await store.put(ana, { provider: "kakao", restKey: KAKAO_KEY });
+      expect(await rawRows()).not.toContain("jsKey");
+    });
+
+    it("holding only a map key, is neither listed nor opened, and a removal clears it", async () => {
+      await legacy({ jsKey: "javascript-key-abcd" });
+      expect(await store.list(ana)).toEqual([]);
+      expect(await store.open(ana, "kakao")).toBeNull();
+      expect(await store.delete(ana, "kakao")).toBe(true);
+      expect(await rawRows()).toBe("[]");
+    });
   });
 });
 

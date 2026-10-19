@@ -236,7 +236,7 @@ describe("the background area lookup", () => {
       operator: ["kakao"],
     });
 
-    await ctx.system.geo.saveCredential(asUserId(minaId), "naver", { clientId: "mina-id-0000", clientSecret: "mina-secret" });
+    await ctx.system.geo.saveCredential(asUserId(minaId), { provider: "naver", clientId: "mina-id-0000", clientSecret: "mina-secret" });
     clock.advance(3 * 60_000);
     await ingest(ELSEWHERE, mina.browser);
     expect(reverseCalls()).toHaveLength(1);

@@ -48,7 +48,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
 
   // Security headers (defense-in-depth on the admin dashboard especially): CSP,
   // nosniff, frame-deny, no referrer leakage (review finding D3).
-  app.use("*", secureHeaders(SECURE_HEADERS_OPTIONS), pageSecurity);
+  app.use("*", secureHeaders(SECURE_HEADERS_OPTIONS), pageSecurity(ctx.config.mapTiles));
 
   // Cap request bodies well above any legitimate payload (ingest/admin bodies
   // are tiny) to close the OOM/DoS vector on an internet-exposed bind (P8).
