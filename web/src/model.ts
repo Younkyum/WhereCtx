@@ -234,6 +234,16 @@ export interface Webhook {
   active: boolean;
   /** Never the value: its name and last characters only. */
   authHeader?: { name: string; hint: string };
+  /** Its stored credentials do not open on the server: it is not delivered until replaced or deleted. */
+  credentialsUnreadable?: true;
+}
+
+/** What the server can do with webhooks, from GET /v1/webhooks. */
+export interface WebhookCapabilities {
+  /** False without WEBHOOK_ENCRYPTION_KEY: auth headers are only stored encrypted. */
+  authHeader: boolean;
+  /** An auth header is sent only to an https URL. */
+  authHeaderRequiresHttps: boolean;
 }
 
 export interface DeadLetter {

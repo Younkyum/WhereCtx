@@ -22,6 +22,7 @@ import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { useState, type ReactNode } from "react";
 import { PRESENCE_EVENT_TYPES, type PresenceEventType } from "../../../src/types";
 import {
+  authHeaderNeedsHttps,
   authHeaderProblem,
   DEFAULT_AUTH_HEADER_NAME,
   viewAuthHeader,
@@ -33,7 +34,7 @@ import { exampleDelivery } from "../../../src/webhooks/payload";
 import { api } from "../api";
 import { useApp } from "../context";
 import { pickEvents } from "../lib";
-import { oneOf, type DeadLetter, type Webhook } from "../model";
+import { oneOf, type DeadLetter, type Webhook, type WebhookCapabilities } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
 
 export const SIGNATURE_DOCS = "https://github.com/Younkyum/WhereCtx/blob/main/docs/api.md#delivery-signature";
@@ -134,7 +135,9 @@ function AuthHeaderFields({ draft, onChange }: { draft: AuthDraft; onChange: (dr
           onChange={(value) => onChange({ ...draft, value })}
           placeholder={t("webhooks.authValuePlaceholder")}
           width={280}
-          autoComplete="off"
+          autoComplete="new-password"
+          data-1p-ignore
+          data-lpignore="true"
           status={problem === "value" ? { type: "error", message: t("webhooks.authErr.value") } : undefined}
         />
       </HStack>
@@ -143,15 +146,22 @@ function AuthHeaderFields({ draft, onChange }: { draft: AuthDraft; onChange: (dr
   );
 }
 
-function AuthHeaderSection({ children }: { children: ReactNode }) {
+/** The auth header part of a dialog: its explanation, then the fields, or why the server cannot take one. */
+function AuthHeaderSection({ capabilities, children }: { capabilities: WebhookCapabilities; children: ReactNode }) {
   const { t } = useApp();
   return (
     <VStack gap={2}>
       <Text weight="semibold">{t("webhooks.authTitle")}</Text>
       <Hint>{t("webhooks.authHelp")}</Hint>
-      {children}
+      {capabilities.authHeader ? children : <Banner status="warning" title={t("webhooks.authNoKeyTitle")} description={t("webhooks.authNoKey")} collapsible={false} />}
     </VStack>
   );
+}
+
+/** Why `url` cannot carry an auth header on this server, as an error message, or undefined. */
+function useHttpsProblem(url: string, capabilities: WebhookCapabilities): string | undefined {
+  const { t } = useApp();
+  return authHeaderNeedsHttps(url, !capabilities.authHeaderRequiresHttps) ? t("webhooks.authNeedsHttps") : undefined;
 }
 
 function FormDialog({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
@@ -165,7 +175,15 @@ function FormDialog({ title, onClose, children }: { title: string; onClose: () =
   );
 }
 
-function AddDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => Promise<void> }) {
+function AddDialog({
+  capabilities,
+  onClose,
+  onAdded,
+}: {
+  capabilities: WebhookCapabilities;
+  onClose: () => void;
+  onAdded: () => Promise<void>;
+}) {
   const { t } = useApp();
   const notify = useNotify();
   const [url, setUrl] = useState("");
@@ -173,7 +191,9 @@ function AddDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => P
   const [events, setEvents] = useState<string[]>(DEFAULT_EVENTS);
   const [auth, setAuth] = useState<AuthDraft>(EMPTY_AUTH);
   const { header, problem } = readAuthDraft(auth);
-  const valid = /^https?:\/\//i.test(url.trim()) && events.length > 0 && problem === null;
+  const httpsProblem = useHttpsProblem(url.trim(), capabilities);
+  const blockedByHttps = header !== null && httpsProblem !== undefined;
+  const valid = /^https?:\/\//i.test(url.trim()) && events.length > 0 && problem === null && !blockedByHttps;
   const [busy, add] = useAction(async () => {
     await api("/v1/webhooks", {
       body: { url: url.trim(), events, ...(secret ? { secret } : {}), ...(header ? { authHeader: header } : {}) },
@@ -196,8 +216,9 @@ function AddDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => P
             <TextInput label={t("webhooks.secret")} value={secret} onChange={setSecret} width={240} />
           </HStack>
           <EventPicker value={events} onChange={setEvents} />
-          <AuthHeaderSection>
+          <AuthHeaderSection capabilities={capabilities}>
             <AuthHeaderFields draft={auth} onChange={setAuth} />
+            {blockedByHttps ? <Banner status="error" title={t("webhooks.authNeedsHttpsTitle")} description={httpsProblem} collapsible={false} /> : null}
           </AuthHeaderSection>
           <ExampleDelivery events={events} signed={secret !== ""} authHeader={header ? viewAuthHeader(header) : undefined} />
           <HStack gap={2}>
@@ -213,7 +234,17 @@ function AddDialog({ onClose, onAdded }: { onClose: () => void; onAdded: () => P
 /** What saving the edit dialog does to the auth header: leave it, send a new one, or stop sending one. */
 type AuthEdit = "keep" | "replace" | "remove";
 
-function EditDialog({ hook, onClose, onSaved }: { hook: Webhook; onClose: () => void; onSaved: () => Promise<void> }) {
+function EditDialog({
+  hook,
+  capabilities,
+  onClose,
+  onSaved,
+}: {
+  hook: Webhook;
+  capabilities: WebhookCapabilities;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
   const { t } = useApp();
   const notify = useNotify();
   const [events, setEvents] = useState<string[]>(hook.events ?? []);
@@ -222,6 +253,7 @@ function EditDialog({ hook, onClose, onSaved }: { hook: Webhook; onClose: () => 
   const [auth, setAuth] = useState<AuthDraft>({ ...EMPTY_AUTH, name: hook.authHeader?.name ?? DEFAULT_AUTH_HEADER_NAME });
   const { header, problem } = readAuthDraft(auth);
   const replacing = authEdit === "replace";
+  const httpsProblem = useHttpsProblem(hook.url, capabilities);
   const valid = events.length > 0 && (!replacing || (header !== null && problem === null));
   const [saving, save] = useAction(async () => {
     const body: { events?: string[]; active?: boolean; authHeader?: WebhookAuthHeader | null } = {};
@@ -250,8 +282,11 @@ function EditDialog({ hook, onClose, onSaved }: { hook: Webhook; onClose: () => 
           </Text>
           <Switch label={t("webhooks.active")} value={active} onChange={setActive} size="sm" />
           <EventPicker value={events} onChange={setEvents} />
-          <AuthHeaderSection>
-            {replacing ? (
+          {hook.credentialsUnreadable ? <Banner status="error" title={t("webhooks.unreadable")} description={t("webhooks.unreadableHelp")} collapsible={false} /> : null}
+          <AuthHeaderSection capabilities={capabilities}>
+            {replacing && httpsProblem ? (
+              <Text>{httpsProblem}</Text>
+            ) : replacing ? (
               <VStack gap={2}>
                 <AuthHeaderFields draft={auth} onChange={setAuth} />
                 <HStack>
@@ -263,9 +298,13 @@ function EditDialog({ hook, onClose, onSaved }: { hook: Webhook; onClose: () => 
                 <Text>{t("webhooks.authRemoving")}</Text>
                 <Button label={t("webhooks.authKeep")} size="sm" onClick={() => setAuthEdit("keep")} />
               </HStack>
-            ) : hook.authHeader ? (
+            ) : hook.authHeader || hook.credentialsUnreadable ? (
               <HStack gap={2} vAlign="center" wrap="wrap">
-                <Text>{t("webhooks.authCurrent", { name: hook.authHeader.name, hint: hook.authHeader.hint })}</Text>
+                <Text>
+                  {hook.authHeader
+                    ? t("webhooks.authCurrent", { name: hook.authHeader.name, hint: hook.authHeader.hint })
+                    : t("webhooks.unreadable")}
+                </Text>
                 <Button label={t("webhooks.authReplace")} size="sm" onClick={() => setAuthEdit("replace")} />
                 <Button label={t("webhooks.authRemove")} variant="destructive" size="sm" onClick={() => setAuthEdit("remove")} />
               </HStack>
@@ -309,6 +348,7 @@ function HookRow({ hook, onEdit, onChanged }: { hook: Webhook; onEdit: () => voi
       }
       subtitle={
         <HStack gap={1} wrap="wrap">
+          {hook.credentialsUnreadable ? <Badge variant="error" label={t("webhooks.unreadable")} /> : null}
           {hook.active ? null : <Badge variant="warning" label={t("webhooks.paused")} />}
           <EventSummary events={hook.events ?? []} />
           {hook.authHeader ? <Badge variant="neutral" label={t("webhooks.authBadge", { name: hook.authHeader.name, hint: hook.authHeader.hint })} /> : null}
@@ -323,7 +363,14 @@ function HookRow({ hook, onEdit, onChanged }: { hook: Webhook; onEdit: () => voi
 
 export function WebhooksView() {
   const { t } = useApp();
-  const [hooks, reloadHooks] = useLoad(() => api<{ webhooks: Webhook[] }>("/v1/webhooks").then((r) => r.webhooks ?? []), []);
+  const [hooks, reloadHooks] = useLoad(
+    () =>
+      api<{ webhooks: Webhook[]; capabilities?: WebhookCapabilities }>("/v1/webhooks").then((r) => ({
+        list: r.webhooks ?? [],
+        capabilities: r.capabilities ?? { authHeader: false, authHeaderRequiresHttps: true },
+      })),
+    [],
+  );
   const [dead, reloadDead] = useLoad(
     () => api<{ deadLetters: DeadLetter[] }>("/v1/webhooks/dead-letters?limit=20").then((r) => r.deadLetters ?? []),
     [],
@@ -341,7 +388,7 @@ export function WebhooksView() {
         actions={<Button label={t("webhooks.addOpen")} variant="primary" onClick={() => setDialog({ kind: "add" })} />}
       >
         <Loaded state={hooks}>
-          {(list) =>
+          {({ list }) =>
             list.length ? (
               <Rows items={list} keyOf={(w) => w.id}>
                 {(w) => <HookRow hook={w} onEdit={() => setDialog({ kind: "edit", hook: w })} onChanged={reload} />}
@@ -352,8 +399,13 @@ export function WebhooksView() {
           }
         </Loaded>
       </Panel>
-      {dialog?.kind === "add" ? <AddDialog onClose={close} onAdded={reload} /> : null}
-      {dialog?.kind === "edit" ? <EditDialog key={dialog.hook.id} hook={dialog.hook} onClose={close} onSaved={reload} /> : null}
+      {dialog && hooks.kind === "ready" ? (
+        dialog.kind === "add" ? (
+          <AddDialog capabilities={hooks.data.capabilities} onClose={close} onAdded={reload} />
+        ) : (
+          <EditDialog key={dialog.hook.id} hook={dialog.hook} capabilities={hooks.data.capabilities} onClose={close} onSaved={reload} />
+        )
+      ) : null}
       <Panel title={t("webhooks.deadLetters")}>
         <Loaded state={dead}>
           {(list) =>

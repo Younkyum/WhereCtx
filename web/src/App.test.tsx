@@ -519,7 +519,7 @@ describe("log views", () => {
 
   it("Webhooks adds a hook in a dialog, starting with arrivals and departures and an optional auth header", async () => {
     let created: any;
-    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: [] } }));
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: [], capabilities: { authHeader: true, authHeaderRequiresHttps: true } } }));
     route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
     route("POST /v1/webhooks", (body) => {
       created = body;
@@ -549,7 +549,12 @@ describe("log views", () => {
     const nameInput = inputLabelled(dialog(), "Header name");
     expect(nameInput.value).toBe("Authorization");
     await fill(inputLabelled(dialog(), "Header value"), "Bearer n8n-header-credential-9f3k");
-    expect(inputLabelled(dialog(), "Header value").type).toBe("password");
+    const valueInput = inputLabelled(dialog(), "Header value");
+    expect(valueInput.type).toBe("password");
+    expect(valueInput.getAttribute("autocomplete")).toBe("new-password");
+    expect(valueInput.hasAttribute("data-1p-ignore")).toBe(true);
+    expect(valueInput.getAttribute("data-lpignore")).toBe("true");
+    expect(dialog().textContent).toContain("The value is stored encrypted");
     expect(example()).toContain("Authorization: ••••••••9f3k");
     expect(example()).not.toContain("credential");
 
@@ -557,6 +562,12 @@ describe("log views", () => {
     expect(dialog().textContent).toContain("an X- name ending in -Token");
     expect(buttonIn(dialog(), "Add").disabled).toBe(true);
     await fill(nameInput, "Authorization");
+
+    await fill(dialog().querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "http://n8n.example/hook");
+    expect(dialog().textContent).toContain("only to an https URL");
+    expect(buttonIn(dialog(), "Add").disabled).toBe(true);
+    await fill(dialog().querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
+    expect(dialog().textContent).not.toContain("only to an https URL");
 
     await act(async () => buttonIn(dialog(), "Add").click());
     await settle();
@@ -571,7 +582,7 @@ describe("log views", () => {
   it("Webhooks edits a hook in a dialog: events, pausing, and replacing or removing its auth header", async () => {
     const hooks = [{ id: "h1", url: "https://ha.example/hook", events: ["*"], active: true, authHeader: { name: "Authorization", hint: "…9f3k" } }];
     const patched: any[] = [];
-    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: hooks } }));
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: hooks, capabilities: { authHeader: true, authHeaderRequiresHttps: true } } }));
     route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
     route("PATCH /v1/webhooks/h1", (body) => {
       patched.push(body);
@@ -603,6 +614,42 @@ describe("log views", () => {
     await act(async () => buttonIn(dialog(), "Save").click());
     await settle();
     expect(patched.at(-1)).toEqual({ active: false, authHeader: { name: "X-Api-Key", value: "replacement-key-0042" } });
+  });
+
+  it("Webhooks explains, and offers no auth header fields, when the server cannot encrypt one", async () => {
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: [], capabilities: { authHeader: false, authHeaderRequiresHttps: true } } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    await open("#webhooks");
+    await act(async () => button("Add webhook").click());
+    await settle();
+    const dialog = document.querySelector("dialog")!;
+    expect(dialog.textContent).toContain("WEBHOOK_ENCRYPTION_KEY is not set");
+    expect(dialog.textContent).not.toContain("The value is stored encrypted");
+    expect([...dialog.querySelectorAll("label")].map((l) => l.textContent)).not.toContain("Header value");
+  });
+
+  it("Webhooks marks a hook whose credentials are unreadable and offers to replace or delete it", async () => {
+    const hooks = [{ id: "h1", url: "https://ha.example/hook", events: ["*"], active: true, credentialsUnreadable: true }];
+    const patched: any[] = [];
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: hooks, capabilities: { authHeader: true, authHeaderRequiresHttps: true } } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    route("PATCH /v1/webhooks/h1", (body) => {
+      patched.push(body);
+      return { status: 200, body: { webhook: hooks[0] } };
+    });
+    await open("#webhooks");
+    expect(host.textContent).toContain("Credentials unreadable: replace or delete");
+    expect(button("Delete")).toBeDefined();
+
+    await act(async () => button("Edit").click());
+    await settle();
+    const dialog = () => document.querySelector("dialog")!;
+    expect(dialog().textContent).toContain("nothing is delivered to it");
+    await act(async () => buttonIn(dialog(), "Replace").click());
+    await fill(inputLabelled(dialog(), "Header value"), "Bearer replacement-credential-00042");
+    await act(async () => buttonIn(dialog(), "Save").click());
+    await settle();
+    expect(patched.at(-1)).toEqual({ authHeader: { name: "Authorization", value: "Bearer replacement-credential-00042" } });
   });
 
   it("Devices shows the Shortcut's Authorization header as a name and a Bearer value", async () => {
