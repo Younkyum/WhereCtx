@@ -607,6 +607,8 @@ describe("showing my neighbourhood", () => {
     await share(owner.browser, mina.userId, { level: "coarse", showArea: true });
     expect((await personOf(mina, owner.userId)).presence.area).toBeUndefined();
     await owner.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
+    // With no maps key the lookup that turning maps on starts drops the area; set it after.
+    await ctx.system.geo.settled();
     await setArea("테스트구 테스트1동");
     expect((await personOf(mina, owner.userId)).presence.area).toBe("테스트구 테스트1동");
     expect((await people(mina))[0].presence.area).toBe("테스트구 테스트1동");

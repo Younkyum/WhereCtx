@@ -81,7 +81,18 @@ export function agentCoarseView(
   if (!accessAtLeast(settings.defaultAgentAccess, "coarse")) {
     return null; // hidden
   }
-  return { ...buildCoarseView(presence, clock), privacy: settings.defaultAgentAccess };
+  const area = settings.geoEnabled && settings.areaToAgents ? presence.coarse?.area : undefined;
+  return { ...buildCoarseView(presence, clock), privacy: settings.defaultAgentAccess, ...(area ? { area } : {}) };
+}
+
+/** The coarse presence the owner sees of themself: the area whenever maps are on. */
+export function ownerCoarseView(
+  presence: PresenceContext,
+  settings: PrivacySettings,
+  clock: Clock = systemClock,
+): CoarsePresenceView {
+  const area = settings.geoEnabled ? presence.coarse?.area : undefined;
+  return { ...buildCoarseView(presence, clock), privacy: settings.defaultAgentAccess, ...(area ? { area } : {}) };
 }
 
 /**

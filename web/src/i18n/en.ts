@@ -436,6 +436,7 @@ export const EN = {
   "access.outcome.error": "Server error",
   "access.surface.rest": "REST API",
   "access.surface.mcp": "MCP",
+  "access.surface.system": "In the background",
   "access.count": "×{n}",
   "access.repeated": "Asked {n} times within a minute of each other, last {last}",
   "access.reason": "Reason given: {reason}",
@@ -473,6 +474,9 @@ export const EN = {
   "access.action.create_location_reminder": "Set a reminder for a place",
   "access.action.create_place": "Saved a place",
   "access.action.remember_current_place": "Saved where you are as a place",
+  "access.action.geo.reverse": "Looked up your neighbourhood with the maps provider",
+  "access.action.geo.geocode": "Searched an address with the maps provider",
+  "access.action.geo.route": "Asked the maps provider for a route from where you are",
 
   "devices.lastReceived": "Last received {when}",
   "devices.neverReceived": "Nothing received yet",

@@ -32,6 +32,8 @@ const PatchSchema = z
   })
   .partial();
 
+const GEO_SWITCHES = ["geoEnabled", "skipProviderNearHome", "geoProvider"] as const;
+
 export function privacyRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   app.use("*", requireScope("manage_privacy"));
@@ -56,6 +58,8 @@ export function privacyRouter(ctx: RouteContext): Hono<AppEnv> {
       parsed.data,
     );
     if (event) await ctx.onEvents?.([event]);
+    // Turning maps off drops the area at once; turning them on looks it up.
+    if (GEO_SWITCHES.some((key) => key in parsed.data)) c.get("scope").geo.refreshArea();
     return c.json({ settings, privacyChanged: event !== null });
   });
 

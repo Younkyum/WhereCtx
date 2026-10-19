@@ -2,7 +2,7 @@
  * Retention pruning for the append-only tables (events and webhook dead
  * letters, review P3/L5; the share audit; the activity logs; raw history),
  * expired sessions, long-expired invites, spent ceremony nonces, expired
- * access codes, and expired OAuth state. The server runs it at boot and then every few hours.
+ * access codes, expired OAuth state, and reverse geocoding answers past their 7 days. The server runs it at boot and then every few hours.
  */
 
 import type { WhereCtxConfig } from "../config.js";
@@ -12,7 +12,7 @@ export type PruneConfig = Pick<WhereCtxConfig, "events" | "sharing" | "activity"
 
 /** Rows removed from each table. */
 export async function pruneOnce(system: SystemStores, config: PruneConfig): Promise<Record<string, number>> {
-  const [events, deadLetters, shareAudit, accessLog, ingestLog, history, sessions, invites, nonces, accessCodes, oauth] =
+  const [events, deadLetters, shareAudit, accessLog, ingestLog, history, sessions, invites, nonces, accessCodes, oauth, geoCache] =
     await Promise.all([
       system.events.prune(config.events.retentionHours),
       system.webhooks.pruneDeadLetters(config.events.retentionHours),
@@ -25,6 +25,7 @@ export async function pruneOnce(system: SystemStores, config: PruneConfig): Prom
       system.nonces.prune(),
       system.accessCodes.prune(),
       system.oauth.prune(),
+      system.geo.prune(),
     ]);
-  return { events, deadLetters, shareAudit, accessLog, ingestLog, history, sessions, invites, nonces, accessCodes, oauth };
+  return { events, deadLetters, shareAudit, accessLog, ingestLog, history, sessions, invites, nonces, accessCodes, oauth, geoCache };
 }

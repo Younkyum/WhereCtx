@@ -438,6 +438,7 @@ export const KO: Record<I18nKey, string> = {
   "access.outcome.error": "서버 오류",
   "access.surface.rest": "REST API",
   "access.surface.mcp": "MCP",
+  "access.surface.system": "백그라운드",
   "access.count": "×{n}",
   "access.repeated": "1분 안팎 간격으로 {n}번 요청, 마지막 {last}",
   "access.reason": "요청 사유: {reason}",
@@ -475,6 +476,9 @@ export const KO: Record<I18nKey, string> = {
   "access.action.create_location_reminder": "장소 알림 만들기",
   "access.action.create_place": "장소 저장",
   "access.action.remember_current_place": "현재 위치를 장소로 저장",
+  "access.action.geo.reverse": "지도 서비스로 현재 동네 확인",
+  "access.action.geo.geocode": "지도 서비스로 주소 검색",
+  "access.action.geo.route": "지도 서비스에 현재 위치에서 출발하는 경로 요청",
 
   "devices.lastReceived": "마지막 수신 {when}",
   "devices.neverReceived": "아직 받은 위치가 없어요",

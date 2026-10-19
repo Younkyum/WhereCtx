@@ -17,6 +17,7 @@ import type { RouteContext } from "../app/context.js";
 import {
   agentCoarseView,
   authorizePrecise,
+  ownerCoarseView,
   buildPreciseView,
 } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
@@ -63,6 +64,10 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
     const settings = await scope.settings.getOrSeed();
 
     const view = agentCoarseView(toPresenceContext(stored), settings, ctx.clock);
+    if (view && c.get("principal").via === "session") {
+      // The owner in the dashboard sees their own area whether or not agents may.
+      return c.json(ownerCoarseView(toPresenceContext(stored), settings, ctx.clock));
+    }
     if (!view) {
       decide(c, { outcome: "hidden" });
       return c.json({ error: "presence is hidden from agents by policy", privacy: "hidden" }, 403);

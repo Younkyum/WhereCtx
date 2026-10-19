@@ -13,7 +13,8 @@
 
 import type { WhereCtxConfig } from "../config.js";
 import { computeGeofence, labelForStatus } from "../geofence/engine.js";
-import { encodeGeohash } from "../geofence/distance.js";
+import { encodeGeohash, haversineMeters } from "../geofence/distance.js";
+import { AREA_REFRESH_MOVE_M, type AreaUpdate } from "../geo/service.js";
 import type { NormalizedReading } from "../normalizer/types.js";
 import type {
   CoarsePlaceType,
@@ -47,6 +48,11 @@ export interface PresenceServiceDeps {
   remindersStore: RemindersStore;
   settingsStore: SettingsStore;
   clock?: Clock;
+  /**
+   * Called once a reading is stored and the lock released, to bring its area
+   * up to date in the background (GeoService.refreshArea). Must not throw.
+   */
+  afterReading?: (userId: UserId) => void;
 }
 
 export interface ProcessResult {
@@ -75,7 +81,26 @@ export class PresenceService {
    * cannot race the read-diff-write sequence (review finding F10).
    */
   async processReading(userId: UserId, reading: NormalizedReading): Promise<ProcessResult> {
-    return this.mutex.run(userId, () => this.processReadingLocked(userId, reading));
+    const result = await this.mutex.run(userId, () => this.processReadingLocked(userId, reading));
+    this.deps.afterReading?.(userId);
+    return result;
+  }
+
+  /**
+   * Set the region names of the current reading, or clear them. A lookup made
+   * for an earlier reading is dropped once the person has moved on from it.
+   */
+  async setArea(userId: UserId, update: AreaUpdate): Promise<void> {
+    await this.mutex.run(userId, async () => {
+      const current = await this.deps.presenceStore.getCurrent(userId);
+      if (!current) return;
+      const { region, forPoint } = update;
+      if (region && forPoint) {
+        const here = current.precise;
+        if (!here || haversineMeters(here.lat, here.lon, forPoint.lat, forPoint.lon) > AREA_REFRESH_MOVE_M) return;
+      }
+      await this.deps.presenceStore.setArea(userId, region && { city: region.region2, area: region.label });
+    });
   }
 
   private async processReadingLocked(
@@ -115,6 +140,9 @@ export class PresenceService {
       coarse: {
         geohash: encodeGeohash(reading.precise.lat, reading.precise.lon),
         placeType: coarsePlaceTypeFor(geo.matchedPlace),
+        // Kept until the background lookup (afterReading) confirms or replaces it.
+        city: prev?.coarse?.city,
+        area: prev?.coarse?.area,
       },
       motion: reading.motion ?? "unknown",
       battery: reading.battery,

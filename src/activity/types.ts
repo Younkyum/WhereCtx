@@ -4,8 +4,12 @@
  * coordinates.
  */
 
-/** The credential behind an agent request: a WhereCtx token, or an OAuth grant an MCP client holds. */
-export const CREDENTIAL_KINDS = ["token", "oauth"] as const;
+/**
+ * The credential behind an agent request: a WhereCtx token, or an OAuth grant
+ * an MCP client holds. `system` is WhereCtx itself, for the maps calls it makes
+ * on its own (looking up the area of a new reading).
+ */
+export const CREDENTIAL_KINDS = ["token", "oauth", "system"] as const;
 export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
 
 export interface Credential {
@@ -15,7 +19,8 @@ export interface Credential {
   name: string;
 }
 
-export const ACCESS_SURFACES = ["rest", "mcp"] as const;
+/** `system`: a call WhereCtx made in the background, not a request. */
+export const ACCESS_SURFACES = ["rest", "mcp", "system"] as const;
 export type AccessSurface = (typeof ACCESS_SURFACES)[number];
 
 /**
@@ -80,6 +85,10 @@ export const ACCESS_ACTIONS = [
   "create_location_reminder",
   "create_place",
   "remember_current_place",
+  /** A maps provider call made with the person's location or key. */
+  "geo.reverse",
+  "geo.geocode",
+  "geo.route",
 ] as const;
 export type AccessAction = (typeof ACCESS_ACTIONS)[number];
 

@@ -127,6 +127,8 @@ ${RULE}
     await new Promise<void>((resolve) => server.close(() => resolve()));
     // In-flight drains write cursors; let them return before the DB closes.
     await drained;
+    // Background area lookups write presence; the same holds for them.
+    await ctx.system.geo.settled();
     closeAppContext(ctx);
   };
 

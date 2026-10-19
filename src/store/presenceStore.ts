@@ -176,6 +176,14 @@ export class PresenceStore {
       .onConflictDoUpdate({ target: presence.userId, set: rest });
   }
 
+  /** Update only the region names of the current reading (null clears them). */
+  async setArea(userId: UserId, area: { city: string; area: string } | null): Promise<void> {
+    await this.db
+      .update(presence)
+      .set({ city: area?.city ?? null, area: area?.area ?? null })
+      .where(eq(presence.userId, userId));
+  }
+
   /** Update only the stale-event flag (used when marking a reading stale). */
   async setStaleEventFired(userId: UserId, fired: boolean): Promise<void> {
     await this.db

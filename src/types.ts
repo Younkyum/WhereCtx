@@ -241,6 +241,11 @@ export interface CoarsePresenceView {
   updatedAgoSec: number;
   stale: boolean;
   privacy: PrivacyMode;
+  /**
+   * The neighbourhood ("성남시 분당구 삼평동"), when maps are on and the
+   * person lets agents see it (areaToAgents). Region names only.
+   */
+  area?: string;
 }
 
 /** Precise presence view, only returned when policy allows (plan section 9.7). */
