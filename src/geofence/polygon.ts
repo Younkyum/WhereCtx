@@ -134,9 +134,16 @@ export function measurePolygon(ring: Ring, origin: Origin, lat: number, lon: num
   return { inside: crossings || onEdge, boundaryDistanceM: onEdge ? 0 : boundaryDistanceM };
 }
 
+/** Collinear when the angle at `a` between ab and ac is below about 1e-9 rad, whatever the scale. */
+const COLLINEAR_SIN = 1e-9;
+
 function orient(a: Xy, b: Xy, c: Xy): number {
-  const v = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-  return Math.abs(v) < 1e-9 ? 0 : Math.sign(v);
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const acx = c.x - a.x;
+  const acy = c.y - a.y;
+  const v = abx * acy - aby * acx;
+  return Math.abs(v) <= COLLINEAR_SIN * Math.hypot(abx, aby) * Math.hypot(acx, acy) ? 0 : Math.sign(v);
 }
 
 function onSegment(a: Xy, b: Xy, p: Xy): boolean {

@@ -124,6 +124,43 @@ describe("validatePolygon", () => {
   });
 });
 
+describe("validatePolygon at the scale of a city", () => {
+  /** Deterministic [0, 1) numbers (mulberry32), so a failure reproduces. */
+  function seeded(seed: number): () => number {
+    let a = seed;
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+    };
+  }
+  type Pos = [number, number];
+  const between = (a: Pos, b: Pos, t: number): Pos => [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+
+  /** 200 rings 5 to 30 km across, each with a vertex placed on one of its edges by `make`. */
+  function rejectsAll(make: (a: Pos, b: Pos, side: number, t: number) => Pos[]) {
+    const rand = seeded(20261019);
+    const accepted: Pos[][] = [];
+    for (let k = 0; k < 200; k++) {
+      const a: Pos = [126.5 + rand(), 37 + rand()];
+      const side = (5_000 + rand() * 25_000) / mPerDegLon;
+      const b: Pos = [a[0] + side * 0.8, a[1] + side * 0.3];
+      const ring = make(a, b, side, 0.3 + rand() * 0.4);
+      if (validatePolygon(ring).ok) accepted.push(ring);
+    }
+    expect(accepted).toEqual([]);
+  }
+
+  it("rejects every edge folding back onto the previous one", () => {
+    rejectsAll((a, b, side, t) => [a, b, between(a, b, t), [a[0] - side * 0.2, a[1] + side * 0.6]]);
+  });
+
+  it("rejects every vertex touching another edge", () => {
+    rejectsAll((a, b, side, t) => [a, b, [b[0], b[1] + side], [a[0], a[1] + side], between(a, b, t)]);
+  });
+});
+
 describe("measurePlace on a polygon", () => {
   const u = polygonPlace(valid(U));
 
