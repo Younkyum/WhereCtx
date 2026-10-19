@@ -99,6 +99,8 @@ describe("MCP server", () => {
         "list_places",
         "list_recent_presence_events",
         "remember_current_place",
+        "get_eta",
+        "get_directions",
       ].sort(),
     );
   });

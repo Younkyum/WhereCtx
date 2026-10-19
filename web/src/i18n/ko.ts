@@ -476,6 +476,8 @@ export const KO: Record<I18nKey, string> = {
   "access.action.create_location_reminder": "장소 알림 만들기",
   "access.action.create_place": "장소 저장",
   "access.action.remember_current_place": "현재 위치를 장소로 저장",
+  "access.action.get_eta": "목적지까지 걸리는 시간 조회",
+  "access.action.get_directions": "현재 위치에서 길찾기 조회",
   "access.action.geo.settings": "지도 설정 조회",
   "access.action.geo.credentials.write": "지도 키 저장 시도",
   "access.action.geo.credentials.delete": "지도 키 삭제 시도",

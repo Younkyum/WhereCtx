@@ -91,6 +91,8 @@ export const ACCESS_ACTIONS = [
   "create_location_reminder",
   "create_place",
   "remember_current_place",
+  "get_eta",
+  "get_directions",
   /** A maps provider call made with the person's location or key. */
   "geo.reverse",
   "geo.geocode",

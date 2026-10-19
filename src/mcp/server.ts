@@ -10,7 +10,8 @@
  *
  * Tools (plan section 9.6):
  *   get_presence, get_precise_location, is_near_place, list_places,
- *   get_location_age, list_recent_presence_events, create_location_reminder
+ *   get_location_age, list_recent_presence_events, create_location_reminder,
+ *   create_place, remember_current_place, get_eta, get_directions
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -37,6 +38,9 @@ import { accessRecorder, type AccessRecorder } from "../activity/record.js";
 import type { AccessAction, AccessDecision } from "../activity/types.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
 import { secondsSince, isStale } from "../util/time.js";
+import { credentialOf } from "../activity/record.js";
+import { candidateViews, pickCandidate, type EtaAnswer, type EtaOutcome, type GeoCaller } from "../geo/service.js";
+import { ROUTE_AVOID } from "../geo/types.js";
 
 /** Cap on active location reminders, to bound writes from read-scoped tokens. */
 const MAX_ACTIVE_REMINDERS = 100;
@@ -332,6 +336,82 @@ export function buildMcpServer(
     },
   );
 
+  // Maps calls made for this agent are logged under its credential (GeoService).
+  const credential = credentialOf(principal);
+  const geoCaller: GeoCaller = credential
+    ? { kind: "agent", credential, surface: "mcp", seesPlaceCoordinates: canManagePlaces }
+    : { kind: "owner" };
+
+  /** An ETA outcome as a tool reply; `withSteps` keeps the turn-by-turn list. */
+  const etaReply = (outcome: EtaOutcome, withSteps: boolean): Reply => {
+    switch (outcome.kind) {
+      case "ok": {
+        const { steps, ...rest } = outcome.answer;
+        const answer: Partial<EtaAnswer> = withSteps ? outcome.answer : rest;
+        return ok(answer);
+      }
+      case "hidden":
+        return hidden({ hidden: true });
+      case "denied":
+        return err(outcome.reason);
+      case "no_location":
+        return none("no location recorded yet");
+      case "stale":
+        return none(
+          `location is stale: last report ${Math.round(outcome.updatedAgoSec / 60)} min ago, so a route from it would mislead`,
+        );
+      case "not_found":
+        return none(outcome.reason);
+      case "ambiguous":
+        return ok({
+          ambiguous: true,
+          note: "several places match; call again with pick set to the number of the one meant",
+          candidates: outcome.candidates.map((c, i) => ({ pick: i + 1, ...c })),
+        });
+      case "rate_limited":
+        return err("too many maps requests; try again in a minute");
+      case "unconfigured":
+        return err("no maps key is set up; the user can add one under Maps & routes");
+      case "failed":
+        return outcome.error === "timeout" || outcome.error === "upstream"
+          ? { decision: { outcome: "error" }, body: { error: outcome.message }, isError: true }
+          : err(`${outcome.error}: ${outcome.message}`);
+    }
+  };
+
+  const etaInput = {
+    to: z.string().min(1).max(200).describe("A registered place name (preferred, e.g. 'home', 'office') or an address / place to search"),
+    pick: z.number().int().min(1).max(30).optional().describe("When a search matched several places: the number of the one meant"),
+    departAt: z.iso.datetime({ offset: true }).optional().describe("Future departure time (ISO 8601 with offset); omit for now"),
+    avoid: z.array(z.enum(ROUTE_AVOID)).max(3).optional().describe("Road kinds to avoid"),
+  };
+  type EtaArgs = { to: string; pick?: number; departAt?: string; avoid?: Array<(typeof ROUTE_AVOID)[number]> };
+  const eta = (args: EtaArgs) =>
+    scope.geo.eta(
+      { to: args.to, pick: args.pick, departAt: args.departAt ? new Date(args.departAt) : undefined, avoid: args.avoid },
+      geoCaller,
+    );
+
+  registerTool(
+    "get_eta",
+    {
+      description:
+        "How long it takes the user to drive from where they are now to a destination, with live traffic (Kakao or Naver). Returns minutes, distance, arrival time and main roads; never the user's coordinates. Allowed only when the user turned on ETA for agents; a stale location is refused rather than guessed from.",
+      inputSchema: etaInput,
+    },
+    async (args) => etaReply(await eta(args), false),
+  );
+
+  registerTool(
+    "get_directions",
+    {
+      description:
+        "Like get_eta, plus the turn-by-turn steps the provider gives and, when allowed, map links (Kakao Map web, Naver Map app) that start from the device's own location.",
+      inputSchema: etaInput,
+    },
+    async (args) => etaReply(await eta(args), true),
+  );
+
   const placeType = z.enum(["home", "work", "custom"]);
 
   /**
@@ -362,26 +442,51 @@ export function buildMcpServer(
     "create_place",
     {
       description:
-        "Register a place / geofence at explicit coordinates. type is home, work, or custom; radiusM defaults to 150m. Creating or changing a 'home' place may require an admin token when home place protection is enabled.",
+        "Register a place / geofence at explicit coordinates, or at an address or place name looked up with the user's maps provider. type is home, work, or custom; radiusM defaults to 150m. An address that matches several places returns them numbered; call again with pick. Creating or changing a 'home' place may require an admin token when home place protection is enabled.",
       inputSchema: {
         name: z.string().min(1).max(64).describe("Place name, e.g. 'gym'"),
         type: placeType.describe("home | work | custom"),
-        lat: z.number().min(-90).max(90),
-        lon: z.number().min(-180).max(180),
+        lat: z.number().min(-90).max(90).optional(),
+        lon: z.number().min(-180).max(180).optional(),
+        address: z.string().min(1).max(200).optional().describe("An address or place to look up instead of lat/lon"),
+        pick: z.number().int().min(1).max(30).optional().describe("When the address matched several places: the number of the one meant"),
         radiusM: z.number().positive().max(100_000).optional().describe("Geofence radius in meters (default 150)"),
       },
     },
-    async ({ name, type, lat, lon, radiusM }) => {
+    async ({ name, type, lat, lon, address, pick, radiusM }) => {
+      const byPoint = lat !== undefined && lon !== undefined;
+      if (byPoint === (address !== undefined) || (lat === undefined) !== (lon === undefined)) {
+        return err("give either lat and lon, or address");
+      }
       const denied = await homeWriteDenied(name, type);
       if (denied) return err(denied);
       if ((await scope.places.count()) >= MAX_PLACES) {
         return err(`place limit reached (${MAX_PLACES})`);
       }
+      let point = byPoint ? { lat: lat!, lon: lon! } : null;
+      let found: string | undefined;
+      if (!point) {
+        const search = await scope.geo.search(address!, geoCaller);
+        if (search.kind === "rate_limited") return err("too many maps requests; try again in a minute");
+        if (search.kind === "unconfigured") return err("no maps key is set up; the user can add one under Maps & routes");
+        if (search.kind === "failed") return err(`${search.error}: ${search.message}`);
+        const chosen = pickCandidate(search.candidates, pick);
+        if (chosen.kind === "none") return none(`nothing found for "${address}"`);
+        if (chosen.kind === "ambiguous") {
+          return ok({
+            ambiguous: true,
+            note: "several places match; call again with pick set to the number of the one meant",
+            candidates: candidateViews(search.candidates, canManagePlaces).map((c, i) => ({ pick: i + 1, ...c })),
+          });
+        }
+        point = { lat: chosen.candidate.lat, lon: chosen.candidate.lon };
+        found = chosen.candidate.roadAddress ?? chosen.candidate.address;
+      }
       const place = await scope.places.upsert({
         name,
         type,
-        lat,
-        lon,
+        lat: point.lat,
+        lon: point.lon,
         radiusM: radiusM ?? DEFAULT_PLACE_RADIUS_M,
       });
       // Same as the REST surface: a new/moved place can change the current
@@ -389,7 +494,7 @@ export function buildMcpServer(
       // dispatch any resulting events (commit bd529b2 parity).
       const result = await scope.presence.reevaluateCurrent();
       if (result) await ctx.onEvents?.(result.events);
-      return ok({ name: place.name, type: place.type, radiusM: place.radiusM });
+      return ok({ name: place.name, type: place.type, radiusM: place.radiusM, ...(found ? { address: found } : {}) });
     },
   );
 

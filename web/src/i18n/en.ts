@@ -474,6 +474,8 @@ export const EN = {
   "access.action.create_location_reminder": "Set a reminder for a place",
   "access.action.create_place": "Saved a place",
   "access.action.remember_current_place": "Saved where you are as a place",
+  "access.action.get_eta": "Asked how long it takes to get somewhere",
+  "access.action.get_directions": "Asked for directions from where you are",
   "access.action.geo.settings": "Read your maps settings",
   "access.action.geo.credentials.write": "Tried to save a maps key",
   "access.action.geo.credentials.delete": "Tried to remove a maps key",

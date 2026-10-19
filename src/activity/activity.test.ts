@@ -257,6 +257,8 @@ describe("MCP access log", () => {
     create_location_reminder: { place: "home", message: "water the plants" },
     create_place: { name: "gym", type: "custom", lat: 37.51, lon: 127.01 },
     remember_current_place: { name: "here" },
+    get_eta: { to: "home" },
+    get_directions: { to: "home" },
   };
 
   it("records every tool call through the one registration wrapper", async () => {
