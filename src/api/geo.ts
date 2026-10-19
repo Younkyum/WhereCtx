@@ -5,7 +5,8 @@
  *   DELETE /v1/geo/credentials/:provider        -> forget them (session, step-up)
  *   POST   /v1/geo/credentials/:provider/test   -> look up Seoul City Hall with them, never my location (session)
  *   GET    /v1/geo/search?q=                    -> candidates with coordinates (manage_places)
- *   GET    /v1/geo/eta?to=&pick=&departAt=&avoid= -> drive time from my current location (read_presence)
+ *   GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
+ *                                               -> drive time from my current location (read_presence)
  *
  * A saved key never comes back: answers carry the kinds held and a
  * four-character hint. The provider calls themselves are logged by
@@ -43,6 +44,8 @@ const EtaQuery = z.object({
     .optional()
     .transform((v) => (v ? v.split(",").map((s) => s.trim()) : undefined))
     .pipe(z.array(z.enum(ROUTE_AVOID)).optional()),
+  directions: z.enum(["true", "false", "1", "0"]).optional().transform((v) => v === "true" || v === "1"),
+  reason: z.string().trim().min(1).max(256).optional(),
 });
 
 function callerOf(c: Context<AppEnv>): GeoCaller {
@@ -106,11 +109,14 @@ export function geoRouter(ctx: RouteContext): Hono<AppEnv> {
       pick: c.req.query("pick"),
       departAt: c.req.query("departAt"),
       avoid: c.req.query("avoid"),
+      directions: c.req.query("directions"),
+      reason: c.req.query("reason"),
     });
     if (!query.success) return c.json({ error: "invalid query", detail: zodMessages(query.error) }, 400);
-    const { to, pick, departAt, avoid } = query.data;
+    const { to, pick, departAt, avoid, directions, reason } = query.data;
+    decide(c, { reason });
     const outcome = await c.get("scope").geo.eta(
-      { to, pick, departAt: departAt ? new Date(departAt) : undefined, avoid },
+      { to, pick, departAt: departAt ? new Date(departAt) : undefined, avoid, directions, reason },
       callerOf(c),
     );
     return respond(c, etaReply(outcome), (answer) => ({ eta: answer }));

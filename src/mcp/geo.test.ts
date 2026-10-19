@@ -71,24 +71,34 @@ describe("get_eta and get_directions", () => {
     expect(fake.calls.filter((c) => c.op === "route")).toEqual([]);
   });
 
-  it("answer drive time without any coordinates; directions add the steps", async () => {
+  it("answer drive time without any coordinates; steps only with precise access and a reason", async () => {
     await settings({ geoEnabled: true, etaToAgents: true });
     const eta = await call(AGENT, "get_eta", { to: "office" });
     expect(eta.isError).toBe(false);
-    expect(eta.body).toMatchObject({ destination: { label: "office", kind: "place" }, trafficAware: true, provider: "kakao" });
+    expect(eta.body).toMatchObject({ destination: { label: "office", kind: "place" }, precision: "approximate", traffic: "live", provider: "kakao" });
     expect(eta.body).not.toHaveProperty("steps");
-    const directions = await call(AGENT, "get_directions", { to: "office" });
-    expect(directions.body.steps.length).toBeGreaterThan(0);
-    for (const text of [eta.text, directions.text]) {
+    const withheld = await call(AGENT, "get_directions", { to: "office", reason: "pick-up" });
+    expect(withheld.body).not.toHaveProperty("steps");
+    expect(withheld.body.stepsWithheld).toMatch(/precise access/);
+    // The fake's first stretch and first turn name the street the route starts on.
+    for (const text of [eta.text, withheld.text]) {
+      expect(text).not.toContain("테스트출발로12번길");
+      expect(text).not.toContain("테스트도착로");
       for (const n of ["37.566", "37.567", "126.978", "37.4,", "127.1"]) expect(text).not.toContain(n);
     }
+
+    await settings({ allowPreciseLocation: true });
+    expect((await call(AGENT, "get_directions", { to: "office" })).body).toHaveProperty("stepsWithheld");
+    const directions = await call(AGENT, "get_directions", { to: "office", reason: "pick-up" });
+    expect(directions.body.steps[0]).toContain("테스트출발로12번길");
   });
 
-  it("are hidden in hidden mode and report a stale location instead of guessing", async () => {
+  it("are hidden in hidden mode and refuse a reading too old to start from", async () => {
     await settings({ geoEnabled: true, etaToAgents: true });
     clock.advance(16 * 60_000);
-    const stale = await call(AGENT, "get_eta", { to: "office" });
-    expect(stale.body.error).toMatch(/stale.*16 min ago/);
+    const old = await call(AGENT, "get_eta", { to: "office" });
+    expect(old.isError).toBe(true);
+    expect(old.body).toMatchObject({ freshness: "unknown", originAgeMin: 16 });
     await settings({ defaultAgentAccess: "hidden" });
     expect((await call(AGENT, "get_eta", { to: "office" })).body).toMatchObject({ privacy: "hidden" });
   });

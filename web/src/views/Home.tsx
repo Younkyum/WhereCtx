@@ -1,7 +1,7 @@
 /**
  * My status, "share my location now" (one browser geolocation fix posted as a
- * manual reading), and the people who share with me. Opening someone's exact
- * location is audited on their side.
+ * manual reading), the drive time home when I ask for it, and the people who
+ * share with me. Opening someone's exact location is audited on their side.
  */
 
 import { Avatar } from "@astryxdesign/core/Avatar";
@@ -21,35 +21,26 @@ import { geoErrorKey, motionOf, safeHttpUrl, statusOf } from "../lib";
 import type { Eta, Person, Place, PreciseLocation, Presence, PrivacySettings } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, useAction, useFormat, useLoad, useNotify } from "../ui";
 
-type Mine = { presence: Presence | null; problem: "none" | "hidden" | null; paused: boolean; toHome: Eta | null };
-
-/**
- * Drive time to my home place, while maps are on and I am away from it.
- * One provider call per Home load; any refusal (no key, stale, no home place)
- * just leaves the line out.
- */
-async function loadToHome(settings: PrivacySettings | undefined, presence: Presence | null): Promise<Eta | null> {
-  if (!settings?.geoEnabled || !presence || presence.status === "home" || presence.status === "near_home") return null;
-  const home = (await api<{ places: Place[] }>("/v1/places")).places?.find((p) => p.type === "home");
-  if (!home) return null;
-  try {
-    return (await api<{ eta: Eta }>(`/v1/geo/eta?to=${encodeURIComponent(home.name)}`)).eta;
-  } catch {
-    return null;
-  }
-}
+type Mine = { presence: Presence | null; problem: "none" | "hidden" | null; paused: boolean; geoEnabled: boolean };
 
 async function loadMine(): Promise<Mine> {
   const privacy = await api<{ settings: PrivacySettings }>("/v1/privacy");
   const paused = Boolean(privacy.settings?.sharingPaused);
+  const geoEnabled = Boolean(privacy.settings?.geoEnabled);
   try {
-    const presence = await api<Presence>("/v1/presence");
-    return { presence, problem: null, paused, toHome: await loadToHome(privacy.settings, presence) };
+    return { presence: await api<Presence>("/v1/presence"), problem: null, paused, geoEnabled };
   } catch (e) {
-    if (e instanceof ApiError && e.status === 404) return { presence: null, problem: "none", paused, toHome: null };
-    if (e instanceof ApiError && e.status === 403) return { presence: null, problem: "hidden", paused, toHome: null };
+    if (e instanceof ApiError && e.status === 404) return { presence: null, problem: "none", paused, geoEnabled };
+    if (e instanceof ApiError && e.status === 403) return { presence: null, problem: "hidden", paused, geoEnabled };
     throw e;
   }
+}
+
+/** Drive time to my home place, asked only when I press the button: one provider call each time. */
+async function timeToHome(): Promise<Eta | null> {
+  const home = (await api<{ places: Place[] }>("/v1/places")).places?.find((p) => p.type === "home");
+  if (!home) return null;
+  return (await api<{ eta: Eta }>(`/v1/geo/eta?to=${encodeURIComponent(home.name)}`)).eta;
 }
 
 function locate(t: ReturnType<typeof useApp>["t"]): Promise<GeolocationPosition> {
@@ -131,11 +122,7 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
           <Text type="supporting">{t("home.mine")}</Text>
           <Heading level={2}>{p ? t(`st.${statusOf(p.status)}`) : "—"}</Heading>
           {p?.area ? <Text>{p.area}</Text> : null}
-          {mine.toHome ? (
-            <Text weight="medium">
-              {t(mine.toHome.trafficAware ? "home.toHomeLive" : "home.toHome", { min: mine.toHome.durationMin })}
-            </Text>
-          ) : null}
+          {mine.geoEnabled && p && p.status !== "home" ? <ToHome /> : null}
           <HStack gap={2} vAlign="center" wrap="wrap">
             <Text type="supporting">{meta}</Text>
             {motion ? <Badge label={t(`motion.${motion}`)} /> : null}
@@ -148,6 +135,37 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
         <Hint>{t(mine.paused ? "home.shareNowPaused" : "home.shareNowHint")}</Hint>
       </VStack>
     </HStack>
+  );
+}
+
+function ToHome() {
+  const { t } = useApp();
+  const [eta, setEta] = useState<Eta | null | undefined>(undefined);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [checking, check] = useAction(async () => {
+    setProblem(null);
+    try {
+      setEta(await timeToHome());
+    } catch (e) {
+      setEta(undefined);
+      setProblem(e instanceof Error ? e.message : String(e));
+    }
+  });
+  return (
+    <VStack gap={1}>
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Button label={t("home.checkToHome")} size="sm" isLoading={checking} onClick={() => void check()} />
+        {eta ? (
+          <Text weight="medium">
+            {t(eta.traffic === "live" ? "home.toHomeLive" : "home.toHome", { min: eta.durationMin })}
+            {eta.origin === "home" ? ` · ${t("maps.from.home")}` : ""}
+          </Text>
+        ) : eta === null ? (
+          <Text type="supporting">{t("home.noHomePlace")}</Text>
+        ) : null}
+      </HStack>
+      {problem ? <Text type="supporting">{problem}</Text> : <Hint>{t("home.checkToHomeHint")}</Hint>}
+    </VStack>
   );
 }
 

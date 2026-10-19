@@ -280,7 +280,7 @@ function TryRoute() {
               </Text>
               <Text type="supporting">
                 {[
-                  t(eta.trafficAware ? "maps.live" : "maps.predicted"),
+                  t(eta.traffic === "live" ? "maps.live" : "maps.predicted"),
                   t("maps.arrive", { when: fmt.time(eta.arriveAt) }),
                   t(`maps.from.${eta.origin}`),
                   eta.summary.join(" · "),

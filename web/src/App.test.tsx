@@ -625,6 +625,28 @@ describe("maps", () => {
     expect(bodies).toContainEqual({ geoEnabled: true });
   });
 
+  it("asks for the drive time home only when the button is pressed", async () => {
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { sharingPaused: false, geoEnabled: true } } }));
+    route("GET /v1/presence", () => ({
+      status: 200,
+      body: { status: "away", label: "away", motion: "unknown", updatedAgoSec: 60, stale: false, freshness: "live", privacy: "coarse" },
+    }));
+    route("GET /v1/people", () => ({ status: 200, body: { people: [] } }));
+    route("GET /v1/places", () => ({ status: 200, body: { places: [{ name: "집", type: "home", lat: 37.5, lon: 127, radiusM: 150 }] } }));
+    route("GET /v1/geo/eta", () => ({
+      status: 200,
+      body: { eta: { destination: { label: "집", kind: "place" }, origin: "current_location", precision: "exact", durationMin: 23, distanceKm: 9.1, traffic: "live", arriveAt: "2026-10-19T09:00:00Z", summary: [], provider: "kakao" } },
+    }));
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(calls.filter((c) => c.startsWith("GET /v1/geo/eta"))).toEqual([]);
+    await act(async () => button("Check time to home").click());
+    await settle();
+    expect(calls.filter((c) => c.startsWith("GET /v1/geo/eta"))).toEqual(["GET /v1/geo/eta?to=%EC%A7%91"]);
+    expect(host.textContent).toContain("To home: 23 min (live traffic)");
+  });
+
   it("adds a place by address: search, pick, save with the picked point", async () => {
     let posted: any;
     route("GET /v1/me", () => ({ status: 200, body: ME }));

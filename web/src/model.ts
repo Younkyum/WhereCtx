@@ -125,9 +125,9 @@ export interface GeoCandidate {
 export interface Eta {
   destination: { label: string; kind: "place" | "address" };
   origin: "current_location" | "home";
+  precision: "exact" | "approximate";
   durationMin: number;
   distanceKm: number;
-  trafficAware: boolean;
   traffic: "live" | "predicted";
   arriveAt: string;
   summary: string[];

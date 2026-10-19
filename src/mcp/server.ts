@@ -37,7 +37,7 @@ import { accessRecorder, type AccessRecorder } from "../activity/record.js";
 import type { AccessAction, AccessDecision } from "../activity/types.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
 import { credentialOf } from "../activity/record.js";
-import { candidateViews, pickCandidate, type EtaOutcome, type GeoCaller } from "../geo/service.js";
+import { candidateViews, pickCandidate, type GeoCaller } from "../geo/service.js";
 import { etaReply, numbered, searchReply } from "../geo/replies.js";
 import { ROUTE_AVOID } from "../geo/types.js";
 
@@ -339,46 +339,52 @@ export function buildMcpServer(
     ? { kind: "agent", credential, surface: "mcp", scopes: principal.scopes }
     : { kind: "owner" };
 
-  /** An ETA outcome as a tool reply; `withSteps` keeps the turn-by-turn list. */
-  const etaToolReply = (outcome: EtaOutcome, withSteps: boolean): Reply => {
-    if (outcome.kind === "ok" && !withSteps) {
-      const { steps: _steps, ...rest } = outcome.answer;
-      return ok(rest);
-    }
-    return etaReply(outcome);
-  };
-
   const etaInput = {
     to: z.string().min(1).max(200).describe("A registered place name (preferred, e.g. 'home', 'office') or an address / place to search"),
     pick: z.number().int().min(1).max(30).optional().describe("When a search matched several places: the number of the one meant"),
     departAt: z.iso.datetime({ offset: true }).optional().describe("Future departure time (ISO 8601 with offset); omit for now"),
     avoid: z.array(z.enum(ROUTE_AVOID)).max(3).optional().describe("Road kinds to avoid"),
+    reason: z
+      .string()
+      .min(1)
+      .max(256)
+      .optional()
+      .describe("Why the precise route is needed; required (with precise access) for an address destination or for turn-by-turn steps"),
   };
-  type EtaArgs = { to: string; pick?: number; departAt?: string; avoid?: Array<(typeof ROUTE_AVOID)[number]> };
-  const eta = (args: EtaArgs) =>
-    scope.geo.eta(
-      { to: args.to, pick: args.pick, departAt: args.departAt ? new Date(args.departAt) : undefined, avoid: args.avoid },
-      geoCaller,
+  type EtaArgs = { to: string; pick?: number; departAt?: string; avoid?: Array<(typeof ROUTE_AVOID)[number]>; reason?: string };
+  const eta = async (args: EtaArgs, directions: boolean): Promise<Reply> =>
+    etaReply(
+      await scope.geo.eta(
+        {
+          to: args.to,
+          pick: args.pick,
+          departAt: args.departAt ? new Date(args.departAt) : undefined,
+          avoid: args.avoid,
+          directions,
+          reason: args.reason,
+        },
+        geoCaller,
+      ),
     );
 
   registerTool(
     "get_eta",
     {
       description:
-        "How long it takes the user to drive from where they are now to a destination, with live traffic (Kakao or Naver). Returns minutes, distance, arrival time and main roads; never the user's coordinates. Allowed only when the user turned on ETA for agents; a stale location is refused rather than guessed from.",
+        "Roughly how long it takes the user to drive from where they are now to one of their registered places (e.g. 'home', 'office'), with live traffic (Kakao or Naver). Returns minutes in 5-minute steps, whole kilometres, an arrival time to 5 minutes and the main roads away from both ends; never coordinates. The answer still reveals roughly how far the user is from that place. An address instead of a place name needs precise access and a reason. Allowed only when the user turned on ETA for agents, never while they are at or near home, and only from a live reading or a quiet phone inside a registered place; freshness and originAgeMin say how old the starting point is.",
       inputSchema: etaInput,
     },
-    async (args) => etaToolReply(await eta(args), false),
+    async (args) => eta(args, false),
   );
 
   registerTool(
     "get_directions",
     {
       description:
-        "Like get_eta, plus the turn-by-turn steps the provider gives and, when allowed, map links (Kakao Map web, Naver Map app) that start from the device's own location.",
+        "Like get_eta, plus the provider's turn-by-turn steps when the agent may read the precise location (they name the streets around the user, so they need read_precise_location, the user's permission and a reason; otherwise stepsWithheld says why), and map links (Kakao Map web, Naver Map app) when allowed, which start from the device's own location.",
       inputSchema: etaInput,
     },
-    async (args) => etaToolReply(await eta(args), true),
+    async (args) => eta(args, true),
   );
 
   const placeType = z.enum(["home", "work", "custom"]);

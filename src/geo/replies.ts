@@ -52,12 +52,12 @@ function shared(outcome: Shared): GeoReply {
 export function etaReply(outcome: EtaOutcome): GeoReply {
   switch (outcome.kind) {
     case "ok":
-      return reply(200, outcome.answer, { outcome: "allowed" });
+      return reply(200, outcome.answer, { outcome: "allowed", ...(outcome.precise ? { precise: true } : {}) });
     case "no_location":
       return reply(404, { error: "no location recorded yet" }, { outcome: "allowed" });
-    case "stale": {
-      const error = `location is stale: last report ${Math.round(outcome.updatedAgoSec / 60)} min ago, so a route from it would mislead`;
-      return reply(409, { error, updatedAgoSec: outcome.updatedAgoSec }, { outcome: "denied", denial: error });
+    case "too_old": {
+      const error = `the location is too old to time a route from (${outcome.freshness}, last report ${outcome.originAgeMin} min ago): a route needs a live reading, or a quiet phone inside a registered place`;
+      return reply(409, { error, freshness: outcome.freshness, originAgeMin: outcome.originAgeMin }, { outcome: "denied", denial: error });
     }
     case "not_found":
       return reply(404, { error: outcome.reason }, { outcome: "allowed" });

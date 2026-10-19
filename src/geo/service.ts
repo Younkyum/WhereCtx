@@ -13,11 +13,11 @@
 import type { WhereCtxConfig } from "../config.js";
 import type { AccessLogStore } from "../activity/accessLogStore.js";
 import { haversineMeters } from "../geofence/distance.js";
-import { isAtOrNearHome, type PresenceViews } from "../privacy/policy.js";
+import { authorizePrecise, type PresenceViews } from "../privacy/policy.js";
 import type { SettingsStore } from "../privacy/settingsStore.js";
 import type { PlacesStore } from "../store/placesStore.js";
 import type { PresenceStore } from "../store/presenceStore.js";
-import type { Place, UserId } from "../types.js";
+import type { Freshness, Place, UserId } from "../types.js";
 import { log } from "../util/log.js";
 import { KeyedMutex } from "../util/mutex.js";
 import { systemClock, type Clock } from "../util/time.js";
@@ -25,6 +25,7 @@ import type { GeoCacheStore } from "./cacheStore.js";
 import type { GeoCredentialsStore, StoredGeoCredential } from "./credentialsStore.js";
 import { FakeGeoProvider } from "./fake.js";
 import { GeoKeys, type CallResult, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
+import { agentNumbers, agentRoads, freshEnoughToRoute, nearHomePlace, ownerNumbers } from "./eta.js";
 import { mainRoads } from "./roads.js";
 import {
   roundPoint,
@@ -50,23 +51,39 @@ export interface EtaRequest {
   pick?: number;
   departAt?: Date;
   avoid?: readonly RouteAvoid[];
+  /** Ask for the turn-by-turn steps too (get_directions). */
+  directions?: boolean;
+  /** Why an agent needs the precise route: an address destination or the steps. */
+  reason?: string;
 }
 
 export interface EtaAnswer {
   destination: { label: string; kind: "place" | "address" };
-  /** The route starts at the current location, or at the home place while near home. */
+  /** The route starts at the current location, or, for the owner near home, at the home place. */
   origin: "current_location" | "home";
+  /**
+   * exact: the provider's numbers and roads (the owner). approximate: minutes
+   * in 5-minute steps, whole kilometres, the arrival to 5 minutes and only
+   * main roads away from the origin and the destination (agents).
+   */
+  precision: "exact" | "approximate";
   durationMin: number;
   distanceKm: number;
-  trafficAware: boolean;
+  /** live: timed on current traffic. predicted: a future departure, on the provider's forecast. */
   traffic: RouteResult["traffic"];
   departAt: string;
   arriveAt: string;
   summary: string[];
-  steps: string[];
+  /** Turn-by-turn, for the owner, and for an agent that asked and may read the precise location. */
+  steps?: string[];
+  /** Why the steps an agent asked for are left out. */
+  stepsWithheld?: string;
   tollFare?: number;
   taxiFare?: number;
   provider: GeoProviderName;
+  /** How fresh the reading the route starts from is, and how long ago the server heard it. */
+  freshness: Freshness;
+  originAgeMin: number;
   /** Present only when the caller may see the destination's coordinates. */
   deepLinks?: { kakaoMap: string; naverMap: string };
 }
@@ -76,11 +93,12 @@ export type CandidateView = Omit<GeocodeCandidate, "lat" | "lon"> & Partial<Pick
 
 /** What came of an ETA request, each case with what the caller is told. */
 export type EtaOutcome =
-  | { kind: "ok"; answer: EtaAnswer }
+  /** `precise`: the answer rests on the agent's precise access (an address destination, the steps). */
+  | { kind: "ok"; answer: EtaAnswer; precise: boolean }
   | { kind: "hidden" }
   | { kind: "denied"; reason: string }
   | { kind: "no_location" }
-  | { kind: "stale"; updatedAgoSec: number }
+  | { kind: "too_old"; freshness: Freshness; originAgeMin: number }
   | { kind: "not_found"; reason: string }
   | { kind: "ambiguous"; candidates: CandidateView[] }
   | { kind: "rate_limited" }
@@ -191,11 +209,12 @@ export class GeoService {
   }
 
   /**
-   * Time a car route from where I am to a destination. Agents need
-   * etaToAgents and a visible presence; everyone needs the maps switch on and
-   * a fresh reading. The origin never leaves the server unrounded, and never
-   * leaves it at all near home while skipProviderNearHome is on: the home
-   * place stands in for it.
+   * Time a car route from where I am to a destination (eta.ts says what each
+   * caller is told). Agents need etaToAgents, a visible presence, a
+   * registered place as the destination unless they may read the precise
+   * location, and are refused at or near home while skipProviderNearHome is
+   * on. Everyone needs the maps switch on and a reading fresh enough to start
+   * from. The owner near home is timed from the home place.
    */
   async eta(userId: UserId, request: EtaRequest, caller: GeoCaller): Promise<EtaOutcome> {
     const settings = await this.deps.settings.getOrSeed(userId);
@@ -207,57 +226,91 @@ export class GeoService {
     const presence = await this.deps.presence.getCurrent(userId);
     if (!presence?.precise) return { kind: "no_location" };
     const fresh = this.deps.views.freshness(presence);
-    if (fresh.stale) return { kind: "stale", updatedAgoSec: fresh.lastReportAgoSec };
-    const places = await this.deps.places.list(userId);
-    const nearHome = settings.skipProviderNearHome && isAtOrNearHome(presence);
-    const home = places.find((p) => p.type === "home");
-    if (nearHome && !home) return { kind: "denied", reason: "at home with no home place to start from" };
-    const origin: LatLon = nearHome ? home! : presence.precise;
+    const originAgeMin = Math.floor(fresh.lastReportAgoSec / 60);
+    if (!freshEnoughToRoute(fresh, presence.status)) return { kind: "too_old", freshness: fresh.freshness, originAgeMin };
 
+    const places = await this.deps.places.list(userId);
+    const home = settings.skipProviderNearHome
+      ? nearHomePlace(presence.precise, places, this.deps.config.geofence.nearRadiusMultiplier)
+      : null;
+    const agent = caller.kind === "agent" ? caller : null;
+    if (agent && home) return { kind: "denied", reason: "the person is at or near home, and no route is timed from there" };
+    const precise =
+      agent !== null &&
+      authorizePrecise({ scopes: [...agent.scopes], settings, presence, reason: request.reason }).allowed;
+
+    const place = places.find((p: Place) => p.name === request.to);
+    if (!place && agent && !precise) {
+      return {
+        kind: "denied",
+        reason:
+          "agents may time a route only to a registered place; an address needs precise access (read_precise_location, allowed by the person, and a reason)",
+      };
+    }
     const resolved = await this.keys.resolve(userId, settings);
     if (!resolved) return { kind: "unconfigured" };
 
-    const seesCoordinates = caller.kind !== "agent" || caller.scopes.includes("manage_places");
+    const managesPlaces = !agent || agent.scopes.includes("manage_places");
     let target: { label: string; kind: "place" | "address"; point: LatLon; showLinks: boolean };
-    const place = places.find((p: Place) => p.name === request.to);
     if (place) {
-      target = { label: place.name, kind: "place", point: place, showLinks: seesCoordinates };
+      target = { label: place.name, kind: "place", point: place, showLinks: managesPlaces };
     } else {
       const search = await this.keys.call(userId, caller, resolved, "geo.geocode", (p) => p.geocode(request.to));
       if (search.kind !== "ok") return failure(search);
-      const candidates = search.value;
-      const chosen = pickCandidate(candidates, request.pick);
+      const chosen = pickCandidate(search.value, request.pick);
       if (chosen.kind === "none") return { kind: "not_found", reason: `no place named, and nothing found for, "${request.to}"` };
-      if (chosen.kind === "ambiguous") return { kind: "ambiguous", candidates: candidateViews(candidates, seesCoordinates) };
+      if (chosen.kind === "ambiguous") return { kind: "ambiguous", candidates: candidateViews(search.value, managesPlaces) };
       // The caller named this address, so linking to it shows them nothing new.
       target = { label: chosen.candidate.label, kind: "address", point: chosen.candidate, showLinks: true };
     }
 
+    const origin: LatLon = home ?? presence.precise;
     const routed = await this.keys.call(userId, caller, resolved, "geo.route", (p) =>
       p.route({ origin, destination: target.point, departAt: request.departAt, avoid: request.avoid }),
     );
     if (routed.kind !== "ok") return failure(routed);
     const route = routed.value;
-    const arrive = new Date(Date.parse(route.departAt) + route.durationSec * 1000);
+    const common = {
+      destination: { label: target.label, kind: target.kind },
+      origin: home ? ("home" as const) : ("current_location" as const),
+      traffic: route.traffic,
+      departAt: route.departAt,
+      provider: resolved.name,
+      freshness: fresh.freshness,
+      originAgeMin,
+      ...(target.showLinks ? { deepLinks: deepLinks(target.label, target.point) } : {}),
+    };
+    if (!agent) {
+      return {
+        kind: "ok",
+        precise: false,
+        answer: {
+          ...common,
+          precision: "exact",
+          ...ownerNumbers(route),
+          summary: mainRoads(route.roads),
+          steps: route.steps,
+          ...(route.tollFare !== undefined ? { tollFare: route.tollFare } : {}),
+          ...(route.taxiFare !== undefined ? { taxiFare: route.taxiFare } : {}),
+        },
+      };
+    }
+    const avoid = target.kind === "place" ? [presence.precise, target.point] : [presence.precise];
+    const steps = request.directions
+      ? precise
+        ? { steps: route.steps }
+        : { stepsWithheld: "turn-by-turn steps name the streets around the person; they need precise access (read_precise_location, allowed by the person, and a reason)" }
+      : {};
     return {
       kind: "ok",
-      answer: {
-        destination: { label: target.label, kind: target.kind },
-        origin: nearHome ? "home" : "current_location",
-        durationMin: Math.max(1, Math.round(route.durationSec / 60)),
-        distanceKm: Math.round(route.distanceM / 100) / 10,
-        trafficAware: route.traffic === "live",
-        traffic: route.traffic,
-        departAt: route.departAt,
-        arriveAt: arrive.toISOString(),
-        summary: mainRoads(route.roads),
-        steps: route.steps,
-        ...(route.tollFare !== undefined ? { tollFare: route.tollFare } : {}),
-        ...(route.taxiFare !== undefined ? { taxiFare: route.taxiFare } : {}),
-        provider: resolved.name,
-        ...(target.showLinks ? { deepLinks: deepLinks(target.label, target.point) } : {}),
-      },
+      precise: precise && (target.kind === "address" || request.directions === true),
+      answer: { ...common, precision: "approximate", ...agentNumbers(route), summary: agentRoads(route.roads, avoid), ...steps },
     };
+  }
+
+  /** Whether the point is at or near any of the person's home places, by distance, whatever the stored status says. */
+  private async nearHome(userId: UserId, point: LatLon): Promise<boolean> {
+    return nearHomePlace(point, await this.deps.places.list(userId), this.deps.config.geofence.nearRadiusMultiplier) !== null;
   }
 
   // ---- the background area ----
@@ -292,7 +345,7 @@ export class GeoService {
     };
     if (!presence?.precise || !settings.geoEnabled) return clear();
     // Near home nothing is sent; the status already says home.
-    if (settings.skipProviderNearHome && isAtOrNearHome(presence)) return clear();
+    if (settings.skipProviderNearHome && (await this.nearHome(userId, presence.precise))) return clear();
 
     const here = presence.precise;
     const last = this.lastLookup.get(userId);

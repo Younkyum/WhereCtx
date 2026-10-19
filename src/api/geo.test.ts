@@ -199,17 +199,36 @@ describe("ETA", () => {
     expect((await eta(null, "to=office")).status).toBe(200);
   });
 
-  it("answers agents with no coordinates, and sends the origin rounded", async () => {
+  it("answers agents approximately, with no coordinates, and sends the origin rounded", async () => {
     await settings({ geoEnabled: true, etaToAgents: true });
     const res = await eta(AGENT, "to=office");
     expect(res.status).toBe(200);
     const text = await res.text();
     const { eta: answer } = JSON.parse(text);
-    expect(answer).toMatchObject({ destination: { label: "office", kind: "place" }, origin: "current_location", trafficAware: true, provider: "kakao" });
-    expect(answer.durationMin).toBeGreaterThan(0);
-    expect(answer).not.toHaveProperty("deepLinks");
+    expect(answer).toMatchObject({
+      destination: { label: "office", kind: "place" },
+      origin: "current_location",
+      precision: "approximate",
+      traffic: "live",
+      provider: "kakao",
+      freshness: "live",
+      originAgeMin: 0,
+    });
+    expect(answer.durationMin % 5).toBe(0);
+    expect(Number.isInteger(answer.distanceKm)).toBe(true);
+    expect(new Date(answer.arriveAt).getUTCMinutes() % 5).toBe(0);
+    for (const key of ["deepLinks", "steps", "taxiFare", "tollFare", "trafficAware"]) expect(answer).not.toHaveProperty(key);
     for (const n of [AWAY.lat, AWAY.lon, 37.567, 126.978, 37.4, 127.1]) expect(text).not.toContain(String(n));
     expect(routeCalls()[0]!.origin).toEqual({ lat: 37.567, lon: 126.978 });
+  });
+
+  it("answers the owner exactly, with steps, fares and links", async () => {
+    await settings({ geoEnabled: true });
+    const { eta: answer } = await owner.browser.json("/v1/geo/eta?to=office");
+    expect(answer).toMatchObject({ precision: "exact", freshness: "live", originAgeMin: 0 });
+    expect(answer.steps.length).toBeGreaterThan(0);
+    expect(answer).toHaveProperty("taxiFare");
+    expect(answer.summary).toContain("테스트출발로12번길");
   });
 
   it("sends a registered destination rounded too", async () => {
@@ -219,41 +238,66 @@ describe("ETA", () => {
     expect(routeCalls().at(-1)).toMatchObject({ origin: { lat: 37.567, lon: 126.978 }, destination: { lat: 37.401, lon: 127.11 } });
   });
 
-  it("gives map links to the owner and to a place manager, and for an address the agent named", async () => {
+  it("takes an agent only to a registered place, unless it may read the precise location", async () => {
+    await settings({ geoEnabled: true, etaToAgents: true });
+    const refused = await eta(AGENT, "to=" + encodeURIComponent("강남역"));
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as any).error).toMatch(/registered place/);
+    expect(fake.calls.filter((c) => c.op === "geocode")).toEqual([]);
+
+    expect((await eta(AGENT, "to=" + encodeURIComponent("강남역") + "&reason=meeting")).status).toBe(403);
+    await settings({ allowPreciseLocation: true });
+    expect((await eta(AGENT, "to=" + encodeURIComponent("강남역"))).status).toBe(403);
+    const byAddress = (await (await eta(AGENT, "to=" + encodeURIComponent("강남역") + "&reason=meeting")).json()) as any;
+    expect(byAddress.eta.destination).toEqual({ label: "강남역 2호선", kind: "address" });
+    expect(byAddress.eta.deepLinks.kakaoMap).toContain("37.4979,127.0276");
+    const row = (await accessRows()).find((e) => e.action === "geo.eta" && e.outcome === "allowed");
+    expect(row).toMatchObject({ precise: true, reason: "meeting" });
+  });
+
+  it("gives map links to the owner and to a place manager", async () => {
     await settings({ geoEnabled: true, etaToAgents: true });
     expect((await owner.browser.json("/v1/geo/eta?to=office")).eta.deepLinks.kakaoMap).toBe(
       "https://map.kakao.com/link/to/office,37.4,127.1",
     );
     expect((await (await eta(OWNER_ADMIN, "to=office")).json() as any).eta.deepLinks.naverMap).toBe("nmap://navigation?dlat=37.4&dlng=127.1&dname=office&appname=wherectx");
-    const byAddress = (await (await eta(AGENT, "to=" + encodeURIComponent("강남역"))).json()) as any;
-    expect(byAddress.eta.destination).toEqual({ label: "강남역 2호선", kind: "address" });
-    expect(byAddress.eta.deepLinks.kakaoMap).toContain("37.4979,127.0276");
   });
 
   it("asks which one when a search finds several", async () => {
-    await settings({ geoEnabled: true, etaToAgents: true });
-    const res = await eta(AGENT, "to=" + encodeURIComponent("판교역"));
+    await settings({ geoEnabled: true });
+    const res = await owner.browser.send("/v1/geo/eta?to=" + encodeURIComponent("판교역"));
     expect(res.status).toBe(409);
     const body = (await res.json()) as any;
-    expect(body.candidates.map((c: any) => c.label)).toEqual(["판교역 신분당선", "판교역 경강선"]);
-    expect(body.candidates[0]).not.toHaveProperty("lat");
-    expect((await eta(AGENT, "to=" + encodeURIComponent("판교역") + "&pick=2")).status).toBe(200);
+    expect(body.candidates.map((c: any) => [c.pick, c.label])).toEqual([
+      [1, "판교역 신분당선"],
+      [2, "판교역 경강선"],
+    ]);
+    expect((await owner.browser.send("/v1/geo/eta?to=" + encodeURIComponent("판교역") + "&pick=2")).status).toBe(200);
   });
 
-  it("starts from the home place near home, not the live reading", async () => {
-    await settings({ geoEnabled: true });
-    await ingest({ lat: 37.5011234, lon: 127.0004321 });
+  it("refuses an agent at or near home, by distance, whatever the status says; the owner is timed from the home place", async () => {
+    await settings({ geoEnabled: true, etaToAgents: true });
+    // A place of their own 200 m from home: the status says "custom", the distance says near home.
+    await owner.browser.json("/v1/places", { body: { name: "corner", type: "custom", lat: HOME.lat + 0.0018, lon: HOME.lon, radiusM: 100 } });
+    await ingest({ lat: HOME.lat + 0.0018123, lon: HOME.lon + 0.0000123 });
+    expect((await owner.browser.json("/v1/presence")).status).toBe("custom");
+    const before = routeCalls().length;
+    const res = await eta(AGENT, "to=office");
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as any).error).toMatch(/at or near home/);
+    expect(routeCalls()).toHaveLength(before);
+
     const { eta: answer } = await owner.browser.json("/v1/geo/eta?to=office");
     expect(answer.origin).toBe("home");
     expect(routeCalls().at(-1)!.origin).toEqual(HOME);
   });
 
-  it("says the location is stale instead of timing a route from it", async () => {
+  it("refuses a reading too old to start from, and says how old", async () => {
     await settings({ geoEnabled: true, etaToAgents: true });
     clock.advance(16 * 60_000);
     const res = await eta(AGENT, "to=office");
     expect(res.status).toBe(409);
-    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/stale/), updatedAgoSec: 960 });
+    expect(await res.json()).toMatchObject({ freshness: "unknown", originAgeMin: 16, error: expect.stringMatching(/too old/) });
     expect(routeCalls()).toEqual([]);
   });
 
@@ -263,7 +307,7 @@ describe("ETA", () => {
     await ctx.system.geo.settled();
     const used = () => fake.calls.length;
     expect(used()).toBe(1); // the background area lookup
-    for (let i = 0; i < 14; i++) expect((await eta(OWNER_ADMIN, "to=" + encodeURIComponent("강남역"))).status).toBe(200);
+    for (let i = 0; i < 14; i++) expect((await eta(null, "to=" + encodeURIComponent("강남역"))).status).toBe(200);
     expect(used()).toBe(29);
     expect((await eta(AGENT, "to=office")).status).toBe(200);
     expect(used()).toBe(GEO_USER_CALLS_PER_MINUTE);
