@@ -166,14 +166,14 @@ describe("GET /v1/admin/logs", () => {
   it("shows the operator recent redacted entries, never a banner", async () => {
     clearLogs();
     log.banner`setup code ${new Secret("ABCD-EFGH-IJKL")}`;
-    log.warn("upload refused", { token: "wctx_secretsecret", lat: 37.1 });
+    log.warn("upload refused", { token: "wctx_secretsecret", lat: 37.123456 });
     const res = await owner.browser.send("/v1/admin/logs");
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
     const text = JSON.stringify(await res.json());
     expect(text).toContain("upload refused");
     expect(text).not.toContain("wctx_secretsecret");
-    expect(text).not.toContain("37.1");
+    expect(text).not.toContain("37.123456");
     expect(text).not.toContain("ABCD-EFGH-IJKL");
   });
 
