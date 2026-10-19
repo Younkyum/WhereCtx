@@ -21,7 +21,7 @@ import type { SharesStore } from "../sharing/sharesStore.js";
 import { log } from "../util/log.js";
 import { KeyedMutex } from "../util/mutex.js";
 import type { Clock } from "../util/time.js";
-import type { GeoCacheStore } from "./cacheStore.js";
+import { cacheTtlMs, type GeoCacheStore } from "./cacheStore.js";
 import { nearHomePlace } from "./eta.js";
 import type { GeoKeys } from "./keys.js";
 import type { LatLon, ReverseResult } from "./types.js";
@@ -128,7 +128,12 @@ export class AreaRefresher {
       this.cancelTrailing(userId);
       await dropArea();
     };
-    if (!presence?.precise || !settings.geoEnabled) return stop();
+    if (!settings.geoEnabled) {
+      // With maps off nothing about the person's whereabouts is kept for maps.
+      await this.deps.cache.purge(userId);
+      return stop();
+    }
+    if (!presence?.precise) return stop();
     const here = presence.precise;
     // Near home nothing is sent; the status already says home.
     const places = await this.deps.places.list(userId);
@@ -142,7 +147,8 @@ export class AreaRefresher {
 
     const resolved = await this.deps.keys.resolve(userId, settings);
     if (!resolved) return stop();
-    const cached = await this.deps.cache.get(userId, resolved.name, here);
+    const ttlMs = cacheTtlMs(settings.retentionHours);
+    const cached = await this.deps.cache.get(userId, resolved.name, here, ttlMs);
     if (cached.hit) {
       await this.deps.setArea(userId, { region: cached.result, forPoint: here });
       return;
@@ -160,7 +166,7 @@ export class AreaRefresher {
       if (looked.kind === "failed") log.warn("area lookup failed", { provider: resolved.name, kind: looked.error.kind });
       return dropArea();
     }
-    await this.deps.cache.put(userId, resolved.name, here, looked.value);
+    await this.deps.cache.put(userId, resolved.name, here, looked.value, ttlMs);
     await this.deps.setArea(userId, { region: looked.value, forPoint: here });
   }
 }

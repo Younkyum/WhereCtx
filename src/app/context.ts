@@ -280,7 +280,7 @@ export async function createAppContext(
     config,
     views,
     credentials: new GeoCredentialsStore(db, new SecretBox(await stores.serverSecrets.geoCredentialKey()), clock),
-    cache: new GeoCacheStore(db, clock),
+    cache: new GeoCacheStore(db, await stores.serverSecrets.geoCacheKey(), clock),
     settings: stores.settings,
     presence: stores.presence,
     places: stores.places,

@@ -2,7 +2,9 @@
  * Retention pruning for the append-only tables (events and webhook dead
  * letters, review P3/L5; the share audit; the activity logs; raw history),
  * expired sessions, long-expired invites, spent ceremony nonces, expired
- * access codes, expired OAuth state, and reverse geocoding answers past their 7 days. The server runs it at boot and then every few hours.
+ * access codes, expired OAuth state, and reverse geocoding answers past seven
+ * days or their owner's retentionHours. The server runs it at boot and then
+ * every few hours.
  */
 
 import type { WhereCtxConfig } from "../config.js";

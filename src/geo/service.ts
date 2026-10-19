@@ -182,8 +182,11 @@ export class GeoService {
     return this.keys.save(userId, provider, keys);
   }
 
-  deleteCredential(userId: UserId, provider: GeoProviderName): Promise<boolean> {
-    return this.keys.delete(userId, provider);
+  /** Forget a provider's keys, and every area answer kept for me. */
+  async deleteCredential(userId: UserId, provider: GeoProviderName): Promise<boolean> {
+    const deleted = await this.keys.delete(userId, provider);
+    if (deleted) await this.deps.cache.purge(userId);
+    return deleted;
   }
 
   /** Look up a fixed public landmark with my saved key, never my location. */

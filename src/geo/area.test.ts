@@ -272,6 +272,23 @@ describe("the background area lookup", () => {
     expect(reverseCalls()).toHaveLength(calls);
   });
 
+  it("forgets every kept answer when maps are turned off or my key is removed", async () => {
+    const cached = async () => (await ctx.handle.client.execute({ sql: "SELECT * FROM geo_cache WHERE user_id = ?", args: [owner.userId] })).rows.length;
+    await settings({ geoEnabled: true });
+    await ingest(AWAY);
+    expect(await cached()).toBe(1);
+    await settings({ geoEnabled: false });
+    await ctx.system.geo.settled();
+    expect(await cached()).toBe(0);
+
+    await owner.browser.json("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: "owner-kakao-key-0123456789" } });
+    await settings({ geoEnabled: true });
+    await ctx.system.geo.settled();
+    expect(await cached()).toBe(1);
+    await owner.browser.json("/v1/geo/credentials/kakao", { method: "DELETE" });
+    expect(await cached()).toBe(0);
+  });
+
   it("drops a lookup for a reading the person has already moved on from", async () => {
     await settings({ geoEnabled: true });
     await ingest(ELSEWHERE);

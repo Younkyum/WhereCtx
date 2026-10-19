@@ -3,7 +3,9 @@ import { createDb, ensureSchema, type DbHandle } from "../db/index.js";
 import { asUserId } from "../types.js";
 import { SecretBox } from "../webhooks/secretBox.js";
 import { GeoCredentialsStore, UNUSABLE_KEY } from "./credentialsStore.js";
-import { GeoCacheStore } from "./cacheStore.js";
+import { GEO_CACHE_TTL_MS, GeoCacheStore, cacheTtlMs } from "./cacheStore.js";
+import { SettingsStore } from "../privacy/settingsStore.js";
+import { testConfig } from "../testing/accounts.js";
 
 const ana = asUserId("ana");
 const ben = asUserId("ben");
@@ -106,16 +108,54 @@ describe("maps credentials at rest", () => {
 });
 
 describe("the reverse geocoding cache", () => {
+  const cell = { lat: 37.5664321, lon: 126.9781234 };
+  const region = { region1: "서울특별시", region2: "중구", region3: "명동", label: "중구 명동" };
+  const WEEK = GEO_CACHE_TTL_MS;
+  let cache: GeoCacheStore;
+  beforeEach(() => {
+    cache = new GeoCacheStore(handle.db, "install-cache-key", () => new Date(now));
+  });
+
   it("answers per person and provider, and forgets after seven days", async () => {
-    const cache = new GeoCacheStore(handle.db, () => new Date(now));
-    const cell = { lat: 37.566, lon: 126.978 };
-    const region = { region1: "서울특별시", region2: "중구", region3: "명동", label: "중구 명동" };
-    await cache.put(ana, "kakao", cell, region);
-    expect(await cache.get(ana, "kakao", cell)).toEqual({ hit: true, result: region });
-    expect(await cache.get(ben, "kakao", cell)).toEqual({ hit: false });
-    expect(await cache.get(ana, "naver", cell)).toEqual({ hit: false });
-    now += 7 * 86_400_000 + 1;
-    expect(await cache.get(ana, "kakao", cell)).toEqual({ hit: false });
+    await cache.put(ana, "kakao", cell, region, WEEK);
+    expect(await cache.get(ana, "kakao", { lat: 37.566, lon: 126.978 }, WEEK)).toEqual({ hit: true, result: region });
+    expect(await cache.get(ben, "kakao", cell, WEEK)).toEqual({ hit: false });
+    expect(await cache.get(ana, "naver", cell, WEEK)).toEqual({ hit: false });
+    now += WEEK + 1;
+    expect(await cache.get(ana, "kakao", cell, WEEK)).toEqual({ hit: false });
     expect(await cache.prune()).toBe(1);
+  });
+
+  it("keys rows by an HMAC, so the table holds no coordinates, and another install's key finds nothing", async () => {
+    await cache.put(ana, "kakao", cell, region, WEEK);
+    const raw = JSON.stringify((await handle.client.execute("SELECT * FROM geo_cache")).rows);
+    expect(raw).not.toMatch(/37\.56|126\.97/);
+    const other = new GeoCacheStore(handle.db, "another-install", () => new Date(now));
+    expect(await other.get(ana, "kakao", cell, WEEK)).toEqual({ hit: false });
+  });
+
+  it("keeps an answer no longer than the person's retentionHours", async () => {
+    expect(cacheTtlMs(24)).toBe(86_400_000);
+    expect(cacheTtlMs(24 * 30)).toBe(WEEK);
+    expect(cacheTtlMs(0)).toBe(0);
+    await cache.put(ana, "kakao", cell, region, 0);
+    expect(await handle.client.execute("SELECT * FROM geo_cache").then((r) => r.rows)).toHaveLength(0);
+
+    const settings = new SettingsStore(handle.db, testConfig(), () => new Date(now));
+    await settings.update(ana, { retentionHours: 2 });
+    await settings.update(ben, { retentionHours: 720 });
+    await cache.put(ana, "kakao", cell, region, cacheTtlMs(2));
+    await cache.put(ben, "kakao", cell, region, WEEK);
+    now += 3 * 3_600_000;
+    expect(await cache.get(ana, "kakao", cell, cacheTtlMs(2))).toEqual({ hit: false });
+    expect(await cache.prune()).toBe(1);
+    expect(await cache.get(ben, "kakao", cell, WEEK)).toMatchObject({ hit: true });
+  });
+
+  it("purges one person's answers only", async () => {
+    await cache.put(ana, "kakao", cell, region, WEEK);
+    await cache.put(ben, "kakao", cell, region, WEEK);
+    expect(await cache.purge(ana)).toBe(1);
+    expect(await cache.get(ben, "kakao", cell, WEEK)).toMatchObject({ hit: true });
   });
 });
