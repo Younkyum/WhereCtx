@@ -123,6 +123,42 @@ describe("a delayed enter", () => {
     expect(await service.sweepDwell()).toEqual([]);
   });
 
+  it("is not confirmed by a place change while the last reading is driving past", async () => {
+    await gym({ enterAfterSec: 120 });
+    await service.processReading(USER, reading(north(0), { motion: "driving", precise: { ...north(0), accuracyM: 10, speedMps: 15 } }));
+    advance(180);
+    expect(await service.sweepDwell()).toEqual([]);
+    await places.upsert(USER, { name: "elsewhere", type: "custom", lat: 0, lon: 0, radiusM: 100 });
+    expect(placeEvents((await service.reevaluateCurrent(USER))!.events)).toEqual([]);
+  });
+
+  it("is not confirmed by a reading that is driving or fast, which may still start it", async () => {
+    await gym({ enterAfterSec: 60 });
+    await service.processReading(USER, reading(north(0)));
+    advance(120);
+    const fast = await service.processReading(USER, reading(north(5), { motion: "walking", precise: { ...north(5), speedMps: 9 } }));
+    expect(placeEvents(fast.events)).toEqual([]);
+    const driving = await service.processReading(USER, reading(north(5), { motion: "driving" }));
+    expect(placeEvents(driving.events)).toEqual([]);
+    const stopped = await service.processReading(USER, reading(north(5)));
+    expect(placeEvents(stopped.events)).toEqual(["entered_place gym"]);
+  });
+
+  it("is entered at once by a driving reading when the place has no enter delay, as a plain geofence is", async () => {
+    await gym();
+    const driving = await service.processReading(USER, reading(north(0), { motion: "driving" }));
+    expect(placeEvents(driving.events)).toEqual(["entered_place gym"]);
+  });
+
+  it("is judged by the stored point against the places as they are now, on a sweep too", async () => {
+    await gym({ enterAfterSec: 120 });
+    await service.processReading(USER, reading(north(0)));
+    await handle.db.update(placesTable).set({ lat: 0, lon: 0 });
+    advance(150);
+    expect(placeEvents(await service.sweepDwell())).toEqual([]);
+    expect((await presence.getCurrent(USER))!.pendingPlace).toBeUndefined();
+  });
+
   it("survives a restart: a new service on the same database confirms it", async () => {
     await gym({ enterAfterSec: 120 });
     await service.processReading(USER, reading(north(0)));

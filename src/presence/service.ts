@@ -19,7 +19,7 @@ import { computeGeofence, labelForStatus, statusFor } from "../geofence/engine.j
 import { encodeGeohash, haversineMeters } from "../geofence/distance.js";
 import { approach } from "../geofence/approach.js";
 import { measurePlace, nearHomePlace } from "../geofence/shape.js";
-import { step, sweepRaw, type DwellState, type DwellTransition } from "../geofence/dwell.js";
+import { step, type DwellState, type DwellTransition } from "../geofence/dwell.js";
 import { AREA_REFRESH_MOVE_M, type AreaUpdate } from "../geo/area.js";
 import type { NormalizedReading } from "../normalizer/types.js";
 import {
@@ -82,11 +82,11 @@ function coarsePlaceTypeFor(place: Place | undefined): CoarsePlaceType | undefin
   return "unknown";
 }
 
-/** A sweep confirms no enter while the last reading looks like driving past. */
+/** No enter with a delay is confirmed while the latest reading looks like driving past. */
 const DRIVE_BY_SPEED_MPS = 3;
 
-function drivingBy(p: StoredPresence): boolean {
-  return p.motion === "driving" || p.motion === "transit" || (p.precise?.speedMps ?? 0) > DRIVE_BY_SPEED_MPS;
+function drivingBy(motion: Motion | undefined, speedMps: number | undefined): boolean {
+  return motion === "driving" || motion === "transit" || (speedMps ?? 0) > DRIVE_BY_SPEED_MPS;
 }
 
 /**
@@ -164,14 +164,7 @@ export class PresenceService {
     ]);
 
     const now = this.clock();
-    const verdict = this.judge({
-      point: reading.precise,
-      motion: reading.motion,
-      places,
-      dwell: dwellOf(prev),
-      now,
-      raw: "position",
-    });
+    const verdict = this.judge({ point: reading.precise, motion: reading.motion, places, dwell: dwellOf(prev), now });
     const { status, label } = verdict;
     const approached = approach({
       places,
@@ -246,26 +239,30 @@ export class PresenceService {
   }
 
   /**
-   * Step the dwell rules for a position and take the status from the
-   * confirmed place. `raw` says where the raw verdict comes from: the
-   * position itself, or (a sweep, with no new position) the one the dwell
-   * state was last stepped with.
+   * Step the dwell rules for the latest point (a new reading's, or the
+   * stored one on a sweep or a place change) against the places as they are
+   * now, and take the status from the confirmed place.
    */
   private judge(args: {
-    point: { lat: number; lon: number };
+    point: { lat: number; lon: number; speedMps?: number };
     motion: Motion | undefined;
     places: Place[];
     dwell: DwellState;
     now: Date;
-    raw: "position" | "sweep";
-    holdEnter?: boolean;
   }): Verdict {
     const geo = computeGeofence(args.point.lat, args.point.lon, args.places, this.deps.config.geofence.nearRadiusMultiplier);
-    const raw = args.raw === "sweep" ? sweepRaw(args.dwell) : (geo.matchedPlace?.name ?? null);
     const byName = new Map(args.places.map((p) => [p.name, p]));
     const current = args.dwell.current === null ? undefined : byName.get(args.dwell.current);
-    const insideCurrent = current !== undefined && measurePlace(current, args.point.lat, args.point.lon, 1).inside;
-    const stepped = step(args.dwell, { raw, insideCurrent }, args.now, (name) => byName.get(name), { holdEnter: args.holdEnter });
+    const stepped = step(
+      args.dwell,
+      {
+        raw: geo.matchedPlace?.name ?? null,
+        insideCurrent: current !== undefined && measurePlace(current, args.point.lat, args.point.lon, 1).inside,
+        drivingBy: drivingBy(args.motion, args.point.speedMps),
+      },
+      args.now,
+      (name) => byName.get(name),
+    );
     const confirmed = stepped.state.current === null ? undefined : byName.get(stepped.state.current);
     let { status, label } = statusFor(confirmed, geo.outside);
     // Motion refinement: someone who is "away" but clearly moving is in transit.
@@ -383,14 +380,13 @@ export class PresenceService {
   /**
    * Periodic dwell sweep across every user (system handle only): one query
    * for presence rows with an enter or a leave pending, then a dwell step at
-   * now per user, under the user's lock, with no new reading. It confirms a
-   * pending enter only when the last reading does not look like driving past;
-   * a pending leave it may confirm either way. Returns the emitted events so
-   * the caller can nudge delivery. Dwell resolves to the sweep interval.
+   * now per user, under the user's lock, with no new reading. Returns the
+   * emitted events so the caller can nudge delivery. Dwell resolves to the
+   * sweep interval.
    */
   async sweepDwell(): Promise<PresenceEvent[]> {
     const users = await this.deps.presenceStore.listPendingDwell();
-    const results = await Promise.allSettled(users.map((userId) => this.rejudge(userId, "sweep")));
+    const results = await Promise.allSettled(users.map((userId) => this.rejudge(userId)));
     const events: PresenceEvent[] = [];
     results.forEach((r, i) => {
       if (r.status === "fulfilled") {
@@ -413,34 +409,25 @@ export class PresenceService {
    * per user so it cannot race a concurrent ingest.
    */
   async reevaluateCurrent(userId: UserId): Promise<ProcessResult | null> {
-    const result = await this.rejudge(userId, "reevaluate");
+    const result = await this.rejudge(userId);
     // A new or moved place can put the person at or near home: bring the area up to date too.
     if (result) this.deps.afterReading?.(userId);
     return result;
   }
 
   /**
-   * A dwell step at now for the stored position, under the user's lock: after
-   * a place change (the raw verdict is recomputed against the new places) or
-   * on a sweep (the last verdict is replayed). Never checks approach rings;
-   * drops deleted places from the approached set. Persists the pending
-   * fields even when the status and the confirmed place stay.
+   * A dwell step at now for the stored position against the current places,
+   * under the user's lock: after a place change or on a sweep. Never checks
+   * approach rings; drops deleted places from the approached set. Persists
+   * the pending fields even when the status and the confirmed place stay.
    */
-  private rejudge(userId: UserId, mode: "reevaluate" | "sweep"): Promise<ProcessResult | null> {
+  private rejudge(userId: UserId): Promise<ProcessResult | null> {
     return this.mutex.run(userId, async () => {
       const prev = await this.deps.presenceStore.getCurrent(userId);
       if (!prev?.precise) return null;
 
       const places = await this.deps.placesStore.list(userId);
-      const verdict = this.judge({
-        point: prev.precise,
-        motion: prev.motion,
-        places,
-        dwell: dwellOf(prev),
-        now: this.clock(),
-        raw: mode === "sweep" ? "sweep" : "position",
-        holdEnter: mode === "sweep" && drivingBy(prev),
-      });
+      const verdict = this.judge({ point: prev.precise, motion: prev.motion, places, dwell: dwellOf(prev), now: this.clock() });
       const names = new Set(places.map((p) => p.name));
       const next: StoredPresence = {
         ...prev,

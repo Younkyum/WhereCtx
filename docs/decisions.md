@@ -601,9 +601,15 @@ The owner asked to see things on a map. Agents still get none.
 - **Dwell resolves to the sweep.** `sweepDwell` runs on the existing
   one-minute stale sweep; no per-user timers to lose on restart. The pending
   fields live on the presence row.
-- **Drive-by guard on sweeps only.** A sweep confirms no enter while the
-  last reading is driving, in transit or over 3 m/s; readings always count,
-  and a sweep may confirm a leave.
+- **One drive-by rule.** An enter with a delay is confirmed only by a step
+  whose latest reading is not driving, in transit or over 3 m/s: a reading,
+  a sweep and a place change alike. Such a reading may start the wait. A
+  place with no enter delay is entered at once, driving or not, as before.
+  A leave is confirmed either way.
+- **Every step measures the latest point against the places as they are.**
+  A sweep or a place change has no new reading, so it measures the stored
+  point; nothing replays an earlier verdict, so a moved or deleted
+  candidate simply stops being one.
 - **Approach fires once per approach.** Inside the ring, at least 25 m (or
   the fix's accuracy) closer than the last reading, not inside, not the
   confirmed or pending place. It re-arms past 1.1 x the ring. Readings

@@ -122,12 +122,15 @@ status is what it would be inside no place (`near_home`, `near_work`,
 
 `PresenceService.sweepDwell` runs on the stale sweep's minute: one query for
 rows with a pending field, then a dwell step per user, under the user's
-lock, with no new reading. Dwell therefore resolves to about a minute. A
-sweep confirms no enter while the last reading is driving, in transit or
-faster than 3 m/s, so driving past a place with an enter delay does not
-count; it may confirm a leave. A place change re-steps the dwell state
-against the stored point: a deleted confirmed place leaves at once, a
-deleted candidate is dropped.
+lock, with no new reading. Dwell therefore resolves to about a minute.
+Waits are timed by server receive time, not the device's clock: device
+timestamps are not trusted, and a queue of old readings arriving together
+does not satisfy a wait by itself.
+Every step, a sweep and a place change included, measures the latest point
+against the places as they are then. No enter with a delay is confirmed
+while the latest reading is driving, in transit or faster than 3 m/s, so
+driving past such a place does not count; a leave may be confirmed either
+way. A deleted confirmed place leaves at once.
 
 Approach detection (`src/geofence/approach.ts`) runs on readings only. It
 fires `presence.approaching_place` once when a reading moves at least

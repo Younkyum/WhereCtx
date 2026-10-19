@@ -485,8 +485,8 @@ A place is a circle or a polygon, never both:
 - `enterAfterSec` / `exitAfterSec` (0..86400, default 0): how long readings
   must stay inside before the arrival counts, or outside before the
   departure counts. They are checked on every reading and once a minute, so
-  a wait can run up to a minute long. A sweep never confirms an arrival
-  while the last reading is driving, in transit or over 3 m/s.
+  a wait can run up to a minute long. An arrival with a wait is never
+  confirmed while the latest reading is driving, in transit or over 3 m/s.
 - `approachM` (10..50000, or null for off, the default): fire
   `presence.approaching_place` once when readings head toward the place
   within this many meters of its boundary.
