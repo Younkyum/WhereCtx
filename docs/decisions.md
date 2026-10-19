@@ -598,14 +598,14 @@ The owner asked to see things on a map. Agents still get none.
   edge folding back included), under 100 m², over 100 km from the
   centroid. The projection is local equirectangular around the centroid,
   good at that size.
-- **Dwell is a reducer with one confirmed place.** `step(state, raw, now,
-  delaysFor)` keeps the singular current place. Delays count from the
+- **Dwell is a reducer with one confirmed place.** `step(state, position,
+  now, delaysFor)` keeps the singular current place. Delays count from the
   first reading inside or outside; a reading back in the confirmed place
   cancels. While the point is still inside the confirmed place no leave is
   pending, so a place within a place takes over directly once its own enter
-  is confirmed, instead of passing through "near home". A deleted place leaves at once and is never entered. The status
-  follows the confirmed place, so all-zero delays reproduce the old
-  geofence exactly.
+  is confirmed, instead of passing through "near home". A deleted place
+  leaves at once and is never entered. The status follows the confirmed
+  place, so all-zero delays reproduce the old geofence exactly.
 - **Dwell resolves to the sweep.** `sweepDwell` runs on the existing
   one-minute stale sweep; no per-user timers to lose on restart. The pending
   fields live on the presence row.
@@ -649,7 +649,7 @@ The owner asked to see things on a map. Agents still get none.
   backfills it from the status, which before dwell was the same verdict.
 - **`emits` drops the event, not the transition.** A type a place does not
   emit is not recorded at all; presence still moves.
-- **Agents see transitions, not rules.** `is_near_place` adds `confirmed`
-  and `pending` only when the place has a dwell time or they differ from
-  `inside`, so a plain place answers as before; `get_presence` adds
-  `transition` with the place type, never the name.
+- **Agents see transitions, not rules.** `is_near_place` always answers
+  `confirmed` and `pending` (null when nothing waits), so the shape of the
+  reply never tells an agent whether a place has a dwell time set;
+  `get_presence` adds `transition` with the place type, never the name.

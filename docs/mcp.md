@@ -163,7 +163,7 @@ protected from it.
 |------|------|---------|
 | `get_presence` | – | coarse status/label/motion/age, `freshness`, `lastReportAgoSec` (`updatedAgoSec` is the same), `lastMovedAgoSec`, `stale` (no GPS); `area` when allowed; `transition: {kind, placeType, forSec}` while an arrival or departure waits out its place's dwell time. `{status:"hidden"}` in hidden mode |
 | `get_precise_location` | `reason: string` | `{lat, lon, accuracyM?, mapUrl, updatedAgoSec}` or an error if denied by policy/home-protection |
-| `is_near_place` | `name: string` | `{name, inside, near, freshness, lastReportAgoSec}` as of the last report (no coordinates); `confirmed` and `pending` when the place has a dwell time or they differ from `inside` |
+| `is_near_place` | `name: string` | `{name, inside, near, confirmed, pending, freshness, lastReportAgoSec}` as of the last report (no coordinates) |
 | `list_places` | – | `[{name, type}]` (a `manage_places` token also gets coordinates, radius, a polygon's outline and the rules) |
 | `get_location_age` | – | `{updatedAgoSec, updatedAt, stale, freshness, lastReportAgoSec, lastMovedAgoSec}`; ages are from when the server heard the phone, `updatedAt` is the device's own time of the fix |
 | `list_recent_presence_events` | `limit?: number` | recent events, `approaching_place` included (place names omitted for agents) |
@@ -185,7 +185,8 @@ place: `status` stays `work` while a departure from work waits out its
 time, and does not say `work` while an arrival there waits. `is_near_place`
 separates the two. `inside` is where the last report is; `confirmed` is
 whether presence counts the user at the place; `pending` is `entering` or
-`leaving` while a wait is on. `get_presence` adds
+`leaving` while a wait is on, else `null`. Both are always given, so the
+reply does not reveal whether a place has a wait set. `get_presence` adds
 `transition: {kind: "entering" | "leaving", placeType, forSec}` while one
 is pending, without the place's name. Waits resolve within about a minute.
 `presence.approaching_place` fires once as the user heads toward a place

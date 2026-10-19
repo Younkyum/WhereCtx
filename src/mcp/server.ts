@@ -255,7 +255,7 @@ export function buildMcpServer(
     "is_near_place",
     {
       description:
-        "Check whether the user is inside or near a registered place by name (e.g. 'home', 'work'), as of their last report, with that report's freshness. Returns booleans only, never coordinates. A 'stationary' freshness means they are still there. inside is where the last report is; confirmed is whether the user's presence counts them at this place (a place can ask for a few minutes inside before an arrival counts, or outside before a departure counts), and pending says 'entering' or 'leaving' while that wait is on (both are given when the place has such a wait, or when confirmed differs from inside).",
+        "Check whether the user is inside or near a registered place by name (e.g. 'home', 'work'), as of their last report, with that report's freshness. Returns booleans only, never coordinates. A 'stationary' freshness means they are still there. inside is where the last report is; confirmed is whether the user's presence counts them at this place (a place can ask for a few minutes inside before an arrival counts, or outside before a departure counts), and pending says 'entering' or 'leaving' while that wait is on, else null.",
       inputSchema: { name: z.string().min(1).max(64).describe("The place name to check") },
     },
     async ({ name }) => {
@@ -274,11 +274,8 @@ export function buildMcpServer(
       const transition = pendingTransition(dwell);
       const pending = transition?.name === name ? transition.kind : dwell.candidate?.name === name ? "entering" : null;
       const confirmed = dwell.current === name;
-      // With no dwell time, confirmed is inside and nothing is ever pending: say so only when it adds something.
-      const dwellSet = place.enterAfterSec > 0 || place.exitAfterSec > 0;
-      const said = dwellSet || confirmed !== inside || pending !== null ? { confirmed, pending } : {};
       const { freshness, lastReportAgoSec } = ctx.views.freshness(toPresenceContext(stored));
-      return ok({ name, inside, near, ...said, freshness, lastReportAgoSec });
+      return ok({ name, inside, near, confirmed, pending, freshness, lastReportAgoSec });
     },
   );
 
