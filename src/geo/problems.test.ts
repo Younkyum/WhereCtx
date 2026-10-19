@@ -50,7 +50,7 @@ describe("what a Kakao refusal means, from the bodies Kakao sends", () => {
     [400, { code: -2, msg: "bad origin" }, "rejected"],
     [500, { code: -1 }, "upstream"],
   ])("a Mobility %i %j is %s", async (status, body, problem) => {
-    const e = await refusal(kakao(status, body).route({ origin: SEOUL, destination: STATION }));
+    const e = await refusal(kakao(status, body).route({ mode: "car", origin: SEOUL, destination: STATION }));
     expect(e.problem).toBe(problem);
     expect(e.providerMessage ?? "").not.toContain(KAKAO_KEY);
   });

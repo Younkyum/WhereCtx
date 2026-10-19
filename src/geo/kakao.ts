@@ -1,10 +1,13 @@
 /**
  * Kakao: Local API for geocoding and region names, Kakao Mobility Directions
- * for car routes. Both take the same REST API key as
+ * for car routes, and the Kakao Map API's routing for transit, walking and
+ * bicycle routes. All take the same REST API key as
  * `Authorization: KakaoAK <key>`.
  *
  * Docs (checked 2026-10-19):
  * - https://developers.kakao.com/docs/ko/local/dev-guide
+ * - https://developers.kakao.com/docs/ko/kakaomap/rest-api (transit-info, walking-info, bicycle-info)
+ * - https://developers.kakao.com/docs/ko/rest-api/error-code (-10: quota, HTTP 400)
  * - https://developers.kakaomobility.com/guide/navi-api/directions.html
  * - https://developers.kakaomobility.com/guide/navi-api/future.html
  * - https://developers.kakaomobility.com/guide/navi-api/reference.html (result_code)
@@ -20,13 +23,22 @@ import {
   type GeoProvider,
   type LatLon,
   type ReverseResult,
+  type ActiveRoute,
+  type CarRoute,
   type RouteRequest,
   type RouteResult,
   type RouteRoad,
+  type TransitLeg,
+  type TransitLegKind,
+  type TransitRoute,
 } from "./types.js";
 
 export const KAKAO_LOCAL_BASE = "https://dapi.kakao.com";
 export const KAKAO_NAVI_BASE = "https://apis-navi.kakaomobility.com";
+/** Kakao Map API routing paths on KAKAO_LOCAL_BASE. */
+export const KAKAO_TRANSIT_PATH = "/v2/routing/publictraffic";
+export const KAKAO_WALK_PATH = "/v2/routing/walk";
+export const KAKAO_BIKE_PATH = "/v2/routing/bicycle";
 
 const num = z.union([z.number(), z.string()]).transform(Number).pipe(z.number().finite());
 
@@ -83,6 +95,77 @@ const Directions = z.object({
     )
     .min(1),
 });
+
+/** `points`: [x, y] pairs. */
+const Points = z.object({ points: z.array(z.array(z.number()).min(2)) }).partial();
+
+/** Transit: `status` other than OK means no route; `routes` only with OK. */
+const Transit = z.object({
+  status: z.string(),
+  routes: z
+    .array(
+      z.object({
+        properties: z.object({
+          totalDistance: z.number(),
+          totalTime: z.number(),
+          transfers: z.number().int(),
+          fare: z.object({ value: z.number() }).partial().optional(),
+        }),
+        steps: z.array(
+          z.object({
+            properties: z.object({
+              guidance: providerText.optional(),
+              type: z.enum(["BUS", "SUBWAY", "WALKING"]),
+              distance: z.number(),
+              time: z.number(),
+              stops: z.array(z.object({ name: providerText })).optional(),
+              vehicles: z.array(z.object({ type: providerText.optional(), name: providerText })).optional(),
+            }),
+            path: Points.optional(),
+          }),
+        ),
+      }),
+    )
+    .optional(),
+});
+
+/** Walking and cycling share one answer. */
+const Active = z.object({
+  status: z.string(),
+  route: z
+    .object({
+      properties: z.object({ totalDistance: z.number(), totalTime: z.number() }),
+      legs: z.array(
+        z.object({
+          steps: z.array(
+            z.object({
+              properties: z.object({ guidance: providerText.optional(), distance: z.number() }),
+              path: Points.optional(),
+            }),
+          ),
+        }),
+      ),
+    })
+    .optional(),
+});
+
+/** Statuses that mean the request itself was wrong, not that no route exists. */
+const BAD_REQUEST_STATUSES = new Set(["INVALID_REQUEST", "TOO_MANY_SEARCH_LINK"]);
+
+const LEG_KIND: Record<"BUS" | "SUBWAY" | "WALKING", TransitLegKind> = { BUS: "bus", SUBWAY: "subway", WALKING: "walk" };
+
+/** A line as people say it: a bus with its kind ("간선 472", "마을 76"), a subway line by name ("2호선"). */
+function lineName(kind: TransitLegKind, vehicle: { type?: string; name: string }): string {
+  return kind === "bus" && vehicle.type ? `${vehicle.type} ${vehicle.name}` : vehicle.name;
+}
+
+const pointsPath = (path: z.infer<typeof Points> | undefined): LatLon[] => (path?.points ?? []).map(([lon, lat]) => ({ lat: lat!, lon: lon! }));
+
+function noRouteFor(status: string): GeoError {
+  return BAD_REQUEST_STATUSES.has(status)
+    ? new GeoError("bad_request", `Kakao rejected the route request (${status})`)
+    : new GeoError("no_route", `Kakao found no route (${status})`);
+}
 
 /** Guide types that mark the start, the end and a waypoint rather than a turn. */
 const ENDPOINT_GUIDES = new Set([100, 101, 1000]);
@@ -178,7 +261,83 @@ export class KakaoProvider implements GeoProvider {
     };
   }
 
-  async route(request: RouteRequest): Promise<RouteResult> {
+  route(request: RouteRequest): Promise<RouteResult> {
+    switch (request.mode) {
+      case "car":
+        return this.drive(request);
+      case "transit":
+        return this.transit(request);
+      case "walk":
+      case "bike":
+        return this.active(request, request.mode);
+    }
+  }
+
+  /** Transit, walking and cycling take neither a departure time nor road kinds to avoid. */
+  private nowOnly(request: RouteRequest): void {
+    if (request.departAt !== undefined && request.departAt.getTime() > this.now().getTime()) {
+      throw new GeoError("unsupported", `Kakao times ${request.mode} routes for now only; it takes no departure time`);
+    }
+    if (request.avoid?.length) throw new GeoError("unsupported", "road kinds to avoid apply to driving only");
+  }
+
+  private endpoints(request: RouteRequest): Record<string, string> {
+    return {
+      start_x: String(request.origin.lon),
+      start_y: String(request.origin.lat),
+      end_x: String(request.destination.lon),
+      end_y: String(request.destination.lat),
+    };
+  }
+
+  /** The provider's first route, as Kakao orders them. */
+  private async transit(request: RouteRequest): Promise<TransitRoute> {
+    this.nowOnly(request);
+    const res = await this.get(KAKAO_LOCAL_BASE, KAKAO_TRANSIT_PATH, this.endpoints(request), Transit);
+    const route = res.routes?.[0];
+    if (res.status !== "OK" || !route) throw noRouteFor(res.status);
+    const legs = route.steps.map(({ properties: p, path }): TransitLeg => {
+      const kind = LEG_KIND[p.type];
+      return {
+        kind,
+        durationSec: p.time,
+        distanceM: p.distance,
+        lines: kind === "walk" ? [] : [...new Set((p.vehicles ?? []).map((v) => lineName(kind, v)))],
+        stops: kind === "walk" ? [] : (p.stops ?? []).map((stop) => stop.name),
+        guidance: p.guidance ?? "",
+        path: pointsPath(path),
+      };
+    });
+    return {
+      mode: "transit",
+      durationSec: route.properties.totalTime,
+      distanceM: route.properties.totalDistance,
+      transfers: route.properties.transfers,
+      ...(route.properties.fare?.value !== undefined ? { fare: route.properties.fare.value } : {}),
+      legs,
+      path: joined(legs.map((l) => l.path)),
+      departAt: this.now().toISOString(),
+    };
+  }
+
+  private async active(request: RouteRequest, mode: "walk" | "bike"): Promise<ActiveRoute> {
+    this.nowOnly(request);
+    const res = await this.get(KAKAO_LOCAL_BASE, mode === "walk" ? KAKAO_WALK_PATH : KAKAO_BIKE_PATH, this.endpoints(request), Active);
+    if (res.status !== "OK" || !res.route) throw noRouteFor(res.status);
+    const steps = res.route.legs.flatMap((leg) =>
+      leg.steps.map((s) => ({ guidance: s.properties.guidance ?? "", distanceM: s.properties.distance, path: pointsPath(s.path) })),
+    );
+    return {
+      mode,
+      durationSec: res.route.properties.totalTime,
+      distanceM: res.route.properties.totalDistance,
+      steps,
+      path: joined(steps.map((s) => s.path)),
+      departAt: this.now().toISOString(),
+    };
+  }
+
+  private async drive(request: RouteRequest): Promise<CarRoute> {
     const future = request.departAt !== undefined && request.departAt.getTime() > this.now().getTime();
     const params: Record<string, string> = {
       origin: `${request.origin.lon},${request.origin.lat}`,
@@ -195,6 +354,7 @@ export class KakaoProvider implements GeoProvider {
     }
     const sections = route.sections ?? [];
     return {
+      mode: "car",
       durationSec: route.summary.duration,
       distanceM: route.summary.distance,
       traffic: future ? "predicted" : "live",

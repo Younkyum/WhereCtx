@@ -23,21 +23,24 @@ import { AreaRefresher, timerSchedule, type AreaUpdate, type Schedule } from "./
 import type { GeoCacheStore } from "./cacheStore.js";
 import type { GeoCredentialsStore, StoredGeoCredential } from "./credentialsStore.js";
 import { FakeGeoProvider } from "./fake.js";
-import { GeoKeys, type CallResult, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
-import { agentNumbers, agentRoads, freshEnoughToRoute, nearHomePlace, ownerNumbers } from "./eta.js";
-import { mainRoads } from "./roads.js";
+import { GeoKeys, type CallResult, type GeoCallAction, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
+import { agentDetail, agentNumbers, freshEnoughToRoute, nearHomePlace, ownerDetail, ownerNumbers, type OwnerLeg } from "./eta.js";
 import {
+  PROVIDER_ROUTE_MODES,
   type GeocodeCandidate,
   type GeoErrorKind,
   type GeoCredentials,
   type GeoProviderName,
   type LatLon,
   type RouteAvoid,
+  type RouteMode,
   type RouteResult,
+  type TrafficBasis,
 } from "./types.js";
 
 
 export interface EtaRequest {
+  mode: RouteMode;
   /** A registered place's name, else an address or a place to search for. */
   to: string;
   /** Which search result, numbered from 1, when the search finds several. */
@@ -51,13 +54,14 @@ export interface EtaRequest {
 }
 
 interface EtaCommon {
+  mode: RouteMode;
   destination: { label: string; kind: "place" | "address" };
   /** The route starts at the current location, or, for the owner near home, at the home place. */
   origin: "current_location" | "home";
   durationMin: number;
   distanceKm: number;
-  /** live: timed on current traffic. predicted: a future departure, on the provider's forecast. */
-  traffic: RouteResult["traffic"];
+  /** Driving only. live: timed on current traffic. predicted: a future departure, on the provider's forecast. */
+  traffic?: TrafficBasis;
   departAt: string;
   arriveAt: string;
   summary: string[];
@@ -69,7 +73,7 @@ interface EtaCommon {
   deepLinks?: { kakaoMap: string; naverMap: string };
 }
 
-/** The owner's answer: the provider's numbers and roads, the steps, the fares, and the route as drawn. */
+/** The owner's answer: the provider's numbers and roads or lines, the steps, the fares, and the route as drawn. */
 export interface OwnerEtaAnswer extends EtaCommon {
   precision: "exact";
   /** The whole route as the provider drew it, start to end. */
@@ -77,6 +81,11 @@ export interface OwnerEtaAnswer extends EtaCommon {
   steps: string[];
   tollFare?: number;
   taxiFare?: number;
+  /** Transit: the fare, the transfers, the minutes on foot, and each leg with its stops and geometry. */
+  fare?: number;
+  transfers?: number;
+  walkMin?: number;
+  legs?: OwnerLeg[];
 }
 
 /**
@@ -91,6 +100,11 @@ export interface AgentEtaAnswer extends EtaCommon {
   steps?: string[];
   /** Why the steps an agent asked for are left out. */
   stepsWithheld?: string;
+  /** Transit: how many transfers, and the minutes on foot in 5-minute steps. */
+  transfers?: number;
+  walkMin?: number;
+  legs?: never;
+  fare?: never;
 }
 
 export type EtaAnswer = OwnerEtaAnswer | AgentEtaAnswer;
@@ -110,6 +124,8 @@ export type EtaOutcome<A extends EtaAnswer = EtaAnswer> =
   | { kind: "ambiguous"; candidates: CandidateView[] }
   | { kind: "rate_limited" }
   | { kind: "unconfigured" }
+  /** The provider in use does not route this mode; nothing was sent. */
+  | { kind: "unsupported_mode"; mode: RouteMode; provider: GeoProviderName; supported: readonly RouteMode[] }
   | { kind: "failed"; error: GeoErrorKind; message: string };
 
 /** Every way an ETA request ends without an answer. */
@@ -254,19 +270,15 @@ export class GeoService {
     const timed = await this.timeRoute(userId, request, caller);
     if ("kind" in timed) return timed;
     const { route, common, precise, avoid } = timed;
-    const steps = request.directions
-      ? precise
-        ? { steps: route.steps }
-        : { stepsWithheld: "turn-by-turn steps name the streets around the person; they need precise access (read_precise_location, allowed by the person, and a reason)" }
-      : {};
+    const { detail, usedPrecise } = agentDetail(route, avoid, { precise, directions: request.directions === true });
     return {
       kind: "ok",
-      precise: precise && (common.destination.kind === "address" || request.directions === true),
-      answer: { ...common, precision: "approximate", ...agentNumbers(route), summary: agentRoads(route.roads, avoid), ...steps },
+      precise: precise && (common.destination.kind === "address" || usedPrecise),
+      answer: { ...common, precision: "approximate", ...agentNumbers(route), ...detail },
     };
   }
 
-  /** Time a car route for me in the dashboard: the provider's numbers, the steps, and the route as drawn. Near home it starts at the home place. */
+  /** Time a route for me in the dashboard: the provider's numbers, the steps, the stops, and the route as drawn. Near home it starts at the home place. */
   async ownerEta(userId: UserId, request: EtaRequest): Promise<EtaOutcome<OwnerEtaAnswer>> {
     const timed = await this.timeRoute(userId, request, { kind: "owner" });
     if ("kind" in timed) return timed;
@@ -274,16 +286,7 @@ export class GeoService {
     return {
       kind: "ok",
       precise: false,
-      answer: {
-        ...common,
-        precision: "exact",
-        ...ownerNumbers(route),
-        summary: mainRoads(route.roads),
-        path: route.path,
-        steps: route.steps,
-        ...(route.tollFare !== undefined ? { tollFare: route.tollFare } : {}),
-        ...(route.taxiFare !== undefined ? { taxiFare: route.taxiFare } : {}),
-      },
+      answer: { ...common, precision: "exact", ...ownerNumbers(route), path: route.path, ...ownerDetail(route) },
     };
   }
 
@@ -321,6 +324,10 @@ export class GeoService {
     }
     const resolved = await this.keys.resolve(userId, settings);
     if (!resolved) return { kind: "unconfigured" };
+    const supported = PROVIDER_ROUTE_MODES[resolved.name];
+    if (!supported.includes(request.mode)) {
+      return { kind: "unsupported_mode", mode: request.mode, provider: resolved.name, supported };
+    }
 
     const managesPlaces = !agent || agent.scopes.includes("manage_places");
     let target: { label: string; kind: "place" | "address"; point: LatLon; showLinks: boolean };
@@ -337,8 +344,8 @@ export class GeoService {
     }
 
     const origin: LatLon = home ?? presence.precise;
-    const routed = await this.keys.call(userId, caller, resolved, "geo.route", (p) =>
-      p.route({ origin, destination: target.point, departAt: request.departAt, avoid: request.avoid }),
+    const routed = await this.keys.call(userId, caller, resolved, ROUTE_ACTION[request.mode], (p) =>
+      p.route({ mode: request.mode, origin, destination: target.point, departAt: request.departAt, avoid: request.avoid }),
     );
     if (routed.kind !== "ok") return failure(routed);
     const route = routed.value;
@@ -347,9 +354,10 @@ export class GeoService {
       precise,
       avoid: target.kind === "place" ? [presence.precise, target.point] : [presence.precise],
       common: {
+        mode: route.mode,
         destination: { label: target.label, kind: target.kind },
         origin: home ? "home" : "current_location",
-        traffic: route.traffic,
+        ...(route.mode === "car" ? { traffic: route.traffic } : {}),
         departAt: route.departAt,
         provider: resolved.name,
         freshness: fresh.freshness,
@@ -380,6 +388,14 @@ export class GeoService {
     return this.deps.cache.prune();
   }
 }
+
+/** The access log action a route call is recorded as, by mode. */
+export const ROUTE_ACTION: Record<RouteMode, GeoCallAction> = {
+  car: "geo.route",
+  transit: "geo.route.transit",
+  walk: "geo.route.walk",
+  bike: "geo.route.bike",
+};
 
 /** A call that did not answer, as an outcome. */
 function failure(result: Exclude<CallResult<unknown>, { kind: "ok" }>): Extract<EtaOutcome, { kind: "rate_limited" | "failed" }> {

@@ -1,0 +1,9 @@
+{
+  "status": "NO_RESULTS",
+  "properties": {
+    "total": 0,
+    "bus": 0,
+    "subway": 0,
+    "busAndSubway": 0
+  }
+}

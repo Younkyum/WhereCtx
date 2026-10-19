@@ -61,6 +61,10 @@ export function etaReply(outcome: EtaOutcome): GeoReply {
     }
     case "not_found":
       return reply(404, { error: outcome.reason }, { outcome: "allowed" });
+    case "unsupported_mode": {
+      const error = `${outcome.provider} does not route ${outcome.mode}; it routes ${outcome.supported.join(", ")}`;
+      return reply(409, { error, unsupported: "mode", mode: outcome.mode, provider: outcome.provider, supported: outcome.supported }, { outcome: "error", denial: error });
+    }
     case "ambiguous":
       // Answered: the caller picks one and asks again.
       return {

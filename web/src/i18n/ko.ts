@@ -488,6 +488,9 @@ export const KO: Record<I18nKey, string> = {
   "access.action.geo.reverse": "지도 서비스로 현재 동네 확인",
   "access.action.geo.geocode": "지도 서비스로 주소 검색",
   "access.action.geo.route": "지도 서비스에 현재 위치에서 출발하는 경로 요청",
+  "access.action.geo.route.transit": "지도 서비스에 현재 위치에서 출발하는 대중교통 경로 요청",
+  "access.action.geo.route.walk": "지도 서비스에 현재 위치에서 출발하는 도보 경로 요청",
+  "access.action.geo.route.bike": "지도 서비스에 현재 위치에서 출발하는 자전거 경로 요청",
 
   "devices.lastReceived": "마지막 수신 {when}",
   "devices.neverReceived": "아직 받은 위치가 없어요",

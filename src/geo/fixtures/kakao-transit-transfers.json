@@ -1,0 +1,211 @@
+{
+  "status": "OK",
+  "properties": {
+    "total": 3,
+    "bus": 0,
+    "subway": 1,
+    "busAndSubway": 2,
+    "landingURL": "https://map.kakao.com/"
+  },
+  "routes": [
+    {
+      "properties": {
+        "type": "BUS_AND_SUBWAY",
+        "totalDistance": 27400,
+        "totalTime": 3720,
+        "transfers": 2,
+        "fare": {
+          "value": 2650,
+          "min": 2650,
+          "max": 2650
+        }
+      },
+      "steps": [
+        {
+          "properties": {
+            "guidance": "판교역로146번길 따라 판교역 4번 출구까지 도보",
+            "type": "WALKING",
+            "distance": 310,
+            "time": 280
+          },
+          "path": {
+            "points": [
+              [
+                127.1105,
+                37.3929
+              ],
+              [
+                127.1111,
+                37.3948
+              ]
+            ]
+          }
+        },
+        {
+          "properties": {
+            "guidance": "신분당선 (판교 > 강남)",
+            "type": "SUBWAY",
+            "distance": 15800,
+            "time": 960,
+            "stops": [
+              {
+                "name": "판교"
+              },
+              {
+                "name": "청계산입구"
+              },
+              {
+                "name": "양재시민의숲"
+              },
+              {
+                "name": "양재"
+              },
+              {
+                "name": "강남"
+              }
+            ],
+            "vehicles": [
+              {
+                "name": "신분당선",
+                "type": "수도권"
+              }
+            ]
+          },
+          "path": {
+            "points": [
+              [
+                127.1111,
+                37.3948
+              ],
+              [
+                127.0548,
+                37.4483
+              ],
+              [
+                127.0347,
+                37.4846
+              ],
+              [
+                127.0276,
+                37.4979
+              ]
+            ]
+          }
+        },
+        {
+          "properties": {
+            "guidance": "간선 472 (강남역 > 남산예장공원)",
+            "type": "BUS",
+            "distance": 9300,
+            "time": 1860,
+            "stops": [
+              {
+                "name": "강남역"
+              },
+              {
+                "name": "신사역"
+              },
+              {
+                "name": "한남대교남단"
+              },
+              {
+                "name": "남산예장공원"
+              }
+            ],
+            "vehicles": [
+              {
+                "name": "472",
+                "type": "간선"
+              },
+              {
+                "name": "421",
+                "type": "간선"
+              }
+            ]
+          },
+          "path": {
+            "points": [
+              [
+                127.027,
+                37.4985
+              ],
+              [
+                127.0201,
+                37.5163
+              ],
+              [
+                127.0055,
+                37.527
+              ],
+              [
+                126.9905,
+                37.5505
+              ]
+            ]
+          }
+        },
+        {
+          "properties": {
+            "guidance": "지선 7011 (남산예장공원 > 서울시청)",
+            "type": "BUS",
+            "distance": 1700,
+            "time": 420,
+            "stops": [
+              {
+                "name": "남산예장공원"
+              },
+              {
+                "name": "명동입구"
+              },
+              {
+                "name": "서울시청"
+              }
+            ],
+            "vehicles": [
+              {
+                "name": "7011",
+                "type": "지선"
+              }
+            ]
+          },
+          "path": {
+            "points": [
+              [
+                126.9905,
+                37.5505
+              ],
+              [
+                126.9822,
+                37.5609
+              ],
+              [
+                126.9785,
+                37.5655
+              ]
+            ]
+          }
+        },
+        {
+          "properties": {
+            "guidance": "세종대로 따라 도착지까지 도보",
+            "type": "WALKING",
+            "distance": 290,
+            "time": 200
+          },
+          "path": {
+            "points": [
+              [
+                126.9785,
+                37.5655
+              ],
+              [
+                126.9779,
+                37.5663
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

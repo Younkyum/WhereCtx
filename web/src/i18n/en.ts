@@ -486,6 +486,9 @@ export const EN = {
   "access.action.geo.reverse": "Looked up your neighbourhood with the maps provider",
   "access.action.geo.geocode": "Searched an address with the maps provider",
   "access.action.geo.route": "Asked the maps provider for a route from where you are",
+  "access.action.geo.route.transit": "Asked the maps provider for a transit route from where you are",
+  "access.action.geo.route.walk": "Asked the maps provider for a walking route from where you are",
+  "access.action.geo.route.bike": "Asked the maps provider for a cycling route from where you are",
 
   "devices.lastReceived": "Last received {when}",
   "devices.neverReceived": "Nothing received yet",

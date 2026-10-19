@@ -88,8 +88,9 @@ describe("Kakao adapter, against the documented samples", () => {
 
   it("routes now with live traffic: duration, distance, fares, main roads, turns", async () => {
     const stub = stubFetch({ body: fixture("kakao-directions.json") });
-    const out = await kakao(stub).route({ origin: A, destination: B, avoid: ["toll", "ferries"] });
+    const out = await kakao(stub).route({ mode: "car", origin: A, destination: B, avoid: ["toll", "ferries"] });
     expect(out).toEqual({
+      mode: "car",
       durationSec: 3494,
       distanceM: 19032,
       traffic: "live",
@@ -121,7 +122,7 @@ describe("Kakao adapter, against the documented samples", () => {
   it("routes a future departure on the future endpoint, in KST", async () => {
     const stub = stubFetch({ body: fixture("kakao-directions.json") });
     const at = new Date("2026-10-19T09:30:00.000Z");
-    const out = await kakao(stub).route({ origin: A, destination: B, departAt: at });
+    const out = await kakao(stub).route({ mode: "car", origin: A, destination: B, departAt: at });
     expect(stub.sent[0]!.url.pathname).toBe("/v1/future/directions");
     expect(stub.sent[0]!.url.searchParams.get("departure_time")).toBe("202610191830");
     expect(out.traffic).toBe("predicted");
@@ -131,7 +132,7 @@ describe("Kakao adapter, against the documented samples", () => {
 
   it("maps a result_code other than 0 to no_route", async () => {
     const stub = stubFetch({ body: { trans_id: "x", routes: [{ result_code: 104, result_msg: "출발지와 도착지가 5 m 이내로 설정된 경우 경로를 탐색할 수 없음" }] } });
-    expect((await failure(kakao(stub).route({ origin: A, destination: A }))).kind).toBe("no_route");
+    expect((await failure(kakao(stub).route({ mode: "car", origin: A, destination: A }))).kind).toBe("no_route");
   });
 
   it.each([
@@ -146,7 +147,96 @@ describe("Kakao adapter, against the documented samples", () => {
     ["network", "upstream"],
   ] as const)("maps %j to %s", async (reply, kind) => {
     const stub = stubFetch(reply);
-    expect((await failure(kakao(stub).route({ origin: A, destination: B }))).kind).toBe(kind);
+    expect((await failure(kakao(stub).route({ mode: "car", origin: A, destination: B }))).kind).toBe(kind);
+  });
+});
+
+/**
+ * Kakao Map routing (developers.kakao.com/docs/ko/kakaomap/rest-api, transit-info, walking-info,
+ * bicycle-info). The published examples elide most steps ("// ..."), so kakao-transit.json,
+ * kakao-walk.json and kakao-bicycle.json keep every value the docs print and fill the elided
+ * steps in per the documented schema; kakao-transit-transfers.json is built per that schema.
+ */
+describe("Kakao transit, walking and cycling", () => {
+  const kakao = (stub: ReturnType<typeof stubFetch>) => new KakaoProvider({ restKey: "kakao-key", fetch: stub.fn, now: () => NOW });
+
+  it("asks dapi.kakao.com /v2/routing/publictraffic with start_x/start_y/end_x/end_y and the KakaoAK header", async () => {
+    const stub = stubFetch({ body: fixture("kakao-transit.json") });
+    await kakao(stub).route({ mode: "transit", origin: A, destination: B });
+    const { url, headers } = stub.sent[0]!;
+    expect(url.origin + url.pathname).toBe("https://dapi.kakao.com/v2/routing/publictraffic");
+    expect(Object.fromEntries(url.searchParams)).toEqual({ start_x: "127.108", start_y: "37.402", end_x: "127.11", end_y: "37.394" });
+    expect(headers.Authorization).toBe("KakaoAK kakao-key");
+  });
+
+  it("reads the documented transit sample: totals, the fare, each leg's lines, stops and geometry", async () => {
+    const out = await kakao(stubFetch({ body: fixture("kakao-transit.json") })).route({ mode: "transit", origin: A, destination: B });
+    expect(out).toMatchObject({ mode: "transit", durationSec: 2115, distanceM: 5013, transfers: 0, fare: 1350, departAt: NOW.toISOString() });
+    if (out.mode !== "transit") throw new Error("not transit");
+    expect(out.legs.map((l) => [l.kind, l.lines, l.stops.at(0), l.stops.at(-1)])).toEqual([
+      ["walk", [], undefined, undefined],
+      ["bus", ["마을 76"], "판교역동편", "성남시청전면"],
+      ["walk", [], undefined, undefined],
+    ]);
+    expect(out.legs[1]).toMatchObject({ durationSec: 1158, distanceM: 4127, guidance: "마을 76 (판교역동편 > 성남시청전면)" });
+    expect(out.legs[1]!.path[0]).toEqual({ lat: 37.3948816, lon: 127.11316378 });
+    expect(out.path[0]).toEqual({ lat: 37.39477123, lon: 127.11119217 });
+    expect(out.path.at(-1)).toEqual({ lat: 37.41993056, lon: 127.12628814 });
+  });
+
+  it("names a bus by its kind and number and a subway line by its name", async () => {
+    const out = await kakao(stubFetch({ body: fixture("kakao-transit-transfers.json") })).route({ mode: "transit", origin: A, destination: B });
+    if (out.mode !== "transit") throw new Error("not transit");
+    expect(out.legs.map((l) => l.lines)).toEqual([[], ["신분당선"], ["간선 472", "간선 421"], ["지선 7011"], []]);
+    expect(out.transfers).toBe(2);
+  });
+
+  it.each([
+    ["walk", "/v2/routing/walk", "kakao-walk.json", 3914, 4025, "판교역 1번 출구까지 역사 내 이동"],
+    ["bike", "/v2/routing/bicycle", "kakao-bicycle.json", 1242, 4155, "76m 이동"],
+  ] as const)("reads the documented %s sample from %s", async (mode, path, name, durationSec, distanceM, first) => {
+    const stub = stubFetch({ body: fixture(name) });
+    const out = await kakao(stub).route({ mode, origin: A, destination: B });
+    expect(stub.sent[0]!.url.origin + stub.sent[0]!.url.pathname).toBe(`https://dapi.kakao.com${path}`);
+    expect(out).toMatchObject({ mode, durationSec, distanceM });
+    if (out.mode !== mode) throw new Error("wrong mode");
+    expect(out.steps[0]!.guidance).toBe(first);
+    expect(out.path[0]).toEqual({ lat: out.steps[0]!.path[0]!.lat, lon: out.steps[0]!.path[0]!.lon });
+    expect(out.path.at(-1)).toEqual({ lat: 37.41993056, lon: 127.12628814 });
+  });
+
+  it.each([
+    ["transit", { status: 200, body: fixture("kakao-transit-no-results.json") }, "no_route"],
+    ["transit", { status: 200, body: { status: "EQUAL_POINTS" } }, "no_route"],
+    ["transit", { status: 200, body: { status: "INVALID_REQUEST" } }, "bad_request"],
+    ["walk", { status: 200, body: fixture("kakao-walk-too-far.json") }, "no_route"],
+    ["bike", { status: 200, body: { status: "SAME_POINT" } }, "no_route"],
+    ["transit", { status: 400, body: fixture("kakao-error-quota.json") }, "quota"],
+    ["walk", { status: 400, body: fixture("kakao-error-quota.json") }, "quota"],
+    ["transit", { status: 200, body: { status: "OK", routes: [{ properties: {} }] } }, "upstream"],
+  ] as const)("maps a %s answer %j to %s", async (mode, reply, kind) => {
+    expect((await failure(kakao(stubFetch(reply)).route({ mode, origin: A, destination: B }))).kind).toBe(kind);
+  });
+
+  it("reads -10 as a spent quota, in the provider's words", async () => {
+    const e = await failure(kakao(stubFetch({ status: 400, body: fixture("kakao-error-quota.json") })).route({ mode: "transit", origin: A, destination: B }));
+    expect(e).toMatchObject({ kind: "quota", problem: "quota", providerMessage: "API limit has been exceeded." });
+  });
+
+  it.each(["transit", "walk", "bike"] as const)("refuses a future departure or roads to avoid for %s without sending anything", async (mode) => {
+    const none = stubFetch();
+    expect((await failure(kakao(none).route({ mode, origin: A, destination: B, departAt: new Date(NOW.getTime() + 3600_000) }))).kind).toBe("unsupported");
+    expect((await failure(kakao(none).route({ mode, origin: A, destination: B, avoid: ["toll"] }))).kind).toBe("unsupported");
+    expect(none.sent).toEqual([]);
+  });
+});
+
+describe("Naver routes cars only", () => {
+  it.each(["transit", "walk", "bike"] as const)("refuses %s without sending anything", async (mode) => {
+    const none = stubFetch();
+    const naver = new NaverProvider({ clientId: "id", clientSecret: "secret", fetch: none.fn, now: () => NOW });
+    expect((await failure(naver.route({ mode, origin: A, destination: B }))).kind).toBe("unsupported");
+    expect(none.sent).toEqual([]);
   });
 });
 
@@ -189,8 +279,9 @@ describe("Naver adapter, against the documented samples", () => {
 
   it("routes with live traffic; duration from milliseconds", async () => {
     const stub = stubFetch({ body: fixture("naver-directions5.json") });
-    const out = await naver(stub).route({ origin: A, destination: B });
+    const out = await naver(stub).route({ mode: "car", origin: A, destination: B });
     expect(out).toEqual({
+      mode: "car",
       durationSec: 15857,
       distanceM: 380044,
       traffic: "live",
@@ -220,7 +311,7 @@ describe("Naver adapter, against the documented samples", () => {
     // Built for this test (naver-directions5-path.json): the documented sample's path holds only its two ends.
     const body = fixture("naver-directions5-path.json") as { route: { traoptimal: [{ path: [number, number][]; summary: { start: { location: [number, number] }; goal: { location: [number, number] } } }] } };
     const sample = body.route.traoptimal[0];
-    const out = await naver(stubFetch({ body })).route({ origin: A, destination: B });
+    const out = await naver(stubFetch({ body })).route({ mode: "car", origin: A, destination: B });
     expect(out.path).toEqual(sample.path.map(([lon, lat]) => ({ lat, lon })));
     const [start, goal] = [sample.summary.start.location, sample.summary.goal.location];
     expect(out.path[0]).toEqual({ lat: start[1], lon: start[0] });
@@ -232,11 +323,11 @@ describe("Naver adapter, against the documented samples", () => {
 
   it("maps avoid to the matching option, and refuses what Directions 5 cannot do", async () => {
     const stub = stubFetch({ body: { ...(fixture("naver-directions5.json") as object), route: { traavoidtoll: (fixture("naver-directions5.json") as any).route.traoptimal } } });
-    await naver(stub).route({ origin: A, destination: B, avoid: ["toll"] });
+    await naver(stub).route({ mode: "car", origin: A, destination: B, avoid: ["toll"] });
     expect(stub.sent[0]!.url.searchParams.get("option")).toBe("traavoidtoll");
     const none = stubFetch();
-    expect((await failure(naver(none).route({ origin: A, destination: B, avoid: ["ferries"] }))).kind).toBe("unsupported");
-    expect((await failure(naver(none).route({ origin: A, destination: B, departAt: new Date(NOW.getTime() + 3600_000) }))).kind).toBe("unsupported");
+    expect((await failure(naver(none).route({ mode: "car", origin: A, destination: B, avoid: ["ferries"] }))).kind).toBe("unsupported");
+    expect((await failure(naver(none).route({ mode: "car", origin: A, destination: B, departAt: new Date(NOW.getTime() + 3600_000) }))).kind).toBe("unsupported");
     expect(none.sent).toEqual([]);
   });
 
@@ -250,7 +341,7 @@ describe("Naver adapter, against the documented samples", () => {
     ["timeout", "timeout"],
   ] as const)("maps %j to %s", async (reply, kind) => {
     const stub = stubFetch(reply);
-    expect((await failure(naver(stub).route({ origin: A, destination: B }))).kind).toBe(kind);
+    expect((await failure(naver(stub).route({ mode: "car", origin: A, destination: B }))).kind).toBe(kind);
   });
 });
 
@@ -288,10 +379,10 @@ describe("the rounding boundary", () => {
     };
     const outer = roundingProvider(inner);
     await outer.reverse({ lat: 37.5665432, lon: 126.9784321 });
-    await outer.route({ origin: { lat: 37.5665432, lon: 126.9784321 }, destination: { lat: 37.4012345, lon: 127.1098765 } });
+    await outer.route({ mode: "car", origin: { lat: 37.5665432, lon: 126.9784321 }, destination: { lat: 37.4012345, lon: 127.1098765 } });
     expect(seen).toEqual([
       { lat: 37.567, lon: 126.978 },
-      { origin: { lat: 37.567, lon: 126.978 }, destination: { lat: 37.401, lon: 127.11 } },
+      { mode: "car", origin: { lat: 37.567, lon: 126.978 }, destination: { lat: 37.401, lon: 127.11 } },
     ]);
   });
 });

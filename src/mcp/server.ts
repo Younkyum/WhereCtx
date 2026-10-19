@@ -40,7 +40,7 @@ import { credentialOf } from "../activity/record.js";
 import type { AgentCaller } from "../geo/service.js";
 import { candidateViews, pickCandidate } from "../geo/service.js";
 import { etaReply, numbered, searchReply } from "../geo/replies.js";
-import { ROUTE_AVOID } from "../geo/types.js";
+import { ROUTE_AVOID, ROUTE_MODES } from "../geo/types.js";
 
 /** Cap on active location reminders, to bound writes from read-scoped tokens. */
 const MAX_ACTIVE_REMINDERS = 100;
@@ -339,9 +339,13 @@ export function buildMcpServer(
 
   const etaInput = {
     to: z.string().min(1).max(200).describe("A registered place name (preferred, e.g. 'home', 'office') or an address / place to search"),
+    mode: z
+      .enum(ROUTE_MODES)
+      .optional()
+      .describe("car (default), transit (bus and subway), walk or bike. Kakao routes all four, for now only; Naver routes car only"),
     pick: z.number().int().min(1).max(30).optional().describe("When a search matched several places: the number of the one meant"),
     departAt: z.iso.datetime({ offset: true }).optional().describe("Future departure time (ISO 8601 with offset); omit for now"),
-    avoid: z.array(z.enum(ROUTE_AVOID)).max(3).optional().describe("Road kinds to avoid"),
+    avoid: z.array(z.enum(ROUTE_AVOID)).max(3).optional().describe("Road kinds to avoid (car only)"),
     reason: z
       .string()
       .min(1)
@@ -349,11 +353,12 @@ export function buildMcpServer(
       .optional()
       .describe("Why the precise route is needed; required (with precise access) for an address destination or for turn-by-turn steps"),
   };
-  type EtaArgs = { to: string; pick?: number; departAt?: string; avoid?: Array<(typeof ROUTE_AVOID)[number]>; reason?: string };
+  type EtaArgs = { to: string; mode?: (typeof ROUTE_MODES)[number]; pick?: number; departAt?: string; avoid?: Array<(typeof ROUTE_AVOID)[number]>; reason?: string };
   const eta = async (args: EtaArgs, directions: boolean): Promise<Reply> =>
     etaReply(
       await scope.geo.eta(
         {
+          mode: args.mode ?? "car",
           to: args.to,
           pick: args.pick,
           departAt: args.departAt ? new Date(args.departAt) : undefined,
@@ -369,7 +374,7 @@ export function buildMcpServer(
     "get_eta",
     {
       description:
-        "Roughly how long it takes the user to drive from where they are now to one of their registered places (e.g. 'home', 'office'), with live traffic (Kakao or Naver). Returns minutes in 5-minute steps, whole kilometres, an arrival time to 5 minutes and the main roads away from both ends; never coordinates. The answer still reveals roughly how far the user is from that place. An address instead of a place name needs precise access and a reason. Allowed only when the user turned on ETA for agents, never while they are at or near home, and only from a live reading or a quiet phone inside a registered place; freshness and originAgeMin say how old the starting point is.",
+        "Roughly how long it takes the user to get from where they are now to one of their registered places (e.g. 'home', 'office'): by car with live traffic (Kakao or Naver, the default), or by transit, on foot or by bicycle (Kakao only, departing now; Naver answers unsupported_mode). Every answer is approximate on purpose. Returns minutes in 5-minute steps, whole kilometres and an arrival time to 5 minutes; by car, the main roads away from both ends; by transit, the transfers, walkMin (minutes on foot, in 5-minute steps) and in summary the lines ridden away from both ends (e.g. '2호선', '간선 472'), never a stop name and never a fare; on foot or by bicycle, no streets. Never coordinates. The answer still reveals roughly how far the user is from that place. An address instead of a place name needs precise access and a reason. Allowed only when the user turned on ETA for agents, never while they are at or near home, and only from a live reading or a quiet phone inside a registered place; freshness and originAgeMin say how old the starting point is.",
       inputSchema: etaInput,
     },
     async (args) => eta(args, false),
@@ -379,7 +384,7 @@ export function buildMcpServer(
     "get_directions",
     {
       description:
-        "Like get_eta, plus the provider's turn-by-turn steps when the agent may read the precise location (they name the streets around the user, so they need read_precise_location, the user's permission and a reason; otherwise stepsWithheld says why), and map links (Kakao Map web, Naver Map app) when allowed, which start from the device's own location.",
+        "Like get_eta (same modes), plus the provider's turn-by-turn steps for car, walk and bike when the agent may read the precise location (they name the streets around the user, so they need read_precise_location, the user's permission and a reason; otherwise stepsWithheld says why; transit steps name stops and are never given), and map links (Kakao Map web, Naver Map app) when allowed, which start from the device's own location.",
       inputSchema: etaInput,
     },
     async (args) => eta(args, true),

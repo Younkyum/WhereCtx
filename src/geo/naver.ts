@@ -10,7 +10,9 @@
  * - https://api.ncloud-docs.com/docs/application-maps-directions5
  *
  * Directions 5 always uses real-time traffic and takes no departure time, so
- * a future departure is `unsupported`. Geocoding searches addresses only,
+ * a future departure is `unsupported`. It routes cars only; Naver Cloud Maps
+ * offers no transit, walking or cycling route API (the API list in the
+ * overview above), so every other mode is `unsupported`. Geocoding searches addresses only,
  * not place names.
  */
 
@@ -23,9 +25,9 @@ import {
   type GeoProvider,
   type LatLon,
   type ReverseResult,
+  type CarRoute,
   type RouteAvoid,
   type RouteRequest,
-  type RouteResult,
   type RouteRoad,
 } from "./types.js";
 
@@ -158,7 +160,8 @@ export class NaverProvider implements GeoProvider {
     };
   }
 
-  async route(request: RouteRequest): Promise<RouteResult> {
+  async route(request: RouteRequest): Promise<CarRoute> {
+    if (request.mode !== "car") throw new GeoError("unsupported", `Naver routes cars only, not ${request.mode}`);
     if (request.departAt !== undefined && request.departAt.getTime() > this.now().getTime()) {
       throw new GeoError("unsupported", "Naver Directions takes no departure time; it always times the route for now");
     }
@@ -180,6 +183,7 @@ export class NaverProvider implements GeoProvider {
     const route = res.route?.[option]?.[0];
     if (res.code !== 0 || !route) throw new GeoError("no_route", `Naver found no route (code ${res.code})`);
     return {
+      mode: "car",
       durationSec: Math.round(route.summary.duration / 1000),
       distanceM: route.summary.distance,
       traffic: "live",

@@ -452,6 +452,59 @@ describe("ETA", () => {
   });
 });
 
+describe("ETA by mode", () => {
+  const eta = (token: string | null, query: string) =>
+    token ? as(token, `/v1/geo/eta?${query}`) : owner.browser.send(`/v1/geo/eta?${query}`);
+
+  it("times transit for the owner leg by leg, stops and fare included, from a rounded origin", async () => {
+    await boot();
+    await ingest(AWAY);
+    await settings({ geoEnabled: true });
+    const { eta: answer } = await owner.browser.json("/v1/geo/eta?to=office&mode=transit");
+    expect(answer).toMatchObject({ mode: "transit", precision: "exact", transfers: 2, fare: 1550 });
+    expect(answer.legs.map((l: any) => l.kind)).toEqual(["walk", "bus", "subway", "bus", "walk"]);
+    expect(answer.legs[1].stops).toEqual(["테스트출발정류장", "테스트환승정류장"]);
+    expect(answer).not.toHaveProperty("traffic");
+    expect(routeCalls()[0]).toMatchObject({ mode: "transit", origin: { lat: 37.567, lon: 126.978 }, destination: { lat: 37.4, lon: 127.1 } });
+  });
+
+  it("gives a token the lines away from both ends, no stop, no fare, no coordinate", async () => {
+    await boot();
+    await ingest(AWAY);
+    await settings({ geoEnabled: true, etaToAgents: true });
+    const res = await eta(AGENT, "to=office&mode=transit");
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(JSON.parse(text).eta).toMatchObject({ mode: "transit", precision: "approximate", summary: ["2호선"], transfers: 2 });
+    for (const word of ["정류장", "테스트환승역", "마을 테스트1", "간선 472", "fare", "legs", "path", "37.567", "126.978"]) expect(text).not.toContain(word);
+  });
+
+  it("refuses an unknown mode, and road kinds or a later departure for transit", async () => {
+    await boot();
+    await ingest(AWAY);
+    await settings({ geoEnabled: true });
+    expect((await eta(null, "to=office&mode=boat")).status).toBe(400);
+    const avoid = await eta(null, "to=office&mode=walk&avoid=toll");
+    expect(avoid.status).toBe(502);
+    expect(((await avoid.json()) as any).kind).toBe("unsupported");
+  });
+
+  it("answers unsupported_mode on Naver, sends nothing, and says which modes it routes", async () => {
+    await boot({ operatorKeys: { naver: { provider: "naver", clientId: "operator-naver-id", clientSecret: "operator-naver-secret" } } });
+    await ingest(AWAY);
+    await settings({ geoEnabled: true, etaToAgents: true });
+    for (const who of [null, AGENT]) {
+      const res = await eta(who, "to=office&mode=transit");
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ unsupported: "mode", mode: "transit", provider: "naver", supported: ["car"] });
+    }
+    expect(routeCalls()).toEqual([]);
+    expect((await eta(AGENT, "to=office")).status).toBe(200);
+    const row = (await accessRows()).find((e) => e.action === "geo.eta" && e.outcome === "error");
+    expect(row.denial).toMatch(/naver does not route transit/);
+  });
+});
+
 describe("map-config: the tiles the dashboard draws on", () => {
   it("names the configured tiles to a signed-in person, maps on or off, with no key in it", async () => {
     await boot();
