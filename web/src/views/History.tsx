@@ -1,8 +1,10 @@
 /**
  * My own location history, when I keep it: the last hour, 6 or 24 hours, or a
- * day, as a track drawn from the points alone, with my places as circles, and
- * the same points as a timeline. No map tiles are loaded; each point links out
- * to a map. Only the signed-in person's own history is ever shown here.
+ * day, as a track with my places as circles, and the same points as a
+ * timeline. With a map key the track is drawn on the provider's map;
+ * without one it is drawn from the points alone and no tiles are loaded.
+ * Each point links out to a map. Only the signed-in person's own history is
+ * ever shown here.
  */
 
 import { Banner } from "@astryxdesign/core/Banner";
@@ -13,10 +15,12 @@ import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Text } from "@astryxdesign/core/Text";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../context";
 import { drawTrack, groupByDay, historyQuery, localDay, mapLink, shiftDay, type HistoryRange } from "../lib";
+import { historyScene } from "../mapSdk";
+import { MapView } from "../MapView";
 import { HISTORY_MAX_POINTS, type History, type HistoryPoint, type Place } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useFormat, useLoad } from "../ui";
 
@@ -84,9 +88,7 @@ export function HistoryView() {
                 </VStack>
               </Panel>
               {history.enabled ? null : <HistoryOff stillHasPoints />}
-              <Panel title={t("history.map")}>
-                <Track points={history.points} places={places} />
-              </Panel>
+              <TrackMap points={history.points} places={places} />
               <Panel title={t("history.timeline")}>
                 <VStack gap={3}>
                   {history.truncated ? <Banner status="info" title={t("history.truncated", { n: history.points.length })} /> : null}
@@ -117,6 +119,17 @@ function HistoryOff({ stillHasPoints = false }: { stillHasPoints?: boolean }) {
       </HStack>
     </Banner>
   );
+}
+
+function TrackMap({ points, places }: { points: HistoryPoint[]; places: Place[] }) {
+  const { t } = useApp();
+  const scene = useMemo(() => historyScene(points, places, t("map.latest")), [points, places, t]);
+  const drawn = (
+    <Panel title={t("history.map")}>
+      <Track points={points} places={places} />
+    </Panel>
+  );
+  return points.length ? <MapView scene={scene} title={t("history.map")} fallback={drawn} height={400} /> : drawn;
 }
 
 function Track({ points, places }: { points: HistoryPoint[]; places: Place[] }) {

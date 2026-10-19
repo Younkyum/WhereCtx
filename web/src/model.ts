@@ -109,8 +109,11 @@ export interface GeoCredential {
 
 export interface GeoStatus {
   active: { provider: GeoProviderName; source: "own" | "operator" } | null;
+  /** The provider whose map this dashboard loads, and whose key. */
+  map: { provider: GeoProviderName; source: "own" | "operator" } | null;
   credentials: GeoCredential[];
   operator: GeoProviderName[];
+  operatorMap: GeoProviderName[];
 }
 
 export interface GeoCandidate {
@@ -131,6 +134,8 @@ export interface Eta {
   traffic: "live" | "predicted";
   arriveAt: string;
   summary: string[];
+  /** The route as drawn on a map (the owner's own answers). */
+  path?: { lat: number; lon: number }[];
   provider: GeoProviderName;
   deepLinks?: { kakaoMap: string; naverMap: string };
 }
