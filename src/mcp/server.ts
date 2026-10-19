@@ -25,7 +25,8 @@ import {
   authorizePrecise,
   buildPreciseView,
 } from "../privacy/policy.js";
-import { toPresenceContext } from "../store/presenceStore.js";
+import { dwellOf, toPresenceContext, type StoredPresence } from "../store/presenceStore.js";
+import { pendingTransition } from "../geofence/dwell.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   isJSONRPCErrorResponse,
@@ -35,7 +36,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { accessRecorder, type AccessRecorder } from "../activity/record.js";
 import type { AccessAction, AccessDecision } from "../activity/types.js";
-import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
+import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type Place, type PlaceType } from "../types.js";
 import { credentialOf } from "../activity/record.js";
 import type { GeoCaller } from "../geo/keys.js";
 import { candidateViews, pickCandidate } from "../geo/service.js";
@@ -135,6 +136,25 @@ function recordToolCalls(
   };
 }
 
+/**
+ * An enter or leave waiting out its dwell time, as an agent may see it: the
+ * kind, the place's type and how long it has been pending; never its name.
+ */
+function transitionOf(
+  stored: StoredPresence,
+  places: readonly Place[],
+  now: Date,
+): { kind: "entering" | "leaving"; placeType: PlaceType; forSec: number } | undefined {
+  const pending = pendingTransition(dwellOf(stored));
+  const place = pending && places.find((p) => p.name === pending.name);
+  if (!pending || !place) return undefined;
+  return {
+    kind: pending.kind,
+    placeType: place.type,
+    forSec: Math.max(0, Math.floor((now.getTime() - Date.parse(pending.since)) / 1000)),
+  };
+}
+
 export function buildMcpServer(
   scope: UserScope,
   principal: Principal,
@@ -192,21 +212,21 @@ export function buildMcpServer(
     "get_presence",
     {
       description:
-        "Get the user's current coarse presence: status, label, motion, freshness, seconds since the last report and since they last moved, and the neighbourhood when the user allows it. No raw GPS. Returns hidden if policy withholds presence. freshness says how far to trust it: 'live' (reported recently, not at rest), 'stationary' (at rest; the phone reports only when it moves, so a quiet phone is normal: treat as still at the last place), 'offline' (the phone has sent nothing for far longer than a phone at rest stays quiet), 'unknown' (the phone went quiet while on the move, or an old manual or Shortcut reading). stale is true for offline and for an old manual or Shortcut reading.",
+        "Get the user's current coarse presence: status, label, motion, freshness, seconds since the last report and since they last moved, and the neighbourhood when the user allows it. No raw GPS. Returns hidden if policy withholds presence. Status follows the confirmed place: a place can ask for a few minutes inside before an arrival counts, or outside before a departure counts; while one is waiting, transition says entering or leaving, the place type, and for how many seconds. freshness says how far to trust it: 'live' (reported recently, not at rest), 'stationary' (at rest; the phone reports only when it moves, so a quiet phone is normal: treat as still at the last place), 'offline' (the phone has sent nothing for far longer than a phone at rest stays quiet), 'unknown' (the phone went quiet while on the move, or an old manual or Shortcut reading). stale is true for offline and for an old manual or Shortcut reading.",
       inputSchema: {},
     },
     async () => {
       const stored = await scope.presence.getCurrent();
       if (!stored) return ok({ status: "unknown", note: "no presence recorded yet" });
       const settings = await scope.settings.getOrSeed();
-      if (!isAdmin) {
-        const view = ctx.views.agentCoarse(toPresenceContext(stored), settings);
-        if (!view) return hidden({ status: "hidden", privacy: "hidden" });
-        return ok(view);
-      }
       // Admin sees the coarse summary using the live mode.
-      const view = ctx.views.agentCoarse(toPresenceContext(stored), { ...settings, defaultAgentAccess: "coarse" });
-      return ok(view);
+      const view = ctx.views.agentCoarse(
+        toPresenceContext(stored),
+        isAdmin ? { ...settings, defaultAgentAccess: "coarse" } : settings,
+      );
+      if (!view) return hidden({ status: "hidden", privacy: "hidden" });
+      const transition = transitionOf(stored, await scope.places.list(), ctx.clock());
+      return ok(transition ? { ...view, transition } : view);
     },
   );
 
@@ -238,7 +258,7 @@ export function buildMcpServer(
     "is_near_place",
     {
       description:
-        "Check whether the user is inside or near a registered place by name (e.g. 'home', 'work'), as of their last report, with that report's freshness. Returns booleans only, never coordinates. A 'stationary' freshness means they are still there.",
+        "Check whether the user is inside or near a registered place by name (e.g. 'home', 'work'), as of their last report, with that report's freshness. Returns booleans only, never coordinates. A 'stationary' freshness means they are still there. inside is where the last report is; confirmed is whether the user's presence counts them at this place (a place can ask for a few minutes inside before an arrival counts, or outside before a departure counts), and pending says 'entering' or 'leaving' while that wait is on (both are given when the place has such a wait, or when confirmed differs from inside).",
       inputSchema: { name: z.string().min(1).max(64).describe("The place name to check") },
     },
     async ({ name }) => {
@@ -253,8 +273,15 @@ export function buildMcpServer(
         stored.precise.lon,
         ctx.config.geofence.nearRadiusMultiplier,
       );
+      const dwell = dwellOf(stored);
+      const transition = pendingTransition(dwell);
+      const pending = transition?.name === name ? transition.kind : dwell.candidate?.name === name ? "entering" : null;
+      const confirmed = dwell.current === name;
+      // With no dwell time, confirmed is inside and nothing is ever pending: say so only when it adds something.
+      const dwellSet = place.enterAfterSec > 0 || place.exitAfterSec > 0;
+      const said = dwellSet || confirmed !== inside || pending !== null ? { confirmed, pending } : {};
       const { freshness, lastReportAgoSec } = ctx.views.freshness(toPresenceContext(stored));
-      return ok({ name, inside, near, freshness, lastReportAgoSec });
+      return ok({ name, inside, near, ...said, freshness, lastReportAgoSec });
     },
   );
 
@@ -262,7 +289,7 @@ export function buildMcpServer(
     "list_places",
     {
       description:
-        "List the user's registered place names and types (no coordinates). Tokens that can manage places additionally receive coordinates and radius.",
+        "List the user's registered place names and types (no coordinates). Tokens that can manage places additionally receive coordinates, radius, a polygon place's outline and each place's rules.",
       inputSchema: {},
     },
     async () => {
@@ -292,7 +319,7 @@ export function buildMcpServer(
     "list_recent_presence_events",
     {
       description:
-        "List recent presence events (updated / entered_place / left_place / became_stale / privacy_changed). Place names are omitted for non-admin tokens.",
+        "List recent presence events (updated / entered_place / left_place / approaching_place / became_stale / privacy_changed). entered_place and left_place mark confirmed arrivals and departures; approaching_place fires once as the user heads toward a place that watches for it. Place names are omitted for non-admin tokens.",
       inputSchema: { limit: z.number().int().min(1).max(200).optional() },
     },
     async ({ limit }) => {
