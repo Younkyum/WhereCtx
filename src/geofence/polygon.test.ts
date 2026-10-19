@@ -169,6 +169,25 @@ describe("measurePlace on a polygon", () => {
   });
 });
 
+describe("a polygon place next to the antimeridian", () => {
+  const check = validatePolygon([
+    [179.99, -17.0],
+    [179.995, -17.0],
+    [179.995, -17.005],
+    [179.99, -17.005],
+  ]);
+  if (!check.ok) throw new Error(check.error);
+  const fiji = polygonPlace(check.polygon);
+
+  it("measures a point just across the antimeridian by the short way round", () => {
+    const m = measurePlace(fiji, -17.0025, -179.999, 4);
+    expect(m.inside).toBe(false);
+    expect(m.edgeDistanceM).toBeGreaterThan(620);
+    expect(m.edgeDistanceM).toBeLessThan(660);
+    expect(m.near).toBe(true);
+  });
+});
+
 describe("computeGeofence with a polygon place", () => {
   const u = polygonPlace(valid(U));
 

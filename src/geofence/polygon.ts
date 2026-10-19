@@ -32,9 +32,14 @@ interface Origin {
   lon: number;
 }
 
+/** lon - origin.lon in [-180, 180): a point across the antimeridian is the short way round. */
+function lonOffset(lon: number, origin: Origin): number {
+  return ((((lon - origin.lon + 180) % 360) + 360) % 360) - 180;
+}
+
 function project(lon: number, lat: number, origin: Origin): Xy {
   return {
-    x: EARTH_RADIUS_M * toRad(lon - origin.lon) * Math.cos(toRad(origin.lat)),
+    x: EARTH_RADIUS_M * toRad(lonOffset(lon, origin)) * Math.cos(toRad(origin.lat)),
     y: EARTH_RADIUS_M * toRad(lat - origin.lat),
   };
 }
