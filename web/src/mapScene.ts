@@ -21,6 +21,8 @@ export interface MapCircle {
 export interface MapLine {
   id: string;
   points: LatLon[];
+  /** Drawn dashed: a stretch on foot. */
+  dashed?: boolean;
 }
 
 /** Everything one map shows. */
@@ -95,11 +97,21 @@ export function placesScene(places: readonly PlaceLike[], picked: LatLon | null,
 }
 
 /** A route: its line, with the start and the destination marked. */
-export function routeScene(path: readonly LatLon[], destination: string, startTitle: string): MapScene {
+export function routeScene(
+  route: { path: readonly LatLon[]; legs?: readonly { kind: string; path: readonly LatLon[] }[] },
+  destination: string,
+  startTitle: string,
+): MapScene {
+  const { path, legs } = route;
   const [first, last] = [path[0], path.at(-1)];
+  const lines: MapLine[] = legs?.length
+    ? legs.flatMap((leg, i) => (leg.path.length > 1 ? [{ id: `leg:${i}`, points: [...leg.path], dashed: leg.kind === "walk" }] : []))
+    : path.length > 1
+      ? [{ id: "route", points: [...path] }]
+      : [];
   return {
     ...EMPTY_SCENE,
-    lines: path.length > 1 ? [{ id: "route", points: [...path] }] : [],
+    lines,
     markers: first && last ? [{ id: "start", at: first, title: startTitle }, { id: "end", at: last, title: destination }] : [],
   };
 }

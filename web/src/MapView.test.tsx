@@ -309,7 +309,7 @@ describe("maps in the dashboard", () => {
     ];
     routes.set("GET /v1/geo/eta", () => ({
       status: 200,
-      body: { eta: { destination: { label: "home", kind: "place" }, origin: "current_location", precision: "exact", durationMin: 12, distanceKm: 6.1, traffic: "live", arriveAt: "2026-10-19T01:00:00Z", summary: [], path, provider: "kakao" } },
+      body: { eta: { mode: "car", destination: { label: "home", kind: "place" }, origin: "current_location", precision: "exact", durationMin: 12, distanceKm: 6.1, traffic: "live", arriveAt: "2026-10-19T01:00:00Z", summary: [], path, provider: "kakao" } },
     }));
     await open("#maps");
     const to = [...host.querySelectorAll("label")].find((l) => l.textContent?.trim() === "To a place name or an address")!;
@@ -322,5 +322,51 @@ describe("maps in the dashboard", () => {
     await settle();
     expect(lastScene().lines.map((l) => l.points)).toEqual([path]);
     expect(lastScene().markers.map((m) => m.title)).toEqual(["Start", "home"]);
+  });
+
+  it("the route tester asks by transit, draws each leg with walks dashed, and lists the rides with their stops", async () => {
+    withTiles();
+    routes.set("GET /v1/geo", () => ({ status: 200, body: { active: { provider: "kakao", source: "own" }, credentials: [], operator: [] } }));
+    routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true, geoProvider: null } } }));
+    const [a, b, c, d] = [
+      { lat: 37.4, lon: 127.1 },
+      { lat: 37.41, lon: 127.09 },
+      { lat: 37.49, lon: 127.01 },
+      { lat: 37.5, lon: 127 },
+    ];
+    const legs = [
+      { kind: "walk", durationMin: 4, distanceM: 300, lines: [], stops: [], path: [a, b] },
+      { kind: "subway", durationMin: 20, distanceM: 11000, lines: ["2호선"], stops: ["판교", "양재", "강남"], path: [b, c] },
+      { kind: "walk", durationMin: 3, distanceM: 200, lines: [], stops: [], path: [c, d] },
+    ];
+    routes.set("GET /v1/geo/eta", () => ({
+      status: 200,
+      body: {
+        eta: {
+          mode: "transit", destination: { label: "home", kind: "place" }, origin: "current_location", precision: "exact", durationMin: 27, distanceKm: 11.5,
+          arriveAt: "2026-10-19T01:00:00Z", summary: ["2호선"], path: [a, b, c, d], legs, transfers: 0, walkMin: 7, fare: 1550, provider: "kakao",
+        },
+      },
+    }));
+    await open("#maps");
+    await act(async () => button("Transit").click());
+    const to = [...host.querySelectorAll("label")].find((l) => l.textContent?.trim() === "To a place name or an address")!;
+    const input = (document.getElementById(to.htmlFor) ?? to.parentElement!.querySelector("input")) as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "home");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => button("Get ETA").click());
+    await settle();
+    expect(calls).toContain("GET /v1/geo/eta?to=home&mode=transit");
+    expect(lastScene().lines.map((l) => [l.points, Boolean(l.dashed)])).toEqual([
+      [[a, b], true],
+      [[b, c], false],
+      [[c, d], true],
+    ]);
+    expect(host.textContent).toContain("2호선, 20 min");
+    expect(host.textContent).toContain("판교 → 강남, 3 stops");
+    expect(host.textContent).toContain("0 transfers");
+    expect(host.textContent).toContain("₩1,550");
   });
 });

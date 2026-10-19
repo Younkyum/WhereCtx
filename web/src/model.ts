@@ -6,7 +6,7 @@
 
 import type { WorkspaceRole } from "../../src/accounts/types";
 import type { AccessEntry as ServerAccessEntry } from "../../src/activity/types";
-import type { GeoProviderName } from "../../src/geo/types";
+import type { GeoProviderName, RouteMode, TransitLegKind } from "../../src/geo/types";
 
 export type { WorkspaceRole };
 export {
@@ -82,7 +82,7 @@ export interface Presence {
   area?: string;
 }
 
-export { GEO_PROVIDERS, type GeoProviderName } from "../../src/geo/types";
+export { GEO_PROVIDERS, ROUTE_MODES, type GeoProviderName, type RouteMode } from "../../src/geo/types";
 
 /** The maps switches, each a privacy setting (PUT /v1/privacy). */
 export const GEO_FLAGS = ["geoEnabled", "skipProviderNearHome", "areaOnHome", "areaToAgents", "etaToAgents", "areaToPeople"] as const;
@@ -138,17 +138,34 @@ export interface GeoCandidate {
   kind: "address" | "place";
 }
 
+/** One leg of a transit route as the owner sees it. */
+export interface EtaLeg {
+  kind: TransitLegKind;
+  durationMin: number;
+  distanceM: number;
+  lines: string[];
+  stops: string[];
+  path: { lat: number; lon: number }[];
+}
+
 export interface Eta {
+  mode: RouteMode;
   destination: { label: string; kind: "place" | "address" };
   origin: "current_location" | "home";
   precision: "exact" | "approximate";
   durationMin: number;
   distanceKm: number;
-  traffic: "live" | "predicted";
+  /** Driving only. */
+  traffic?: "live" | "predicted";
   arriveAt: string;
   summary: string[];
   /** The route as drawn on a map (the owner's own answers). */
   path?: { lat: number; lon: number }[];
+  /** Transit (the owner's own answers): the fare, transfers, minutes on foot and each leg. */
+  fare?: number;
+  transfers?: number;
+  walkMin?: number;
+  legs?: EtaLeg[];
   provider: GeoProviderName;
   deepLinks?: { kakaoMap: string; naverMap: string };
 }

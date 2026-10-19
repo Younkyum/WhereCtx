@@ -675,15 +675,27 @@ describe("maps", () => {
     route("GET /v1/places", () => ({ status: 200, body: { places: [{ name: "집", type: "home", lat: 37.5, lon: 127, radiusM: 150 }] } }));
     route("GET /v1/geo/eta", () => ({
       status: 200,
-      body: { eta: { destination: { label: "집", kind: "place" }, origin: "current_location", precision: "exact", durationMin: 23, distanceKm: 9.1, traffic: "live", arriveAt: "2026-10-19T09:00:00Z", summary: [], provider: "kakao" } },
+      body: { eta: { mode: "car", destination: { label: "집", kind: "place" }, origin: "current_location", precision: "exact", durationMin: 23, distanceKm: 9.1, traffic: "live", arriveAt: "2026-10-19T09:00:00Z", summary: [], provider: "kakao" } },
     }));
     await act(async () => root.render(<App />));
     await settle();
     expect(calls.filter((c) => c.startsWith("GET /v1/geo/eta"))).toEqual([]);
     await act(async () => button("Check time to home").click());
     await settle();
-    expect(calls.filter((c) => c.startsWith("GET /v1/geo/eta"))).toEqual(["GET /v1/geo/eta?to=%EC%A7%91"]);
+    expect(calls.filter((c) => c.startsWith("GET /v1/geo/eta"))).toEqual(["GET /v1/geo/eta?to=%EC%A7%91&mode=car"]);
     expect(host.textContent).toContain("To home: 23 min (live traffic)");
+
+    route("GET /v1/geo/eta", () => ({
+      status: 200,
+      body: { eta: { mode: "transit", destination: { label: "집", kind: "place" }, origin: "current_location", precision: "exact", durationMin: 41, distanceKm: 12.3, arriveAt: "2026-10-19T09:20:00Z", summary: ["2호선"], provider: "kakao" } },
+    }));
+    await act(async () => button("Transit").click());
+    await settle();
+    expect(host.textContent).not.toContain("To home: 23 min");
+    await act(async () => button("Check time to home").click());
+    await settle();
+    expect(calls.filter((c) => c.startsWith("GET /v1/geo/eta")).at(-1)).toBe("GET /v1/geo/eta?to=%EC%A7%91&mode=transit");
+    expect(host.textContent).toContain("To home by Transit: 41 min");
   });
 
   it("adds a place by address: search, pick, save with the picked point", async () => {

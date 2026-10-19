@@ -58,6 +58,12 @@ describe("a map canvas", () => {
     expect(el.querySelectorAll("path")).toHaveLength(0);
   });
 
+  it("draws a dashed line for a stretch on foot, solid otherwise", () => {
+    const [a, b, c] = [{ lat: 37.5, lon: 127 }, { lat: 37.51, lon: 127.01 }, { lat: 37.52, lon: 127.03 }];
+    canvas.draw({ markers: [], circles: [], lines: [{ id: "leg:0", points: [a, b], dashed: true }, { id: "leg:1", points: [b, c] }] }, false);
+    expect([...el.querySelectorAll("path")].map((p) => p.getAttribute("stroke-dasharray"))).toEqual(["4 8", null]);
+  });
+
   it("never turns a title into markup", () => {
     canvas.draw(SCENE, false);
     expect(document.querySelector("img[src='x']")).toBeNull();

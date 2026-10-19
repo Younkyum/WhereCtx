@@ -17,6 +17,7 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { Section } from "@astryxdesign/core/Section";
+import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
@@ -25,6 +26,7 @@ import { ApiError, api, isHandled } from "./api";
 import { useApp } from "./context";
 import type { Lang, Translate } from "./i18n";
 import { ageParts, bearerHeader, errorKey, passkeyErrorKey } from "./lib";
+import { ROUTE_MODES, oneOf, type RouteMode } from "./model";
 
 /** A message the person can act on, for any error an action or loader throws. */
 export function describe(e: unknown, t: Translate): string {
@@ -188,6 +190,18 @@ export function Page({ title, description, children }: { title: string; descript
 
 export function Empty({ text }: { text: string }) {
   return <EmptyState title={text} isCompact headingLevel={3} />;
+}
+
+/** How a route is travelled: car, transit, on foot or by bicycle. */
+export function RouteModePicker({ value, onChange, size }: { value: RouteMode; onChange: (mode: RouteMode) => void; size?: "sm" | "md" }) {
+  const { t } = useApp();
+  return (
+    <SegmentedControl label={t("maps.mode")} value={value} size={size} onChange={(v) => oneOf(ROUTE_MODES, v) && onChange(v)}>
+      {ROUTE_MODES.map((m) => (
+        <SegmentedControlItem key={m} value={m} label={t(`maps.mode.${m}`)} />
+      ))}
+    </SegmentedControl>
+  );
 }
 
 export function Hint({ children }: { children: ReactNode }) {
