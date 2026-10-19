@@ -221,3 +221,42 @@ describe("history ranges", () => {
     expect(lib.mapLink(37.5, -122.25)).toBe("https://maps.google.com/?q=37.5,-122.25");
   });
 });
+
+describe("polygon outline text", () => {
+  it("reads lat, lon lines into a closed [lon, lat] ring, closing it only when needed", () => {
+    expect(lib.parseOutline("37.5, 127\n37.5 127.001\n 37.501,127.001 ")).toEqual({
+      kind: "ring",
+      ring: [
+        [127, 37.5],
+        [127.001, 37.5],
+        [127.001, 37.501],
+        [127, 37.5],
+      ],
+    });
+    const closed = lib.parseOutline("1, 2\n1, 3\n2, 3\n1, 2");
+    expect(closed.kind === "ring" && closed.ring).toEqual([
+      [2, 1],
+      [3, 1],
+      [3, 2],
+      [2, 1],
+    ]);
+  });
+
+  it("names the first line that is not a point, counting blank lines", () => {
+    expect(lib.parseOutline("1, 2\n\n91, 2")).toEqual({ kind: "badLine", line: 3 });
+    expect(lib.parseOutline("1, 181")).toEqual({ kind: "badLine", line: 1 });
+    expect(lib.parseOutline("1, 2,")).toEqual({ kind: "badLine", line: 1 });
+    expect(lib.parseOutline("1")).toEqual({ kind: "badLine", line: 1 });
+  });
+
+  it("needs three distinct corners", () => {
+    expect(lib.parseOutline("")).toEqual({ kind: "tooFew" });
+    expect(lib.parseOutline("1, 2\n1, 3\n1, 2")).toEqual({ kind: "tooFew" });
+  });
+
+  it("shows a stored ring as the lines it was typed from", () => {
+    const text = "37.567891, 127.012345\n37.567891, 127.014567\n37.569123, 127.014567";
+    const parsed = lib.parseOutline(text);
+    expect(parsed.kind === "ring" && lib.outlineText(parsed.ring)).toBe(text);
+  });
+});

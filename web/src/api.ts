@@ -22,13 +22,16 @@ import type { CeremonyStart } from "./model";
 export class ApiError extends Error implements ApiErrorInfo {
   readonly status: number;
   readonly code: string | null;
+  /** What the server said was wrong with the request, in its words; empty when it sent none. */
+  readonly detail: string[];
   /** True once the app has already responded (signed out); callers show nothing more. */
   handled = false;
 
-  constructor(status: number, data: { error?: unknown; code?: unknown }) {
+  constructor(status: number, data: { error?: unknown; code?: unknown; detail?: unknown }) {
     super(typeof data.error === "string" ? data.error : `HTTP ${status}`);
     this.status = status;
     this.code = typeof data.code === "string" ? data.code : null;
+    this.detail = Array.isArray(data.detail) ? data.detail.filter((d): d is string => typeof d === "string") : [];
   }
 }
 

@@ -449,3 +449,40 @@ export function bearerHeader(token: string): { name: typeof AUTH_HEADER; value: 
   const bare = token.replace(/^Bearer\s+/i, "");
   return { name: AUTH_HEADER, value: `Bearer ${bare}`, token: bare };
 }
+
+/** A polygon outline as typed: its closed [lon, lat] ring, or what keeps it from being one. */
+export type OutlineParse =
+  | { kind: "ring"; ring: Array<[lon: number, lat: number]> }
+  | { kind: "badLine"; line: number }
+  | { kind: "tooFew" };
+
+/**
+ * Reads one "lat, lon" point per line (the order maps copy them in) into the
+ * API's [lon, lat] ring, closing it when the last point does not repeat the
+ * first. Blank lines are skipped; the server checks the shape itself.
+ */
+export function parseOutline(text: string): OutlineParse {
+  const points: Array<[number, number]> = [];
+  for (const [i, raw] of text.split("\n").entries()) {
+    const line = raw.trim();
+    if (!line) continue;
+    const parts = line.split(/\s*,\s*|\s+/);
+    const [lat, lon] = parts.map(Number);
+    const ok = parts.length === 2 && !parts.includes("") && Math.abs(lat!) <= 90 && Math.abs(lon!) <= 180;
+    if (!ok) return { kind: "badLine", line: i + 1 };
+    points.push([lon!, lat!]);
+  }
+  const first = points[0];
+  const last = points[points.length - 1];
+  const closed = points.length > 1 && first![0] === last![0] && first![1] === last![1];
+  if (points.length - (closed ? 1 : 0) < 3) return { kind: "tooFew" };
+  return { kind: "ring", ring: closed ? points : [...points, first!] };
+}
+
+/** A stored closed ring as editable "lat, lon" lines, without the repeated closing point. */
+export function outlineText(ring: ReadonlyArray<readonly [lon: number, lat: number]>): string {
+  return ring
+    .slice(0, -1)
+    .map(([lon, lat]) => `${lat}, ${lon}`)
+    .join("\n");
+}

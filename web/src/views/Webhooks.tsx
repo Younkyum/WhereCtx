@@ -1,8 +1,9 @@
 /**
- * Webhooks: send my own presence events to another service. Choose which
- * events each endpoint gets and for which places, see what a delivery looks
- * like (built by the same code the server sends with), change a hook's
- * events or pause it, and see deliveries that failed for good.
+ * Webhooks: send my own presence events to another service. The list shows
+ * each endpoint's events and places; adding one or changing its events and
+ * places happens in a dialog, which also shows what a delivery looks like
+ * (built by the same code the server sends with). Pause a hook from the list,
+ * and see deliveries that failed for good.
  */
 
 import { Badge } from "@astryxdesign/core/Badge";
@@ -24,7 +25,7 @@ import { api } from "../api";
 import { useApp } from "../context";
 import { pickEvents } from "../lib";
 import { oneOf, type DeadLetter, type Place, type Webhook } from "../model";
-import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
+import { DialogForm, Empty, FormDialog, Hint, Loaded, Page, Panel, Row, Rows, useConfirm, useLoad, useNotify } from "../ui";
 
 export const SIGNATURE_DOCS = "https://github.com/Younkyum/WhereCtx/blob/main/docs/api.md#delivery-signature";
 /** What a new endpoint gets unless the person picks otherwise: arrivals and departures. */
@@ -120,23 +121,10 @@ function ExampleDelivery({ events, signed }: { events: string[]; signed: boolean
   );
 }
 
-function HookRow({ hook, placeNames, onChanged }: { hook: Webhook; placeNames: string[]; onChanged: () => Promise<void> }) {
+function HookRow({ hook, onEdit, onChanged }: { hook: Webhook; onEdit: () => void; onChanged: () => Promise<void> }) {
   const { t } = useApp();
   const notify = useNotify();
   const confirm = useConfirm();
-  const [editing, setEditing] = useState<{ events: string[]; places: PlaceSelection } | null>(null);
-  const patch = async (body: { events?: string[]; places?: string[] | null; active?: boolean }) => {
-    await api(`/v1/webhooks/${encodeURIComponent(hook.id)}`, { method: "PATCH", body });
-    notify.ok(t("toast.saved"));
-    await onChanged();
-  };
-  const [saving, save] = useAction(async () => {
-    if (!editing?.events.length || !pickedSome(editing.places)) return;
-    const { places } = editing;
-    const samePlaces = JSON.stringify(places) === JSON.stringify(hook.places ?? null);
-    await patch({ events: editing.events, ...(samePlaces ? {} : { places }) });
-    setEditing(null);
-  });
   const remove = async () => {
     if (!(await confirm({ title: t("webhooks.deleteConfirm"), description: hook.url, action: t("common.delete") }))) return;
     try {
@@ -148,53 +136,96 @@ function HookRow({ hook, placeNames, onChanged }: { hook: Webhook; placeNames: s
     await onChanged();
   };
   return (
-    <VStack gap={2}>
-      <Row
-        title={
-          <Text type="code" wordBreak="break-all">
-            {hook.url}
-          </Text>
-        }
-        subtitle={<EventSummary events={hook.events ?? []} places={hook.places} />}
-      >
-        <Switch
-          label={t("webhooks.active")}
-          value={hook.active}
-          changeAction={async (on) => {
-            try {
-              await patch({ active: on });
-            } catch (e) {
-              notify.fail(e);
-            }
-          }}
-          size="sm"
-        />
-        {editing ? null : (
-          <Button
-            label={t("webhooks.editEvents")}
-            size="sm"
-            onClick={() => setEditing({ events: hook.events ?? [], places: hook.places ?? null })}
-          />
-        )}
-        <Button label={t("common.delete")} variant="destructive" size="sm" clickAction={remove} />
-      </Row>
-      {editing ? (
-        <VStack gap={3}>
-          <EventPicker value={editing.events} onChange={(events) => setEditing({ ...editing, events })} />
-          <PlacePicker names={placeNames} value={editing.places} onChange={(places) => setEditing({ ...editing, places })} />
-          <HStack gap={2}>
-            <Button label={t("common.save")} variant="primary" isLoading={saving} isDisabled={!editing.events.length || !pickedSome(editing.places)} onClick={() => void save()} />
-            <Button label={t("common.cancel")} onClick={() => setEditing(null)} />
-          </HStack>
-        </VStack>
-      ) : null}
-    </VStack>
+    <Row
+      title={
+        <Text type="code" wordBreak="break-all">
+          {hook.url}
+        </Text>
+      }
+      subtitle={<EventSummary events={hook.events ?? []} places={hook.places} />}
+    >
+      <Switch
+        label={t("webhooks.active")}
+        value={hook.active}
+        changeAction={async (active) => {
+          try {
+            await api(`/v1/webhooks/${encodeURIComponent(hook.id)}`, { method: "PATCH", body: { active } });
+            notify.ok(t("toast.saved"));
+            await onChanged();
+          } catch (e) {
+            notify.fail(e);
+          }
+        }}
+        size="sm"
+      />
+      <Button label={t("webhooks.edit")} size="sm" onClick={onEdit} />
+      <Button label={t("common.delete")} variant="destructive" size="sm" clickAction={remove} />
+    </Row>
   );
 }
 
-export function WebhooksView() {
+function AddHook({ placeNames, onClose, onAdded }: { placeNames: string[]; onClose: () => void; onAdded: () => Promise<void> }) {
   const { t } = useApp();
   const notify = useNotify();
+  const [url, setUrl] = useState("");
+  const [secret, setSecret] = useState("");
+  const [events, setEvents] = useState<string[]>(DEFAULT_EVENTS);
+  const [places, setPlaces] = useState<PlaceSelection>(null);
+  const add = async () => {
+    await api("/v1/webhooks", {
+      body: { url: url.trim(), events, ...(places ? { places } : {}), ...(secret ? { secret } : {}) },
+    });
+    notify.ok(t("toast.added"));
+    await onAdded();
+  };
+  return (
+    <DialogForm
+      title={t("webhooks.add")}
+      submitLabel={t("webhooks.addButton")}
+      canSubmit={/^https?:\/\//i.test(url.trim()) && events.length > 0 && pickedSome(places)}
+      onSubmit={add}
+      onClose={onClose}
+    >
+      <TextInput label={t("webhooks.url")} value={url} onChange={setUrl} placeholder="https://…" isRequired />
+      <TextInput label={t("webhooks.secret")} value={secret} onChange={setSecret} />
+      <EventPicker value={events} onChange={setEvents} />
+      <PlacePicker names={placeNames} value={places} onChange={setPlaces} />
+      <ExampleDelivery events={events} signed={secret !== ""} />
+    </DialogForm>
+  );
+}
+
+function EditHook({ hook, placeNames, onClose, onSaved }: { hook: Webhook; placeNames: string[]; onClose: () => void; onSaved: () => Promise<void> }) {
+  const { t } = useApp();
+  const notify = useNotify();
+  const [events, setEvents] = useState<string[]>(hook.events ?? []);
+  const [places, setPlaces] = useState<PlaceSelection>(hook.places ?? null);
+  const save = async () => {
+    const samePlaces = JSON.stringify(places) === JSON.stringify(hook.places ?? null);
+    await api(`/v1/webhooks/${encodeURIComponent(hook.id)}`, { method: "PATCH", body: { events, ...(samePlaces ? {} : { places }) } });
+    notify.ok(t("toast.saved"));
+    await onSaved();
+  };
+  return (
+    <DialogForm
+      title={t("webhooks.editTitle")}
+      subtitle={hook.url}
+      submitLabel={t("common.save")}
+      canSubmit={events.length > 0 && pickedSome(places)}
+      onSubmit={save}
+      onClose={onClose}
+    >
+      <EventPicker value={events} onChange={setEvents} />
+      <PlacePicker names={placeNames} value={places} onChange={setPlaces} />
+    </DialogForm>
+  );
+}
+
+/** Which form the dialog holds, if any. */
+type HookDialog = { kind: "add" } | { kind: "edit"; hook: Webhook } | null;
+
+export function WebhooksView() {
+  const { t } = useApp();
   const [hooks, reloadHooks] = useLoad(() => api<{ webhooks: Webhook[] }>("/v1/webhooks").then((r) => r.webhooks ?? []), []);
   const [dead, reloadDead] = useLoad(
     () => api<{ deadLetters: DeadLetter[] }>("/v1/webhooks/dead-letters?limit=20").then((r) => r.deadLetters ?? []),
@@ -205,31 +236,20 @@ export function WebhooksView() {
   const reload = async () => {
     await Promise.all([reloadHooks(), reloadDead()]);
   };
-  const [url, setUrl] = useState("");
-  const [secret, setSecret] = useState("");
-  const [events, setEvents] = useState<string[]>(DEFAULT_EVENTS);
-  const [placesPicked, setPlacesPicked] = useState<PlaceSelection>(null);
-  const valid = /^https?:\/\//i.test(url.trim()) && events.length > 0 && pickedSome(placesPicked);
-  const [busy, add] = useAction(async () => {
-    await api("/v1/webhooks", {
-      body: { url: url.trim(), events, ...(placesPicked ? { places: placesPicked } : {}), ...(secret ? { secret } : {}) },
-    });
-    notify.ok(t("toast.added"));
-    setUrl("");
-    setSecret("");
-    setEvents(DEFAULT_EVENTS);
-    setPlacesPicked(null);
-    await reload();
-  });
+  const [dialog, setDialog] = useState<HookDialog>(null);
+  const close = () => setDialog(null);
   return (
     <Page title={t("webhooks.title")} description={t("webhooks.desc")}>
       <Banner status="info" title={t("webhooks.introTitle")} description={t("webhooks.intro")} collapsible={false} />
-      <Panel title={t("webhooks.list")}>
+      <Panel
+        title={t("webhooks.list")}
+        actions={<Button label={t("webhooks.addOpen")} variant="primary" onClick={() => setDialog({ kind: "add" })} />}
+      >
         <Loaded state={hooks}>
           {(list) =>
             list.length ? (
               <Rows items={list} keyOf={(w) => w.id}>
-                {(w) => <HookRow hook={w} placeNames={placeNames} onChanged={reload} />}
+                {(w) => <HookRow hook={w} onEdit={() => setDialog({ kind: "edit", hook: w })} onChanged={reload} />}
               </Rows>
             ) : (
               <Empty text={t("webhooks.empty")} />
@@ -237,27 +257,13 @@ export function WebhooksView() {
           }
         </Loaded>
       </Panel>
-      <Panel title={t("webhooks.add")}>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (valid) void add();
-          }}
-        >
-          <VStack gap={4}>
-            <HStack gap={2} wrap="wrap" vAlign="end">
-              <TextInput label="URL" value={url} onChange={setUrl} placeholder="https://…" isRequired width={320} />
-              <TextInput label={t("webhooks.secret")} value={secret} onChange={setSecret} width={240} />
-            </HStack>
-            <EventPicker value={events} onChange={setEvents} />
-            <PlacePicker names={placeNames} value={placesPicked} onChange={setPlacesPicked} />
-            <ExampleDelivery events={events} signed={secret !== ""} />
-            <HStack>
-              <Button type="submit" label={t("webhooks.addButton")} variant="primary" isLoading={busy} isDisabled={!valid} />
-            </HStack>
-          </VStack>
-        </form>
-      </Panel>
+      <FormDialog isOpen={dialog !== null} onClose={close}>
+        {dialog?.kind === "add" ? (
+          <AddHook placeNames={placeNames} onClose={close} onAdded={reload} />
+        ) : dialog?.kind === "edit" ? (
+          <EditHook hook={dialog.hook} placeNames={placeNames} onClose={close} onSaved={reload} />
+        ) : null}
+      </FormDialog>
       <Panel title={t("webhooks.deadLetters")}>
         <Loaded state={dead}>
           {(list) =>
