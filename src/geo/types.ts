@@ -95,7 +95,8 @@ export interface CarRoute extends RouteBase {
   steps: string[];
 }
 
-export const TRANSIT_LEG_KINDS = ["walk", "bus", "subway"] as const;
+/** `other`: a ride of a kind the provider names but WhereCtx does not know (a ferry, a new mode); never named to an agent. */
+export const TRANSIT_LEG_KINDS = ["walk", "bus", "subway", "other"] as const;
 export type TransitLegKind = (typeof TRANSIT_LEG_KINDS)[number];
 
 /**

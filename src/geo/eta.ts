@@ -55,14 +55,39 @@ export function agentRoads(roads: Extract<RouteResult, { mode: "car" }>["roads"]
 }
 
 /**
- * The lines an agent may be told, in the order ridden: every ride's lines
- * when it may read the precise location, else only rides that board,
- * alight and run farther than AGENT_ROAD_CLEARANCE_M from every point in
- * `avoid`, and never a ride of unknown whereabouts.
+ * The line labels an agent may hear without precise access: numbered buses
+ * of a citywide kind (간선, 지선, 광역, 직행, 순환, 급행, 공항), numbered
+ * subway lines, and rail lines named for no one neighbourhood. A village
+ * bus (마을 서초09) or a label that starts with a place name says where.
+ */
+const OPEN_LINE = /^(?:(?:간선|지선|광역|직행|순환|급행|공항)\s?\d+(?:-\d+)?|\d+호선)$/;
+const OPEN_RAIL: ReadonlySet<string> = new Set([
+  "신분당선",
+  "경의중앙선",
+  "수인분당선",
+  "공항철도",
+  "경춘선",
+  "우이신설선",
+  "김포골드라인",
+  "신림선",
+  "GTX-A",
+]);
+
+export const openLine = (label: string): boolean => OPEN_LINE.test(label) || OPEN_RAIL.has(label);
+
+/**
+ * The lines an agent may be told, one per ride (the first the provider
+ * lists, never the alternatives), in the order ridden. With precise access,
+ * every bus and subway ride's line. Without it, all or nothing: every ride
+ * must be a bus or subway with an open label (openLine) that runs farther
+ * than AGENT_ROAD_CLEARANCE_M from every keep-out, else no line at all, so
+ * the rides left out cannot be read from the ones named.
  */
 export function agentLines(legs: readonly TransitLeg[], avoid: readonly Keepout[], precise: boolean): string[] {
-  const rides = legs.filter((l) => l.kind !== "walk" && (precise || clear(l, avoid)));
-  return [...new Set(rides.flatMap((l) => l.lines))];
+  const rides = legs.filter((l) => l.kind !== "walk");
+  if (precise) return rides.flatMap((l) => (l.kind !== "other" && l.lines[0] ? [l.lines[0]] : []));
+  const named = rides.map((l) => (l.kind !== "other" && l.lines[0] && openLine(l.lines[0]) && clear(l, avoid) ? l.lines[0] : null));
+  return named.every((n) => n !== null) ? (named as string[]) : [];
 }
 
 /** Seconds as an agent's minutes: none stays none, anything else in 5-minute steps, at least 5. */
@@ -104,16 +129,20 @@ export function agentDetail(
         ? { detail: { summary, steps: all }, usedPrecise: true }
         : { detail: { summary, stepsWithheld: STEPS_NEED_PRECISE }, usedPrecise: false };
     }
-    case "transit":
+    case "transit": {
+      const summary = agentLines(route.legs, avoid, precise);
+      const rides = route.legs.filter((l) => l.kind !== "walk").length;
       return {
         detail: {
-          summary: agentLines(route.legs, avoid, precise),
-          transfers: route.transfers,
+          summary,
+          // Only beside named lines, where it is their count less one and says nothing more.
+          ...(summary.length > 0 ? { transfers: rides - 1 } : {}),
           walkMin: agentMinutes(walkingSec(route.legs)),
           ...(directions ? { stepsWithheld: TRANSIT_STEPS_WITHHELD } : {}),
         },
         usedPrecise: precise,
       };
+    }
   }
 }
 

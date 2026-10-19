@@ -191,6 +191,25 @@ describe("Kakao transit, walking and cycling", () => {
     expect(out.transfers).toBe(2);
   });
 
+  it("reads a step type or a vehicle it does not know as an unnamed ride, without failing the route", async () => {
+    const body = structuredClone(fixture("kakao-transit-transfers.json")) as any;
+    const steps = body.routes[0].steps;
+    steps[1].properties.type = "FERRY";
+    steps[2].properties.vehicles = [{ type: 11, name: "472" }, { type: "간선", name: "421" }];
+    steps[3].properties.vehicles = [{ type: "지선" }];
+    steps[3].properties.stops = [{ name: 7 }, { name: "서울시청" }];
+    const out = await kakao(stubFetch({ body })).route({ mode: "transit", origin: A, destination: B });
+    if (out.mode !== "transit") throw new Error("not transit");
+    expect(out.legs.map((l) => [l.kind, l.lines])).toEqual([
+      ["walk", []],
+      ["other", []],
+      ["bus", ["간선 421"]],
+      ["bus", []],
+      ["walk", []],
+    ]);
+    expect(out.legs[3]!.stops).toEqual(["서울시청"]);
+  });
+
   it.each([
     ["walk", "/v2/routing/walk", "kakao-walk.json", 3914, 4025, "판교역 1번 출구까지 역사 내 이동"],
     ["bike", "/v2/routing/bicycle", "kakao-bicycle.json", 1242, 4155, "76m 이동"],

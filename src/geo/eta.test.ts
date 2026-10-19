@@ -193,32 +193,31 @@ describe("a transit, walking or cycling route, from Kakao's documented samples",
     return outcome;
   };
 
-  it("an agent hears the lines ridden away from both ends, the transfers and coarse minutes; never a stop, a fare or a street", async () => {
+  it("an agent hears no line when the first and last rides run near the ends, no transfers, coarse minutes; never a stop, a fare or a street", async () => {
     await setUp();
     const outcome = ok(await eta({ to: "city hall", mode: "transit", directions: true }));
     const text = JSON.stringify(outcome);
-    for (const word of [...NEAR_END_WORDS, ...LINES_NEAR_ENDS]) expect(text).not.toContain(word);
+    for (const word of [...NEAR_END_WORDS, ...LINES_NEAR_ENDS, "간선 472", "간선 421"]) expect(text).not.toContain(word);
     expect(outcome).toMatchObject({
       precise: false,
       answer: {
         mode: "transit",
         precision: "approximate",
-        summary: ["간선 472", "간선 421"],
-        transfers: 2,
+        summary: [],
         durationMin: 60,
         walkMin: 10,
         distanceKm: 27,
         stepsWithheld: expect.any(String),
       },
     });
-    for (const key of ["fare", "legs", "path", "steps", "traffic"]) expect(outcome.answer).not.toHaveProperty(key);
+    for (const key of ["fare", "legs", "path", "steps", "traffic", "transfers"]) expect(outcome.answer).not.toHaveProperty(key);
   });
 
-  it("an agent that may read the precise location hears every line, still no stop", async () => {
+  it("an agent that may read the precise location hears each ride's first line, still no stop", async () => {
     await setUp();
     await set({ allowPreciseLocation: true });
     const outcome = ok(await eta({ to: "city hall", mode: "transit", reason: "meeting there" }, agent(["read_presence", "read_precise_location"])));
-    expect(outcome).toMatchObject({ precise: true, answer: { summary: ["신분당선", "간선 472", "간선 421", "지선 7011"] } });
+    expect(outcome).toMatchObject({ precise: true, answer: { summary: ["신분당선", "간선 472", "지선 7011"], transfers: 2 } });
     const text = JSON.stringify(outcome);
     for (const stop of STOPS) expect(text).not.toContain(stop);
   });

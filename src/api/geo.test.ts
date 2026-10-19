@@ -468,15 +468,15 @@ describe("ETA by mode", () => {
     expect(routeCalls()[0]).toMatchObject({ mode: "transit", origin: { lat: 37.567, lon: 126.978 }, destination: { lat: 37.4, lon: 127.1 } });
   });
 
-  it("gives a token the lines away from both ends, no stop, no fare, no coordinate", async () => {
+  it("gives a token no line when a ride runs near an end (a village bus by the start), no stop, no fare, no coordinate", async () => {
     await boot();
     await ingest(AWAY);
     await settings({ geoEnabled: true, etaToAgents: true });
     const res = await eta(AGENT, "to=office&mode=transit");
     expect(res.status).toBe(200);
     const text = await res.text();
-    expect(JSON.parse(text).eta).toMatchObject({ mode: "transit", precision: "approximate", summary: ["2호선"], transfers: 2 });
-    for (const word of ["정류장", "테스트환승역", "마을 테스트1", "간선 472", "fare", "legs", "path", "37.567", "126.978"]) expect(text).not.toContain(word);
+    expect(JSON.parse(text).eta).toMatchObject({ mode: "transit", precision: "approximate", summary: [] });
+    for (const word of ["정류장", "테스트환승역", "마을 테스트1", "2호선", "간선 472", "transfers", "fare", "legs", "path", "37.567", "126.978"]) expect(text).not.toContain(word);
   });
 
   it("refuses an unknown mode, and road kinds or a later departure for transit", async () => {

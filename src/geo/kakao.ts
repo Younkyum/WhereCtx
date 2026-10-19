@@ -115,11 +115,12 @@ const Transit = z.object({
           z.object({
             properties: z.object({
               guidance: providerText.optional(),
-              type: z.enum(["BUS", "SUBWAY", "WALKING"]),
+              type: z.string(),
               distance: z.number(),
               time: z.number(),
-              stops: z.array(z.object({ name: providerText })).optional(),
-              vehicles: z.array(z.object({ type: providerText.optional(), name: providerText })).optional(),
+              // Read one by one: a stop or vehicle in an unknown shape drops that entry, never the route.
+              stops: z.array(z.unknown()).optional(),
+              vehicles: z.array(z.unknown()).optional(),
             }),
             path: Points.optional(),
           }),
@@ -152,11 +153,33 @@ const Active = z.object({
 /** Statuses that mean the request itself was wrong, not that no route exists. */
 const BAD_REQUEST_STATUSES = new Set(["INVALID_REQUEST", "TOO_MANY_SEARCH_LINK"]);
 
-const LEG_KIND: Record<"BUS" | "SUBWAY" | "WALKING", TransitLegKind> = { BUS: "bus", SUBWAY: "subway", WALKING: "walk" };
+/** Step types WhereCtx knows; any other is a ride of kind `other`. */
+const LEG_KIND: ReadonlyMap<string, TransitLegKind> = new Map([
+  ["BUS", "bus"],
+  ["SUBWAY", "subway"],
+  ["WALKING", "walk"],
+]);
 
-/** A line as people say it: a bus with its kind ("간선 472", "마을 76"), a subway line by name ("2호선"). */
-function lineName(kind: TransitLegKind, vehicle: { type?: string; name: string }): string {
-  return kind === "bus" && vehicle.type ? `${vehicle.type} ${vehicle.name}` : vehicle.name;
+const Stop = z.object({ name: providerText });
+const Vehicle = z.object({ type: providerText.optional(), name: providerText });
+
+/**
+ * A line as people say it: a bus with its kind ("간선 472", "마을 76"), a
+ * subway line by name ("2호선"). Null for a vehicle in a shape WhereCtx
+ * does not know (a numeric type, no name), so it is never named.
+ */
+function lineName(kind: TransitLegKind, raw: unknown): string | null {
+  const vehicle = Vehicle.safeParse(raw);
+  if (!vehicle.success || !vehicle.data.name) return null;
+  const { type, name } = vehicle.data;
+  return kind === "bus" && type ? `${type} ${name}` : name;
+}
+
+function stopNames(raw: readonly unknown[] | undefined): string[] {
+  return (raw ?? []).flatMap((s) => {
+    const stop = Stop.safeParse(s);
+    return stop.success ? [stop.data.name] : [];
+  });
 }
 
 const pointsPath = (path: z.infer<typeof Points> | undefined): LatLon[] => (path?.points ?? []).map(([lon, lat]) => ({ lat: lat!, lon: lon! }));
@@ -297,13 +320,14 @@ export class KakaoProvider implements GeoProvider {
     const route = res.routes?.[0];
     if (res.status !== "OK" || !route) throw noRouteFor(res.status);
     const legs = route.steps.map(({ properties: p, path }): TransitLeg => {
-      const kind = LEG_KIND[p.type];
+      const kind = LEG_KIND.get(p.type) ?? "other";
+      const ride = kind === "bus" || kind === "subway";
       return {
         kind,
         durationSec: p.time,
         distanceM: p.distance,
-        lines: kind === "walk" ? [] : [...new Set((p.vehicles ?? []).map((v) => lineName(kind, v)))],
-        stops: kind === "walk" ? [] : (p.stops ?? []).map((stop) => stop.name),
+        lines: ride ? [...new Set((p.vehicles ?? []).flatMap((v) => lineName(kind, v) ?? []))] : [],
+        stops: kind === "walk" ? [] : stopNames(p.stops),
         guidance: p.guidance ?? "",
         path: pointsPath(path),
       };
