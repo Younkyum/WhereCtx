@@ -16,6 +16,8 @@ export interface NewPresenceEvent {
   placeName?: string;
   status?: string;
   source?: string;
+  /** False: recorded but never delivered to webhooks (a place with notifyWebhooks off). Default true. */
+  webhook?: boolean;
 }
 
 interface EventRow {
@@ -25,6 +27,7 @@ interface EventRow {
   placeName: string | null;
   status: string | null;
   source: string | null;
+  webhook: boolean;
   createdAt: string;
 }
 
@@ -68,6 +71,7 @@ export class EventsStore {
       placeName: event.placeName ?? null,
       status: event.status ?? null,
       source: event.source ?? null,
+      webhook: event.webhook ?? true,
       createdAt,
     }));
     await this.db.insert(presenceEvents).values(records);
