@@ -481,14 +481,27 @@ describe("ETA by mode", () => {
     for (const word of ["정류장", "테스트환승역", "마을 테스트1", "2호선", "간선 472", "transfers", "fare", "legs", "path", "37.567", "126.978"]) expect(text).not.toContain(word);
   });
 
-  it("refuses an unknown mode, and road kinds or a later departure for transit", async () => {
+  it("refuses an unknown mode, and a later departure or road kinds off driving with 400 unsupported_option, before anything is sent, spent or logged", async () => {
     await boot();
     await ingest(AWAY);
-    await settings({ geoEnabled: true });
+    await settings({ geoEnabled: true, etaToAgents: true, allowPreciseLocation: true });
     expect((await eta(null, "to=office&mode=boat")).status).toBe(400);
-    const avoid = await eta(null, "to=office&mode=walk&avoid=toll");
-    expect(avoid.status).toBe(502);
-    expect(((await avoid.json()) as any).kind).toBe("unsupported");
+    const later = encodeURIComponent(new Date(clock.now + 3600_000).toISOString());
+    const sentBefore = fake.calls.length;
+    for (const who of [null, AGENT]) {
+      for (const [query, option, mode] of [
+        [`to=office&mode=transit&departAt=${later}`, "departAt", "transit"],
+        [`to=${encodeURIComponent("강남역")}&mode=bike&departAt=${later}&reason=x`, "departAt", "bike"],
+        ["to=office&mode=walk&avoid=toll", "avoid", "walk"],
+      ] as const) {
+        const res = await eta(who, query);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toMatchObject({ unsupported: "option", option, mode });
+      }
+    }
+    expect(fake.calls.length, "no geocode or route was sent").toBe(sentBefore);
+    expect((await accessRows()).filter((e) => e.action.startsWith("geo.route") || e.action === "geo.geocode")).toEqual([]);
+    expect((await eta(null, `to=office&mode=car&departAt=${later}`)).status).toBe(200);
   });
 
   it("answers unsupported_mode on Naver, sends nothing, and says which modes it routes", async () => {
@@ -498,12 +511,28 @@ describe("ETA by mode", () => {
     for (const who of [null, AGENT]) {
       const res = await eta(who, "to=office&mode=transit");
       expect(res.status).toBe(409);
-      expect(await res.json()).toMatchObject({ unsupported: "mode", mode: "transit", provider: "naver", supported: ["car"] });
+      const body = await res.json();
+      expect(body).toMatchObject({ unsupported: "mode", mode: "transit", provider: "naver", supported: ["car"] });
+      expect(body).not.toHaveProperty("hint");
     }
     expect(routeCalls()).toEqual([]);
     expect((await eta(AGENT, "to=office")).status).toBe(200);
     const row = (await accessRows()).find((e) => e.action === "geo.eta" && e.outcome === "error");
     expect(row.denial).toMatch(/naver does not route transit/);
+  });
+
+  it("hints at switching providers when another with a key routes the mode", async () => {
+    await boot({
+      operatorKeys: {
+        naver: { provider: "naver", clientId: "operator-naver-id", clientSecret: "operator-naver-secret" },
+        kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" },
+      },
+    });
+    await ingest(AWAY);
+    await settings({ geoEnabled: true, etaToAgents: true, geoProvider: "naver" });
+    const res = await eta(AGENT, "to=office&mode=walk");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ provider: "naver", supported: ["car"], hint: expect.stringContaining("geoProvider) to kakao") });
   });
 });
 

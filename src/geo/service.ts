@@ -127,8 +127,10 @@ export type EtaOutcome<A extends EtaAnswer = EtaAnswer> =
   | { kind: "ambiguous"; candidates: CandidateView[] }
   | { kind: "rate_limited" }
   | { kind: "unconfigured" }
-  /** The provider in use does not route this mode; nothing was sent. */
-  | { kind: "unsupported_mode"; mode: RouteMode; provider: GeoProviderName; supported: readonly RouteMode[] }
+  /** The provider in use does not route this mode; nothing was sent. `switchTo`: other providers with a key that do. */
+  | { kind: "unsupported_mode"; mode: RouteMode; provider: GeoProviderName; supported: readonly RouteMode[]; switchTo: GeoProviderName[] }
+  /** An option only driving takes (a later departure, road kinds to avoid); refused before anything was asked or spent. */
+  | { kind: "unsupported_option"; mode: Exclude<RouteMode, "car">; option: "departAt" | "avoid" }
   | { kind: "failed"; error: GeoErrorKind; message: string };
 
 /** Every way an ETA request ends without an answer. */
@@ -148,6 +150,14 @@ interface Gated {
 }
 
 type AgentEtaOk = Extract<EtaOutcome<AgentEtaAnswer>, { kind: "ok" }>;
+
+/** A later departure or road kinds to avoid on a mode that is not driving, as a refusal. */
+function drivingOnlyOption(request: EtaRequest, now: Date): Extract<EtaOutcome, { kind: "unsupported_option" }> | null {
+  if (request.mode === "car") return null;
+  if (request.departAt && request.departAt.getTime() > now.getTime()) return { kind: "unsupported_option", mode: request.mode, option: "departAt" };
+  if (request.avoid?.length) return { kind: "unsupported_option", mode: request.mode, option: "avoid" };
+  return null;
+}
 
 /** One credential's identical request: the same answer within AGENT_ANSWER_TTL_MS. */
 function answerKey(userId: UserId, caller: AgentCaller, request: EtaRequest, precise: boolean): string {
@@ -341,6 +351,8 @@ export class GeoService {
 
   /** The gates an ETA passes before any provider is asked, and what they found. */
   private async gate(userId: UserId, request: EtaRequest, caller: AgentCaller | { kind: "owner" }): Promise<Gated | EtaRefusal> {
+    const option = drivingOnlyOption(request, this.clock());
+    if (option) return option;
     const settings = await this.deps.settings.getOrSeed(userId);
     const agent = caller.kind === "agent" ? caller : null;
     if (agent) {
@@ -386,7 +398,8 @@ export class GeoService {
     if (!resolved) return { kind: "unconfigured" };
     const supported = PROVIDER_ROUTE_MODES[resolved.name];
     if (!supported.includes(request.mode)) {
-      return { kind: "unsupported_mode", mode: request.mode, provider: resolved.name, supported };
+      const switchTo = (await this.keys.available(userId)).filter((p) => p !== resolved.name && PROVIDER_ROUTE_MODES[p].includes(request.mode));
+      return { kind: "unsupported_mode", mode: request.mode, provider: resolved.name, supported, switchTo };
     }
 
     const managesPlaces = caller.kind !== "agent" || caller.scopes.includes("manage_places");

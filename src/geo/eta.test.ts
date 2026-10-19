@@ -252,7 +252,7 @@ describe("a transit, walking or cycling route, from Kakao's documented samples",
 
   it.each(["transit", "walk", "bike"] as const)("Naver answers %s as unsupported_mode and sends nothing", async (mode) => {
     await setUp("naver");
-    expect(await eta({ to: "city hall", mode })).toEqual({ kind: "unsupported_mode", mode, provider: "naver", supported: ["car"] });
+    expect(await eta({ to: "city hall", mode })).toEqual({ kind: "unsupported_mode", mode, provider: "naver", supported: ["car"], switchTo: ["kakao"] });
     expect(fetched.filter((p) => !p.includes("reversegeocode"))).toEqual([]);
   });
 

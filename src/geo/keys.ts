@@ -170,6 +170,17 @@ export class GeoKeys {
     return name ? { provider: this.adapter(this.deps.config.geo.operatorKeys[name]!), name, source: "operator" } : null;
   }
 
+  /** Every provider my calls could use: one I saved a usable key for, or the operator's. */
+  async available(userId: UserId): Promise<GeoProviderName[]> {
+    const operator = this.operatorProviders(userId);
+    const out: GeoProviderName[] = [];
+    for (const name of GEO_PROVIDERS) {
+      const keys = await this.deps.credentials.open(userId, name);
+      if ((keys && restCredentials(name, keys)) || operator.includes(name)) out.push(name);
+    }
+    return out;
+  }
+
   async status(userId: UserId, settings: PrivacySettings): Promise<GeoStatus> {
     const resolved = await this.resolve(userId, settings);
     return {
