@@ -15,6 +15,7 @@
  */
 
 import { haversineMeters } from "../geofence/distance.js";
+import { measurePlace } from "../geofence/shape.js";
 import type { Place, PresenceStatus } from "../types.js";
 import type { FreshnessView } from "../presence/freshness.js";
 import { mainRoads } from "./roads.js";
@@ -40,13 +41,13 @@ export function freshEnoughToRoute(fresh: FreshnessView, status: PresenceStatus)
   return fresh.freshness === "live" || (fresh.freshness === "stationary" && INSIDE_PLACE.has(status));
 }
 
-/** The home place the point is at or near (within its radius times `nearMultiplier`), nearest first. */
+/** The home place the point is at or near (inside it or in its near band), nearest first. */
 export function nearHomePlace(point: LatLon, places: readonly Place[], nearMultiplier: number): Place | null {
   let best: { place: Place; d: number } | null = null;
   for (const place of places) {
     if (place.type !== "home") continue;
-    const d = haversineMeters(point.lat, point.lon, place.lat, place.lon);
-    if (d <= place.radiusM * nearMultiplier && (!best || d < best.d)) best = { place, d };
+    const m = measurePlace(place, point.lat, point.lon, nearMultiplier);
+    if (m.near && (!best || m.anchorDistanceM < best.d)) best = { place, d: m.anchorDistanceM };
   }
   return best?.place ?? null;
 }

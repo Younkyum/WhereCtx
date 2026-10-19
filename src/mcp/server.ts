@@ -18,7 +18,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { RouteContext, UserScope } from "../app/context.js";
 import type { Principal } from "../auth/principal.js";
-import { haversineMeters } from "../geofence/distance.js";
+import { measurePlace } from "../geofence/shape.js";
 import {
   accessAtLeast,
   agentEventView,
@@ -247,14 +247,12 @@ export function buildMcpServer(
       if (!place) return none(`no place named "${name}"`);
       const stored = await scope.presence.getCurrent();
       if (!stored?.precise) return ok({ name, near: false, inside: false, note: "no location" });
-      const d = haversineMeters(
+      const { inside, near } = measurePlace(
+        place,
         stored.precise.lat,
         stored.precise.lon,
-        place.lat,
-        place.lon,
+        ctx.config.geofence.nearRadiusMultiplier,
       );
-      const inside = d <= place.radiusM;
-      const near = d <= place.radiusM * ctx.config.geofence.nearRadiusMultiplier;
       const { freshness, lastReportAgoSec } = ctx.views.freshness(toPresenceContext(stored));
       return ok({ name, inside, near, freshness, lastReportAgoSec });
     },
