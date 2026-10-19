@@ -598,6 +598,7 @@ export const KO: Record<I18nKey, string> = {
   "maps.testOk": "키가 동작해요 ({place}).",
   "maps.testFailed": "키가 동작하지 않아요: {why}",
   "maps.removeConfirm": "{provider} 키를 지울까요?",
+  "maps.removeConfirmKeepsMap": "{provider} REST 키를 지울까요? 지도 키는 그대로 둬요.",
   "maps.try": "경로 시험해 보기",
   "maps.tryTo": "장소 이름이나 주소",
   "maps.tryGo": "시간 확인",

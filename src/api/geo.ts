@@ -3,9 +3,9 @@
  *   GET    /v1/geo                              -> which provider and key calls use, my keys' hints (session)
  *   GET    /v1/geo/map-config                   -> the map script and key my dashboard loads, or none (session)
  *   PUT    /v1/geo/credentials/:provider        -> save my REST keys for kakao|naver (session, step-up)
- *   DELETE /v1/geo/credentials/:provider        -> forget all my keys for it (session, step-up)
+ *   DELETE /v1/geo/credentials/:provider        -> forget my REST keys for it, keeping its map key (session, step-up)
  *   PUT    /v1/geo/credentials/:provider/map    -> save my map key for it (session, step-up)
- *   DELETE /v1/geo/credentials/:provider/map    -> forget my map key for it (session)
+ *   DELETE /v1/geo/credentials/:provider/map    -> forget my map key for it, if any (session)
  *   POST   /v1/geo/credentials/:provider/test   -> look up Seoul City Hall with them, never my location (session)
  *   GET    /v1/geo/search?q=                    -> candidates with coordinates (manage_places)
  *   GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
@@ -112,7 +112,7 @@ export function geoRouter(ctx: RouteContext): Hono<AppEnv> {
   app.delete("/credentials/:provider", requireSession, requireFreshSession(ctx), async (c) => {
     const provider = Provider.safeParse(c.req.param("provider"));
     if (!provider.success || !(await c.get("scope").geo.deleteCredential(provider.data))) {
-      return c.json({ error: "no key saved for this provider" }, 404);
+      return c.json({ error: "no REST key saved for this provider" }, 404);
     }
     return c.json({ ok: true });
   });

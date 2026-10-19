@@ -324,6 +324,39 @@ describe("maps in the dashboard", () => {
     expect(lastScene().markers.map((m) => [m.at.lat, m.at.lon])).toEqual([[37.1234567, 127.7654321]]);
   });
 
+  describe("Maps & routes keys", () => {
+    const row = (over: Record<string, unknown>) => ({ provider: "kakao", status: "ok", rest: false, map: false, kinds: {}, updatedAt: "", lastUsedAt: null, lastError: null, ...over });
+    const geo = (credentials: unknown[]) => () => ({ status: 200, body: { active: null, map: null, credentials, operator: [], operatorMap: [] } });
+
+    beforeEach(() => {
+      routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { provider: null } }));
+      routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: false, geoProvider: null } } }));
+    });
+
+    it("a provider with only a map key shows no saved REST key, and its map key in the map panel", async () => {
+      routes.set("GET /v1/geo", geo([row({ map: true, kinds: { jsKey: "c123" } })]));
+      await open("#maps");
+      expect(host.textContent).toContain("Map key ••••c123");
+      expect(host.textContent).not.toContain("Saved key");
+      expect([...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Test")).toEqual([]);
+    });
+
+    it("a REST key alone shows no map key", async () => {
+      routes.set("GET /v1/geo", geo([row({ rest: true, kinds: { restKey: "cdef" } })]));
+      await open("#maps");
+      expect(host.textContent).toContain("Saved key ••••cdef");
+      expect(host.textContent).not.toContain("Map key ••••");
+    });
+
+    it("deleting the REST key says the map key stays", async () => {
+      routes.set("GET /v1/geo", geo([row({ rest: true, map: true, kinds: { restKey: "cdef", jsKey: "c123" } })]));
+      await open("#maps");
+      await act(async () => button("Delete").click());
+      await settle();
+      expect(document.body.textContent).toContain("Remove your Kakao REST key? Your map key stays.");
+    });
+  });
+
   it("the route tester draws the owner's route", async () => {
     routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
     routes.set("GET /v1/geo", () => ({ status: 200, body: { active: { provider: "kakao", source: "own" }, map: { provider: "kakao", source: "own" }, credentials: [], operator: [], operatorMap: [] } }));

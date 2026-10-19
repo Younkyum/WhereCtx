@@ -19,6 +19,7 @@ import type { WhereCtxConfig } from "../config.js";
 import type { AccessLogStore } from "../activity/accessLogStore.js";
 import type { AccessAction, AccessSurface, Credential } from "../activity/types.js";
 import { RateLimiter } from "../api/rateLimit.js";
+import { KeyedMutex } from "../util/mutex.js";
 import type { PrivacySettings, TokenScope, UserId } from "../types.js";
 import { log } from "../util/log.js";
 import type { Clock } from "../util/time.js";
@@ -114,6 +115,12 @@ export class GeoKeys {
   private readonly perKey: RateLimiter;
   /** Operator-key calls today per person other than USER_ID, by UTC day. */
   private readonly daily = new Map<UserId, { day: string; count: number }>();
+  /** One key-bag change at a time per person and provider: each reads the bag, changes one part, and writes it back. */
+  private readonly writes = new KeyedMutex();
+
+  private change<T>(userId: UserId, provider: GeoProviderName, fn: () => Promise<T>): Promise<T> {
+    return this.writes.run(`${userId}|${provider}`, fn);
+  }
 
   constructor(private readonly deps: GeoKeysDeps) {
     this.perUser = new RateLimiter({ max: GEO_USER_CALLS_PER_MINUTE, clock: deps.clock });
@@ -194,25 +201,53 @@ export class GeoKeys {
     };
   }
 
-  /** Save a provider's REST keys, keeping its map key. */
-  async save(userId: UserId, provider: GeoProviderName, keys: GeoKeyBag): Promise<StoredGeoCredential> {
-    const mapKind = MAP_SDKS[provider].keyKind;
-    const map = (await this.deps.credentials.open(userId, provider))?.[mapKind];
-    return this.deps.credentials.put(userId, provider, { ...keys, ...(map ? { [mapKind]: map } : {}) });
+  private async stored(userId: UserId, provider: GeoProviderName): Promise<StoredGeoCredential | null> {
+    return (await this.deps.credentials.list(userId)).find((c) => c.provider === provider) ?? null;
   }
 
-  /** Save or, with null, forget a provider's map key, keeping its REST keys; the row goes when nothing is left. */
-  async saveMapKey(userId: UserId, provider: GeoProviderName, key: string | null): Promise<StoredGeoCredential | null> {
-    const mapKind = MAP_SDKS[provider].keyKind;
-    const { [mapKind]: _old, ...rest } = (await this.deps.credentials.open(userId, provider)) ?? {};
-    const keys: GeoKeyBag = key ? { ...rest, [mapKind]: key } : rest;
-    if (Object.values(keys).some(Boolean)) return this.deps.credentials.put(userId, provider, keys);
-    await this.deps.credentials.delete(userId, provider);
-    return null;
+  /** Save a provider's REST keys, keeping its map key; how the old REST keys fared is forgotten. */
+  save(userId: UserId, provider: GeoProviderName, keys: GeoKeyBag): Promise<StoredGeoCredential> {
+    return this.change(userId, provider, async () => {
+      const mapKind = MAP_SDKS[provider].keyKind;
+      const map = (await this.deps.credentials.open(userId, provider))?.[mapKind];
+      return this.deps.credentials.put(userId, provider, { ...keys, ...(map ? { [mapKind]: map } : {}) }, { resetUse: true });
+    });
   }
 
-  delete(userId: UserId, provider: GeoProviderName): Promise<boolean> {
-    return this.deps.credentials.delete(userId, provider);
+  /**
+   * Save or, with null, forget a provider's map key, keeping its REST keys
+   * and how they last fared; the row goes when nothing is left. Forgetting a
+   * map key that is not there changes nothing.
+   */
+  saveMapKey(userId: UserId, provider: GeoProviderName, key: string | null): Promise<StoredGeoCredential | null> {
+    return this.change(userId, provider, async () => {
+      const mapKind = MAP_SDKS[provider].keyKind;
+      const bag = await this.deps.credentials.open(userId, provider);
+      if (!key && !bag?.[mapKind]) return this.stored(userId, provider);
+      const { [mapKind]: _old, ...rest } = bag ?? {};
+      const keys: GeoKeyBag = key ? { ...rest, [mapKind]: key } : rest;
+      if (Object.values(keys).some(Boolean)) return this.deps.credentials.put(userId, provider, keys, { resetUse: false });
+      await this.deps.credentials.delete(userId, provider);
+      return null;
+    });
+  }
+
+  /**
+   * Forget a provider's REST keys, keeping its map key; the row goes when
+   * nothing is left, and an unusable row goes whole. False when there were
+   * no REST keys to forget.
+   */
+  deleteRest(userId: UserId, provider: GeoProviderName): Promise<boolean> {
+    return this.change(userId, provider, async () => {
+      const bag = await this.deps.credentials.open(userId, provider);
+      if (!bag) return this.deps.credentials.delete(userId, provider);
+      if (!restCredentials(provider, bag)) return false;
+      const mapKind = MAP_SDKS[provider].keyKind;
+      const map = bag[mapKind];
+      if (map) await this.deps.credentials.put(userId, provider, { [mapKind]: map }, { resetUse: true });
+      else await this.deps.credentials.delete(userId, provider);
+      return true;
+    });
   }
 
   /** Look up a fixed public landmark with my saved key, never my location. Counts against my budgets. */

@@ -596,6 +596,7 @@ export const EN = {
   "maps.testOk": "The key works ({place}).",
   "maps.testFailed": "The key did not work: {why}",
   "maps.removeConfirm": "Remove your {provider} key?",
+  "maps.removeConfirmKeepsMap": "Remove your {provider} REST key? Your map key stays.",
   "maps.try": "Try a route",
   "maps.tryTo": "To a place name or an address",
   "maps.tryGo": "Get ETA",

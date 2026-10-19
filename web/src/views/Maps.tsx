@@ -79,7 +79,7 @@ export function MapsView() {
                 {(p) => (
                   <KeyRow
                     provider={p}
-                    saved={status.credentials.find((c) => c.provider === p)}
+                    saved={status.credentials.find((c) => c.provider === p && (c.rest || c.status === "unusable"))}
                     operator={status.operator.includes(p)}
                     onChanged={reload}
                   />
@@ -195,7 +195,8 @@ function KeyRow({
     await onChanged();
   });
   const remove = async () => {
-    if (!(await confirm({ title: t("maps.removeConfirm", { provider: t(`maps.p.${provider}`) }), action: t("common.delete") }))) return;
+    const title = t(saved?.map ? "maps.removeConfirmKeepsMap" : "maps.removeConfirm", { provider: t(`maps.p.${provider}`) });
+    if (!(await confirm({ title, action: t("common.delete") }))) return;
     try {
       await api(`/v1/geo/credentials/${provider}`, { method: "DELETE" });
       notify.ok(t("toast.deleted"));
@@ -298,7 +299,7 @@ function MapKeyRow({
   const notify = useNotify();
   const confirm = useConfirm();
   const [key, setKey] = useState("");
-  const hint = saved?.kinds[MAP_KIND[provider]];
+  const hint = saved?.map ? saved.kinds[MAP_KIND[provider]] : undefined;
   const [saving, save] = useAction(async () => {
     await api(`/v1/geo/credentials/${provider}/map`, { method: "PUT", body: { key: key.trim() } });
     setKey("");

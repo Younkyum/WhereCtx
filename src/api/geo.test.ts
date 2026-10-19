@@ -468,6 +468,51 @@ describe("the map key and map-config", () => {
     expect((await owner.browser.json("/v1/geo")).credentials).toEqual([]);
   });
 
+  it("reports the REST keys and the map key apart, and removing the REST keys keeps the map key", async () => {
+    await boot();
+    await settings({ geoEnabled: true });
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
+    const row = async () => (await owner.browser.json("/v1/geo")).credentials[0];
+    expect(await row()).toMatchObject({ rest: false, map: true });
+    expect((await owner.browser.send("/v1/geo/credentials/kakao", { method: "DELETE" })).status).toBe(404);
+    await owner.browser.json("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: KAKAO_KEY } });
+    expect(await row()).toMatchObject({ rest: true, map: true });
+    expect((await owner.browser.send("/v1/geo/credentials/kakao", { method: "DELETE" })).status).toBe(200);
+    expect(await row()).toMatchObject({ rest: false, map: true, kinds: { jsKey: "c123" } });
+    expect((await mapConfig()).provider).toBe("kakao");
+  });
+
+  it("keeps how the REST key last fared when the map key is saved or removed, and removing no map key changes nothing", async () => {
+    await boot();
+    await owner.browser.json("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: KAKAO_KEY } });
+    await settings({ geoEnabled: true });
+    expect((await owner.browser.json("/v1/geo/credentials/kakao/test", { method: "POST" })).test.ok).toBe(true);
+    const before = (await owner.browser.json("/v1/geo")).credentials[0];
+    expect(before.lastUsedAt).not.toBeNull();
+    clock.advance(60_000);
+    const unchanged = await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "DELETE" });
+    expect(unchanged.credential).toEqual(before);
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "DELETE" });
+    expect((await owner.browser.json("/v1/geo")).credentials[0]).toMatchObject({ lastUsedAt: before.lastUsedAt, lastError: null, map: false });
+  });
+
+  it("saves the REST keys and the map key side by side when both arrive at once", async () => {
+    await boot();
+    for (let round = 0; round < 5; round++) {
+      await Promise.all([
+        owner.browser.json("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: KAKAO_KEY } }),
+        owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } }),
+      ]);
+      expect(await ctx.system.geo.status(owner.userId as never).then((s) => s.credentials[0]), `round ${round}`).toMatchObject({ rest: true, map: true });
+      await Promise.all([
+        owner.browser.json("/v1/geo/credentials/kakao", { method: "DELETE" }),
+        owner.browser.json("/v1/geo/credentials/kakao/map", { method: "DELETE" }),
+      ]);
+      expect((await owner.browser.json("/v1/geo")).credentials, `round ${round}`).toEqual([]);
+    }
+  });
+
   it("refuses a key that could break out of the script URL", async () => {
     await boot();
     for (const key of ["short", "abc&callback=evil123", "abc\"onload=x12345", "x".repeat(129)]) {

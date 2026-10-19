@@ -226,9 +226,9 @@ export class GeoService {
     return map ? { provider: map.provider, sdkUrl: MAP_SDKS[map.provider].sdkUrl(map.key) } : { provider: null };
   }
 
-  /** Forget a provider's keys, and every area answer kept for me. */
+  /** Forget a provider's REST keys (keeping its map key), and every area answer kept for me. */
   async deleteCredential(userId: UserId, provider: GeoProviderName): Promise<boolean> {
-    const deleted = await this.keys.delete(userId, provider);
+    const deleted = await this.keys.deleteRest(userId, provider);
     if (deleted) await this.deps.cache.purge(userId);
     return deleted;
   }
