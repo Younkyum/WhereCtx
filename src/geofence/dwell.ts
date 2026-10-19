@@ -86,11 +86,6 @@ export function step(
   return enterDue ? entered([]) : { state: { current: null, exitSince: null, candidate }, transitions: [] };
 }
 
-/** Whether a sweep could change the state: an enter or a leave is pending. */
-export function isPending(state: DwellState): boolean {
-  return state.candidate !== null || state.exitSince !== null;
-}
-
 /**
  * The transition under way, for agents: leaving the confirmed place while
  * that is pending (the status still says it), else entering the candidate.
