@@ -37,9 +37,9 @@ function lonOffset(lon: number, origin: Origin): number {
   return ((((lon - origin.lon + 180) % 360) + 360) % 360) - 180;
 }
 
-function project(lon: number, lat: number, origin: Origin): Xy {
+function project(lon: number, lat: number, origin: Origin, cosLat = Math.cos(toRad(origin.lat))): Xy {
   return {
-    x: EARTH_RADIUS_M * toRad(lonOffset(lon, origin)) * Math.cos(toRad(origin.lat)),
+    x: EARTH_RADIUS_M * toRad(lonOffset(lon, origin)) * cosLat,
     y: EARTH_RADIUS_M * toRad(lat - origin.lat),
   };
 }
@@ -112,26 +112,68 @@ function segmentDistance(p: Xy, a: Xy, b: Xy): number {
 export interface PolygonMeasure {
   /** Inside the ring or on its boundary. */
   inside: boolean;
-  /** Meters to the nearest edge (0 on it). */
-  boundaryDistanceM: number;
+  /** 0 inside or on the boundary, else meters to the nearest edge. */
+  edgeDistanceM: number;
 }
 
-/** Where (lat, lon) falls against a closed ring, measured around `origin` (the place's centroid). */
-export function measurePolygon(ring: Ring, origin: Origin, lat: number, lon: number): PolygonMeasure {
+/** A ring projected once around `origin` (its place's centroid), for measuring many points. */
+export interface PolygonFrame {
+  origin: Origin;
+  cosLat: number;
+  pts: readonly Xy[];
+  areaM2: number;
+  /** The projected bounding box, grown by ON_EDGE_M. */
+  box: { minX: number; maxX: number; minY: number; maxY: number };
+}
+
+export function polygonFrame(ring: Ring, origin: Origin): PolygonFrame {
   const pts = projectRing(ring, origin);
-  const p = project(lon, lat, origin);
-  let boundaryDistanceM = Infinity;
-  let crossings = false;
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  return {
+    origin,
+    cosLat: Math.cos(toRad(origin.lat)),
+    pts,
+    areaM2: Math.abs(signedArea(pts)),
+    box: {
+      minX: Math.min(...xs) - ON_EDGE_M,
+      maxX: Math.max(...xs) + ON_EDGE_M,
+      minY: Math.min(...ys) - ON_EDGE_M,
+      maxY: Math.max(...ys) + ON_EDGE_M,
+    },
+  };
+}
+
+/** Ray casting: strictly inside, the boundary aside. */
+function crossesOdd(pts: readonly Xy[], p: Xy): boolean {
+  let odd = false;
   for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
     const a = pts[i]!;
     const b = pts[j]!;
-    boundaryDistanceM = Math.min(boundaryDistanceM, segmentDistance(p, a, b));
-    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) {
-      crossings = !crossings;
-    }
+    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) odd = !odd;
   }
-  const onEdge = boundaryDistanceM <= ON_EDGE_M;
-  return { inside: crossings || onEdge, boundaryDistanceM: onEdge ? 0 : boundaryDistanceM };
+  return odd;
+}
+
+function nearestEdgeM(pts: readonly Xy[], p: Xy): number {
+  let d = Infinity;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) d = Math.min(d, segmentDistance(p, pts[i]!, pts[j]!));
+  return d;
+}
+
+/** Where (lat, lon) falls against a projected ring. */
+export function measurePolygon({ origin, cosLat, pts }: PolygonFrame, lat: number, lon: number): PolygonMeasure {
+  const p = project(lon, lat, origin, cosLat);
+  if (crossesOdd(pts, p)) return { inside: true, edgeDistanceM: 0 };
+  const edgeDistanceM = nearestEdgeM(pts, p);
+  return edgeDistanceM <= ON_EDGE_M ? { inside: true, edgeDistanceM: 0 } : { inside: false, edgeDistanceM };
+}
+
+/** Whether (lat, lon) is inside the ring or on its boundary, without measuring how far outside it is. */
+export function insidePolygon({ origin, cosLat, pts, box }: PolygonFrame, lat: number, lon: number): boolean {
+  const p = project(lon, lat, origin, cosLat);
+  if (p.x < box.minX || p.x > box.maxX || p.y < box.minY || p.y > box.maxY) return false;
+  return crossesOdd(pts, p) || nearestEdgeM(pts, p) <= ON_EDGE_M;
 }
 
 /** Collinear when the angle at `a` between ab and ac is below about 1e-9 rad, whatever the scale. */

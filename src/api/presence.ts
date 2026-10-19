@@ -18,7 +18,8 @@ import { Hono, type MiddlewareHandler } from "hono";
 import type { RouteContext } from "../app/context.js";
 import { authorizePrecise, buildPreciseView } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
-import { measurePlace, nearHomePlace } from "../geofence/shape.js";
+import { haversineMeters } from "../geofence/distance.js";
+import { insidePlace, nearHomePlace } from "../geofence/shape.js";
 import type { Place } from "../types.js";
 import { decide, refuse } from "./accessAudit.js";
 import { noStore, requireScope } from "./middleware.js";
@@ -41,8 +42,9 @@ const HistoryRange = z.object({
 export function placeContaining(point: { lat: number; lon: number }, places: readonly Place[]): string | undefined {
   let best: { name: string; d: number } | undefined;
   for (const place of places) {
-    const m = measurePlace(place, point.lat, point.lon, 1);
-    if (m.inside && (!best || m.anchorDistanceM < best.d)) best = { name: place.name, d: m.anchorDistanceM };
+    if (!insidePlace(place, point.lat, point.lon)) continue;
+    const d = haversineMeters(point.lat, point.lon, place.lat, place.lon);
+    if (!best || d < best.d) best = { name: place.name, d };
   }
   return best?.name;
 }

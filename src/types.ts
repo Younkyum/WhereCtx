@@ -198,6 +198,9 @@ export interface PresenceEvent {
 /** Default geofence radius (meters) when a caller omits it (REST + MCP). */
 export const DEFAULT_PLACE_RADIUS_M = 150;
 
+/** Cap on a person's places: bounds writes, and the work every reading and history request does per place. */
+export const MAX_PLACES = 100;
+
 /**
  * Agent-facing place view: name + type only. lat/lon (the home address),
  * radiusM (geofence size), polygon (its outline), label (often the literal

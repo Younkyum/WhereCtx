@@ -7,17 +7,31 @@
 
 import type { Place, Ring } from "../types.js";
 import { haversineMeters } from "./distance.js";
-import { measurePolygon, polygonAreaM2 } from "./polygon.js";
+import { insidePolygon, measurePolygon, polygonFrame, type PolygonFrame } from "./polygon.js";
 
 export type PlaceShape =
   | { kind: "circle"; lat: number; lon: number; radiusM: number }
-  | { kind: "polygon"; ring: Ring; centroid: { lat: number; lon: number } };
+  | { kind: "polygon"; frame: PolygonFrame };
 
 type Shaped = Pick<Place, "lat" | "lon" | "radiusM" | "polygon">;
 
+/**
+ * Projected rings by ring, so history or a sweep measuring many points
+ * against the same places projects each ring once, not once per point.
+ */
+const frames = new WeakMap<Ring, PolygonFrame>();
+
+function frameOf(ring: Ring, lat: number, lon: number): PolygonFrame {
+  const cached = frames.get(ring);
+  if (cached && cached.origin.lat === lat && cached.origin.lon === lon) return cached;
+  const frame = polygonFrame(ring, { lat, lon });
+  frames.set(ring, frame);
+  return frame;
+}
+
 export function placeShape(place: Shaped): PlaceShape {
   return place.polygon
-    ? { kind: "polygon", ring: place.polygon, centroid: { lat: place.lat, lon: place.lon } }
+    ? { kind: "polygon", frame: frameOf(place.polygon, place.lat, place.lon) }
     : { kind: "circle", lat: place.lat, lon: place.lon, radiusM: place.radiusM };
 }
 
@@ -48,12 +62,19 @@ export function measurePlace(place: Shaped, lat: number, lon: number, nearMultip
         anchorDistanceM,
       };
     case "polygon": {
-      const { inside, boundaryDistanceM } = measurePolygon(shape.ring, shape.centroid, lat, lon);
-      const edgeDistanceM = inside ? 0 : boundaryDistanceM;
-      const band = (nearMultiplier - 1) * Math.sqrt(polygonAreaM2(shape.ring, shape.centroid) / Math.PI);
+      const { inside, edgeDistanceM } = measurePolygon(shape.frame, lat, lon);
+      const band = (nearMultiplier - 1) * Math.sqrt(shape.frame.areaM2 / Math.PI);
       return { inside, near: edgeDistanceM <= band, edgeDistanceM, anchorDistanceM };
     }
   }
+}
+
+/** Whether the point is inside the place or on its boundary: measurePlace without the distances. */
+export function insidePlace(place: Shaped, lat: number, lon: number): boolean {
+  const shape = placeShape(place);
+  return shape.kind === "circle"
+    ? haversineMeters(lat, lon, shape.lat, shape.lon) <= shape.radiusM
+    : insidePolygon(shape.frame, lat, lon);
 }
 
 /** The home place the point is at or near (inside it or in its near band), nearest first. */

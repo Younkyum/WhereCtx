@@ -580,6 +580,14 @@ The owner asked to see things on a map. Agents still get none.
   that only needs a point, such as the maps road clearance and an ETA
   destination, keeps working off the anchor. Ranking among overlapping
   places stays by anchor distance, unchanged for circles.
+- **Measuring stays cheap at the place limit.** A polygon is projected once
+  per ring and reused (a WeakMap keyed by the ring), ray casting runs
+  before any edge distance, and a caller that asks only "inside?"
+  (history's labels, custom places in the engine) skips the distance and
+  rejects a point outside the bounding box at once. 100 places per person
+  (REST and MCP) bounds the rest: 5000 history points against 100
+  200-vertex polygons went from about 3 s to 0.2 s, all inside, and to
+  about 12 ms all outside.
 - **A polygon's near band** is the band an equal-area circle gets,
   measured outward from the boundary: `edge <= (nearMultiplier - 1) *
   sqrt(area / pi)`.

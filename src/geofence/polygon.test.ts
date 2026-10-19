@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_PLACE_RULES, type Place } from "../types.js";
 import { computeGeofence } from "./engine.js";
 import { validatePolygon, type ValidPolygon } from "./polygon.js";
-import { measurePlace } from "./shape.js";
+import { insidePlace, measurePlace } from "./shape.js";
 
 const ORIGIN = { lat: 37.5, lon: 127.0 };
 const M_PER_DEG_LAT = 111_195;
@@ -16,6 +16,17 @@ function valid(pts: Array<[number, number]>): ValidPolygon {
   const check = validatePolygon(ringOf(pts));
   if (!check.ok) throw new Error(check.error);
   return check.polygon;
+}
+
+/** Deterministic [0, 1) numbers (mulberry32), so a failure reproduces. */
+function seeded(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
 }
 
 function polygonPlace(polygon: ValidPolygon, over: Partial<Place> = {}): Place {
@@ -125,16 +136,6 @@ describe("validatePolygon", () => {
 });
 
 describe("validatePolygon at the scale of a city", () => {
-  /** Deterministic [0, 1) numbers (mulberry32), so a failure reproduces. */
-  function seeded(seed: number): () => number {
-    let a = seed;
-    return () => {
-      a = (a + 0x6d2b79f5) | 0;
-      let t = Math.imul(a ^ (a >>> 15), 1 | a);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-    };
-  }
   type Pos = [number, number];
   const between = (a: Pos, b: Pos, t: number): Pos => [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
 
@@ -163,6 +164,15 @@ describe("validatePolygon at the scale of a city", () => {
 
 describe("measurePlace on a polygon", () => {
   const u = polygonPlace(valid(U));
+
+  it("agrees with insidePlace everywhere, on the boundary and far away included", () => {
+    const rand = seeded(7);
+    const points: Array<[number, number]> = [...ringOf(U), at(0, 125), at(100, 0)];
+    for (let k = 0; k < 2000; k++) points.push(at(-400 + rand() * 1000, -400 + rand() * 1000));
+    const disagree = points.filter(([lon, lat]) => insidePlace(u, lat, lon) !== measurePlace(u, lat, lon, 3).inside);
+    expect(disagree).toEqual([]);
+    expect(points.filter(([lon, lat]) => insidePlace(u, lat, lon)).length).toBeGreaterThan(100);
+  });
 
   it("puts a point in an arm inside and a point in the notch outside", () => {
     const [armLon, armLat] = at(50, 250);

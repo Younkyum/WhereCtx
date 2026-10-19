@@ -17,8 +17,8 @@
  */
 
 import type { Place, PresenceStatus } from "../types.js";
-import { isValidCoordinate } from "./distance.js";
-import { measurePlace } from "./shape.js";
+import { haversineMeters, isValidCoordinate } from "./distance.js";
+import { insidePlace, measurePlace } from "./shape.js";
 
 export interface GeofenceResult {
   status: PresenceStatus;
@@ -60,15 +60,19 @@ export function computeGeofence(
     return { ...unknown, outside: unknown };
   }
 
+  // Only home and work places have a near status, so a custom place is asked only whether the point is in it.
   const ranked = places
-    .map((place) => ({ place, ...measurePlace(place, lat, lon, nearMultiplier) }))
+    .map((place) =>
+      place.type === "custom"
+        ? { place, inside: insidePlace(place, lat, lon), near: false, anchorDistanceM: haversineMeters(lat, lon, place.lat, place.lon) }
+        : { place, ...measurePlace(place, lat, lon, nearMultiplier) },
+    )
     .sort((a, b) => a.anchorDistanceM - b.anchorDistanceM);
 
   // ranked[0] exists because places.length > 0.
   const nearest = { nearestPlace: ranked[0]!.place, nearestDistanceM: ranked[0]!.anchorDistanceM };
 
-  // Only home and work places have a near status.
-  const near = ranked.find((r) => r.near && (r.place.type === "home" || r.place.type === "work"));
+  const near = ranked.find((r) => r.near);
   const outsideStatus: PresenceStatus = near ? (near.place.type === "home" ? "near_home" : "near_work") : "away";
   const outside = { status: outsideStatus, label: STATUS_LABELS[outsideStatus] };
 

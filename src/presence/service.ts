@@ -18,7 +18,7 @@ import type { WhereCtxConfig } from "../config.js";
 import { computeGeofence, labelForStatus, statusFor } from "../geofence/engine.js";
 import { encodeGeohash, haversineMeters } from "../geofence/distance.js";
 import { approach } from "../geofence/approach.js";
-import { measurePlace, nearHomePlace } from "../geofence/shape.js";
+import { insidePlace, nearHomePlace } from "../geofence/shape.js";
 import { step, type DwellState, type DwellTransition } from "../geofence/dwell.js";
 import { AREA_REFRESH_MOVE_M, type AreaUpdate } from "../geo/area.js";
 import type { NormalizedReading } from "../normalizer/types.js";
@@ -258,7 +258,7 @@ export class PresenceService {
       args.dwell,
       {
         raw: geo.matchedPlace?.name ?? null,
-        insideCurrent: current !== undefined && measurePlace(current, args.point.lat, args.point.lon, 1).inside,
+        insideCurrent: current !== undefined && insidePlace(current, args.point.lat, args.point.lon),
         drivingBy: drivingBy(args.motion, args.point.speedMps),
       },
       args.now,

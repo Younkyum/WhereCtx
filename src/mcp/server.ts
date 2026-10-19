@@ -36,7 +36,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { accessRecorder, type AccessRecorder } from "../activity/record.js";
 import type { AccessAction, AccessDecision } from "../activity/types.js";
-import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type Place, type PlaceType } from "../types.js";
+import { DEFAULT_PLACE_RADIUS_M, MAX_PLACES, sanitizePlace, type Place, type PlaceType } from "../types.js";
 import { credentialOf } from "../activity/record.js";
 import type { AgentCaller } from "../geo/service.js";
 import { candidateViews, pickCandidate } from "../geo/service.js";
@@ -45,9 +45,6 @@ import { ROUTE_AVOID } from "../geo/types.js";
 
 /** Cap on active location reminders, to bound writes from read-scoped tokens. */
 const MAX_ACTIVE_REMINDERS = 100;
-
-/** Cap on registered places, to bound writes from read-scoped tokens. */
-const MAX_PLACES = 100;
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 

@@ -3,7 +3,7 @@ import type { Hono } from "hono";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { WhereCtxConfig } from "../config.js";
-import { ROLE_SCOPES, asUserId } from "../types.js";
+import { MAX_PLACES, ROLE_SCOPES, asUserId } from "../types.js";
 import { createAppContext, type AppContext } from "../app/context.js";
 import { buildApp } from "../app/server.js";
 import type { Principal } from "../auth/principal.js";
@@ -139,6 +139,18 @@ describe("POST /v1/places with a polygon", () => {
     await readInside();
     const presence = (await (await req("/v1/presence", { token: AGENT })).json()) as any;
     expect(presence.status).toBe("work");
+  });
+});
+
+describe("the place limit", () => {
+  it("refuses a new place past the limit and still lets an existing one change", async () => {
+    for (let i = 0; i < MAX_PLACES; i++) {
+      await ctx.forUser(USER).places.upsert({ name: `p${i}`, type: "custom", lat: 37.5, lon: 127, radiusM: 100 });
+    }
+    const extra = await postPlace({ name: "one-more", type: "custom", polygon: OFFICE });
+    expect(extra.status).toBe(409);
+    expect(await extra.json()).toEqual({ error: `place limit reached (${MAX_PLACES})` });
+    expect((await postPlace({ name: "p0", type: "custom", polygon: OFFICE })).status).toBe(201);
   });
 });
 

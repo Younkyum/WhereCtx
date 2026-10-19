@@ -466,6 +466,10 @@ GET    /v1/places          # read_presence: [{name, type}]; manage_places: full 
 POST   /v1/places          # manage_places: create or replace by name
 DELETE /v1/places/:name    # manage_places
 ```
+A person has at most 100 places; creating one more is refused with 409
+(changing an existing place still works). MCP `create_place` and
+`remember_current_place` share the limit.
+
 A place is a circle or a polygon, never both:
 
 ```json

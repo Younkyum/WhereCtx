@@ -15,7 +15,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
-import { DEFAULT_PLACE_RADIUS_M, PLACE_EVENT_TYPES, sanitizePlace, type Ring } from "../types.js";
+import { DEFAULT_PLACE_RADIUS_M, MAX_PLACES, PLACE_EVENT_TYPES, sanitizePlace, type Ring } from "../types.js";
 import { validatePolygon } from "../geofence/polygon.js";
 import { decide } from "./accessAudit.js";
 import { requireAnyScope, requireScope } from "./middleware.js";
@@ -76,6 +76,9 @@ export function placesRouter(ctx: RouteContext): Hono<AppEnv> {
     }
     const { polygon, useCurrentLocation, ...d } = parsed.data;
     const scope = c.get("scope");
+    if (!(await scope.places.get(d.name)) && (await scope.places.count()) >= MAX_PLACES) {
+      return c.json({ error: `place limit reached (${MAX_PLACES})` }, 409);
+    }
     let geometry: { lat: number; lon: number; radiusM: number; polygon?: Ring };
     if (polygon) {
       const check = validatePolygon(polygon);
