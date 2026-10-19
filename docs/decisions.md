@@ -569,3 +569,47 @@ The owner asked to see things on a map. Agents still get none.
 - **The owner reads themself whatever the agent policy.** Coarse and
   precise alike; hidden mode used to refuse the owner's coarse read while
   the map placed them exactly.
+
+## 2026-10-19: webhook auth headers after a two-model review
+
+A hook can carry one credential header for receivers such as n8n Header
+Auth. A review by two models found the first version too trusting; this is
+what changed and why.
+
+- **No plaintext, not even as a fallback.** Signing secrets may be stored in
+  the clear without `WEBHOOK_ENCRYPTION_KEY`, for compatibility with v0.1.
+  Auth headers are new, so they never are: no key, no auth header (`400`,
+  and the dashboard hides the fields and says why, from a capability on
+  `GET /v1/webhooks`). A plaintext value found with a key is refused, not
+  sealed at boot, because sealing would bind a value of unknown origin to
+  whatever row it sits in.
+- **An allow-list of names, not a blocklist.** The blocklist missed
+  `Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `X-HTTP-Method-Override` and
+  others that steer a proxy or the receiver. The allow-list (`Authorization`,
+  `Api-Key`, `X-Api-Key`, `X-*-Token|Key|Auth|Authorization|Secret|Signature`)
+  covers the receivers we know and fails closed for the rest. Headers go out
+  through `Headers`, so no name can fall onto an object prototype.
+- **Check the address the socket connects to.** Checking a name's addresses
+  and then letting `fetch` resolve again let a rebinding answer through.
+  Delivery now uses `node:http(s)` with a `lookup` that resolves, judges and
+  returns only judged addresses (no new dependency: Node's bundled undici
+  does not expose its `Agent`). IPv6 is parsed to bytes, so `[::ffff:7f00:1]`
+  is loopback like `::ffff:127.0.0.1`, and NAT64, 6to4 and Teredo are judged
+  by their embedded IPv4.
+- **https for a credential**, unless private targets are allowed, where LAN
+  receivers often have no certificate.
+- **One bad row fails one hook.** Opening a row parses and re-validates the
+  header; any failure marks that hook unreadable (logged once per hook and
+  reason), skips it for delivery, and shows it to its owner to replace or
+  delete, instead of throwing out of the dispatcher's list for everyone.
+- **The ciphertext is the version.** Every write seals with a fresh IV, so a
+  drain's cursor write also requires the stored ciphertext it read; a header
+  replaced mid-drain stops the drain, and attempt counts are kept per
+  credential version so failures under an old value never dead-letter under
+  the new one.
+- **Fixed failure categories.** A request error can quote headers in forms an
+  exact-substring cut misses, so a hook with an auth header records only
+  `timeout`, `connect_error`, `tls_error`, `request_failed` or `status <n>`.
+- **The hint is for long tokens only.** Four characters of an 8-character
+  token is half of it; the hint skips the scheme, shows nothing for `Basic`,
+  and shows four characters only of a token of 20 or more.

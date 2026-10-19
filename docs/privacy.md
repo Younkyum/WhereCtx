@@ -389,8 +389,11 @@ code (README, "Recover access").
 
 Webhook delivery is a server-side outbound request to an operator-supplied URL.
 WhereCtx blocks targets that resolve to private/reserved addresses (loopback,
-`169.254.0.0/16` cloud metadata, RFC1918, ULA, link-local) at both create and
-delivery time, and uses `redirect: "manual"`. Set
+`169.254.0.0/16` cloud metadata, RFC1918, CGNAT, ULA, link-local, multicast,
+and IPv6 forms that carry one of those IPv4 addresses: IPv4-mapped,
+IPv4-compatible, NAT64, 6to4, Teredo) at create time, and at delivery time
+inside the connection's own DNS lookup, so the address connected to is the
+one checked. Redirects are never followed. Set
 `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` only to deliberately reach a LAN service
 (e.g. a local Home Assistant). Webhook bodies are HMAC-SHA256 signed over
 `"<timestamp>.<body>"` (`X-WhereCtx-Signature`, `X-WhereCtx-Timestamp` — see
@@ -398,15 +401,40 @@ docs/api.md for verification) when the subscription has a secret, and signing
 secrets are encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set.
 
 A webhook's auth header (a credential such as `Authorization: Bearer …` that
-the receiver checks) is a secret of the same kind. It is encrypted at rest
-with the same key, bound to its owner and hook so a value copied onto another
-row does not open, sent only to that hook's URL, never returned by the API or
-shown in the dashboard (only its name and last four characters), and cut out
-of any delivery error before it is logged or kept as a dead letter. Without
-`WEBHOOK_ENCRYPTION_KEY` it is stored in the clear and boot warns, as for
-signing secrets; setting the key encrypts existing values at the next boot.
-A hook whose secret or auth header cannot be opened (a changed key) is not
-delivered to at all, rather than delivered without its credential.
+the receiver checks) is a secret of the same kind, held to more:
+
+- **Never stored in the clear.** It is AES-256-GCM encrypted with
+  `WEBHOOK_ENCRYPTION_KEY`; without the key the server refuses one. A stored
+  value that is not encrypted (written before this rule, or by hand) is not
+  sent and not encrypted in place; boot warns with how many there are, and
+  the owner replaces or removes each.
+- **Bound to its hook.** The ciphertext is authenticated with its owner's id
+  and its hook's id, so a value copied onto another hook, the same person's
+  or someone else's, or a row moved to another owner, does not open.
+- **Sent only to its own hook's URL, over https.** Not over `http` unless
+  `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`; never to a redirect's `Location`;
+  only to an address the SSRF guard judged at connect time. Its name must be
+  an auth-style name (docs/api.md), so it cannot pose as a forwarding,
+  method-override or host header.
+- **Never shown back.** The API and dashboard show its name and at most the
+  last four characters of a token of 20 or more (nothing of a shorter token
+  or of `Basic` credentials). The dashboard asks browsers and password
+  managers not to save the field.
+- **Not in logs or dead letters.** A failed delivery is recorded as a fixed
+  category (`timeout`, `connect_error`, `tls_error`, `request_failed`,
+  `status <n>`), not the error's text; the exact value is also cut out of
+  whatever is recorded.
+- **Fails closed, one hook at a time.** A hook whose secret or auth header
+  does not open (a changed or missing key, a copied or damaged value) is not
+  delivered at all rather than delivered without its credential; it is
+  logged once, other hooks keep delivering, and its owner sees it marked
+  unreadable so it can be replaced or deleted. Replacing or removing the
+  header stops a delivery run already in progress.
+
+What this does not cover: the key lives in the server's environment, so
+anyone who can read it and the database can open the values; the receiver
+sees the value on every delivery; and a hint shows four characters of a
+long token.
 
 ## Accounts and sessions
 

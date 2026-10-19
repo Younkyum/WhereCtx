@@ -462,7 +462,7 @@ admin token) are never kept.
 ## Webhooks (admin)
 
 ```
-GET    /v1/webhooks                 # manage_privacy — secrets stripped, auth header as name + hint
+GET    /v1/webhooks                 # manage_privacy — secrets stripped, auth header as name + hint, plus capabilities
 POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "secret"?:"…", "authHeader"?:{ "name"?:"…", "value":"…" } }
 PATCH  /v1/webhooks/:id             # { "events"?: [...], "active"?: bool, "authHeader"?: {…} | null }
 GET    /v1/webhooks/dead-letters    # undeliverable events
@@ -480,9 +480,24 @@ The dashboard creates hooks for `presence.entered_place` and
 `presence.left_place` unless the person picks otherwise.
 `POST` answers `400` when the URL's host does not resolve, or resolves to a
 private or reserved IP (SSRF guard) unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`.
-The delivery re-checks the address each time. Each user may have 20 webhooks
-(`409` beyond that). Secrets and auth headers are encrypted at rest when
-`WEBHOOK_ENCRYPTION_KEY` is set.
+IPv6 is judged by its bytes, and an IPv6 address that carries an IPv4 one
+(IPv4-mapped, IPv4-compatible, NAT64, 6to4, Teredo) by that IPv4 address.
+Each delivery checks again, at connect time: the connection resolves the
+host, judges every address, and connects only to one it judged, so a name
+that answers differently the second time (DNS rebinding) gets nothing.
+Each user may have 20 webhooks (`409` beyond that). Signing secrets are
+encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set; auth headers need it.
+
+`GET /v1/webhooks` answers `{ "webhooks": [...], "capabilities": {
+"authHeader": bool, "authHeaderRequiresHttps": bool } }`: whether this server
+can take an auth header (it has `WEBHOOK_ENCRYPTION_KEY`) and whether one
+needs an `https` URL (it does unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`).
+A hook whose stored credentials do not open (the key changed, or the stored
+value was copied from another row or damaged) is listed with
+`"credentialsUnreadable": true` and no `authHeader`. It is not delivered; it
+still counts toward the 20, and `PATCH` (to replace its auth header or pause
+it) and `DELETE` work on it. `PATCH` answers with the hook as stored after the
+change.
 
 ### Auth header
 
@@ -498,22 +513,37 @@ POST /v1/webhooks
   "authHeader":{ "name":"Authorization", "value":"Bearer <token>" } }
 ```
 
-- `name` defaults to `Authorization`. It must be an HTTP token (letters,
-  digits and ``!#$%&'*+-.^_`|~``), at most 64 characters, and not one the
-  server or the connection sets: `Host`, `Content-Length`, `Content-Type`,
-  `Content-Encoding`, `Transfer-Encoding`, `Connection`, `Upgrade`, `TE`,
-  `Trailer`, `Keep-Alive`, `Expect`, `Cookie`, `User-Agent`, any `Proxy-*`,
-  or any `X-WhereCtx-*`. Case does not matter.
+- The server must have `WEBHOOK_ENCRYPTION_KEY`: an auth header is only ever
+  stored encrypted. Without it `POST` and `PATCH` with one answer `400`
+  ("set WEBHOOK_ENCRYPTION_KEY to use auth headers").
+- The URL must be `https`, unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` (a LAN
+  receiver often has no certificate). Otherwise `POST`, and `PATCH` adding one
+  to an `http` hook, answer `400`, and the dispatcher does not send one over
+  `http`.
+- `name` defaults to `Authorization`. It is letters, digits and hyphens, at
+  most 64 characters, and one of: `Authorization`, `Api-Key`, `X-Api-Key`, or
+  an `X-` name ending in `-Token`, `-Key`, `-Api-Key`, `-Auth`,
+  `-Authorization`, `-Secret` or `-Signature` (such as `X-N8N-Auth` or
+  `X-Auth-Token`), but not `X-WhereCtx-*`. Case does not matter. Anything
+  else, including `Cookie`, `Host`, `Forwarded`, `X-Forwarded-*` and
+  `X-Real-IP`, answers `400` with this rule.
 - `value` is 1 to 1024 printable ASCII characters (spaces allowed, no line
   breaks or other control characters); surrounding spaces are trimmed.
 - A refused header answers `400` without quoting the value.
 - `PATCH` with `authHeader` replaces it, and `"authHeader": null` removes it.
 - No response returns the value. A hook with a header lists it as
-  `"authHeader": { "name":"Authorization", "hint":"…9f3k" }`: the last four
-  characters, or `"…"` alone when the value is shorter than 12.
+  `"authHeader": { "name":"Authorization", "hint":"…9f3k" }`. The hint is
+  taken from the token after an optional scheme (`Bearer `): its last four
+  characters when the token is at least 20 long, otherwise `"…"` alone, and
+  always `"…"` alone for `Basic`.
+- Replacing or removing the header stops a delivery run in progress, so
+  nothing more goes out with the old value, and failed attempts start
+  counting again under the new one.
 - Redirects are not followed (a `3xx` counts as a failed delivery), so the
   header never reaches another URL. A failed delivery's error, in the server
-  log and in the dead letters, has the value cut out.
+  log and in the dead letters, is one of `timeout`, `connect_error`,
+  `tls_error`, `request_failed`, `status <n>` or the SSRF guard's reason,
+  never the request error's own text.
 - It works alongside `secret`: a delivery can be both signed and carry the
   header.
 

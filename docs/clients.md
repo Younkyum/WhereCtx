@@ -84,6 +84,12 @@ changes. If the receiving end authenticates by a request header, give the hook
 an auth header in the dashboard (Webhooks, Add webhook, "Auth header") or
 through `authHeader` in the API (docs/api.md, "Auth header").
 
+The server needs `WEBHOOK_ENCRYPTION_KEY` set (the dashboard says so when it
+is not), and the receiver's URL must be `https` unless
+`WEBHOOK_ALLOW_PRIVATE_TARGETS=true`. The header name is `Authorization`,
+`Api-Key`, `X-Api-Key`, or an `X-` name ending in `-Token`, `-Key`, `-Auth`,
+`-Authorization`, `-Secret` or `-Signature`.
+
 - **n8n**: in the Webhook node choose Authentication "Header Auth", create a
   credential with a name and value, and enter the same name and value in
   WhereCtx, for example `X-N8N-Auth` and a long random string.
