@@ -161,11 +161,11 @@ protected from it.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `get_presence` | – | coarse status/label/motion/age/stale (no GPS). `{status:"hidden"}` in hidden mode |
+| `get_presence` | – | coarse status/label/motion/age, `freshness`, `lastReportAgoSec`, `lastMovedAgoSec`, `likelyStationary`, `stale` (no GPS); `area` when allowed. `{status:"hidden"}` in hidden mode |
 | `get_precise_location` | `reason: string` | `{lat, lon, accuracyM?, mapUrl, updatedAgoSec}` or an error if denied by policy/home-protection |
-| `is_near_place` | `name: string` | `{name, inside, near}` booleans (no coordinates) |
+| `is_near_place` | `name: string` | `{name, inside, near, freshness, lastReportAgoSec}` as of the last report (no coordinates) |
 | `list_places` | – | `[{name, type}]` (admins also get coordinates) |
-| `get_location_age` | – | `{updatedAgoSec, stale, updatedAt}` |
+| `get_location_age` | – | `{updatedAgoSec, updatedAt, stale, freshness, lastReportAgoSec, lastMovedAgoSec, likelyStationary}` |
 | `list_recent_presence_events` | `limit?: number` | recent events (place names omitted for agents) |
 | `create_location_reminder` | `place: string, message: string` | `{id, place, message}`; the place must exist; refused in hidden mode |
 | `create_place` | `name, type, lat, lon, radiusM?` | `{name, type, radiusM}`; registers/replaces a geofence |
@@ -207,7 +207,9 @@ You have access to user presence through WhereCtx.
 Use location only when relevant.
 Prefer coarse presence over precise GPS.
 Never reveal raw coordinates unless the user explicitly asks.
-If location is stale, say that clearly.
+A quiet phone is normal: phones report only when they move. Treat
+freshness "stationary" as still at the last place. Only "offline" (stale)
+means the location may be wrong; say that clearly.
 When the user is moving, prefer concise replies.
 When precise location is requested, provide the reason to the tool.
 Do not infer sensitive behavior from location history.

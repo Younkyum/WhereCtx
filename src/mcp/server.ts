@@ -37,7 +37,8 @@ import {
 import { accessRecorder, type AccessRecorder } from "../activity/record.js";
 import type { AccessAction, AccessDecision } from "../activity/types.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
-import { secondsSince, isStale } from "../util/time.js";
+import { secondsSince } from "../util/time.js";
+import { freshnessOf } from "../presence/freshness.js";
 import { credentialOf } from "../activity/record.js";
 import { candidateViews, pickCandidate, type EtaAnswer, type EtaOutcome, type GeoCaller } from "../geo/service.js";
 import { ROUTE_AVOID } from "../geo/types.js";
@@ -192,7 +193,7 @@ export function buildMcpServer(
     "get_presence",
     {
       description:
-        "Get the user's current coarse presence (status, label, motion, age, stale flag). No raw GPS. Returns hidden if policy withholds presence.",
+        "Get the user's current coarse presence: status, label, motion, freshness, seconds since the last report and since they last moved, and the neighbourhood when the user allows it. No raw GPS. Returns hidden if policy withholds presence. freshness says how far to trust it: 'live' (reported recently, moving), 'stationary' (no movement; the phone reports only when it moves, so a quiet phone is normal: treat as still at the last place), 'offline' (no report for far longer than a phone at rest stays quiet; stale is true only then), 'unknown' (an old manual reading).",
       inputSchema: {},
     },
     async () => {
@@ -200,12 +201,12 @@ export function buildMcpServer(
       if (!stored) return ok({ status: "unknown", note: "no presence recorded yet" });
       const settings = await scope.settings.getOrSeed();
       if (!isAdmin) {
-        const view = agentCoarseView(toPresenceContext(stored), settings, ctx.clock);
+        const view = agentCoarseView(toPresenceContext(stored), settings, ctx.clock, ctx.config.privacy.staleAfterSec);
         if (!view) return hidden({ status: "hidden", privacy: "hidden" });
         return ok(view);
       }
       // Admin sees the coarse summary using the live mode.
-      const view = agentCoarseView(toPresenceContext(stored), { ...settings, defaultAgentAccess: "coarse" }, ctx.clock);
+      const view = agentCoarseView(toPresenceContext(stored), { ...settings, defaultAgentAccess: "coarse" }, ctx.clock, ctx.config.privacy.staleAfterSec);
       return ok(view);
     },
   );
@@ -238,7 +239,7 @@ export function buildMcpServer(
     "is_near_place",
     {
       description:
-        "Check whether the user is currently inside or near a registered place by name (e.g. 'home', 'work'). Returns booleans only — never coordinates.",
+        "Check whether the user is inside or near a registered place by name (e.g. 'home', 'work'), as of their last report, with that report's freshness. Returns booleans only, never coordinates. A 'stationary' freshness means they are still there.",
       inputSchema: { name: z.string().min(1).max(64).describe("The place name to check") },
     },
     async ({ name }) => {
@@ -255,7 +256,8 @@ export function buildMcpServer(
       );
       const inside = d <= place.radiusM;
       const near = d <= place.radiusM * ctx.config.geofence.nearRadiusMultiplier;
-      return ok({ name, inside, near });
+      const { freshness, lastReportAgoSec } = freshnessOf(toPresenceContext(stored), ctx.config.privacy.staleAfterSec, ctx.clock);
+      return ok({ name, inside, near, freshness, lastReportAgoSec });
     },
   );
 
@@ -277,7 +279,7 @@ export function buildMcpServer(
     "get_location_age",
     {
       description:
-        "How long ago the user's location was last updated, and whether it is stale. Useful before trusting presence.",
+        "How long ago the user's phone last reported and last moved, and how far to trust their presence. Use before relying on presence. freshness says how far to trust it: 'live' (reported recently, moving), 'stationary' (no movement; the phone reports only when it moves, so a quiet phone is normal: treat as still at the last place), 'offline' (no report for far longer than a phone at rest stays quiet; stale is true only then), 'unknown' (an old manual reading).",
       inputSchema: {},
     },
     async () => {
@@ -286,8 +288,8 @@ export function buildMcpServer(
       if (!stored) return ok({ note: "no presence recorded yet" });
       return ok({
         updatedAgoSec: secondsSince(stored.updatedAt, ctx.clock),
-        stale: isStale(stored.updatedAt, stored.staleAfterSec, ctx.clock),
         updatedAt: stored.updatedAt,
+        ...freshnessOf(toPresenceContext(stored), ctx.config.privacy.staleAfterSec, ctx.clock),
       });
     },
   );

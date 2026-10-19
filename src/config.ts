@@ -102,7 +102,17 @@ export interface Config {
     hideHomeExactCoordinates: boolean;
     /** Seeds privacy_settings.protect_home_place on first boot. */
     protectHomePlace: boolean;
+    /**
+     * A manual reading (posted from the dashboard) is stale after this long,
+     * and any reading counts as live within it.
+     */
     staleAfterSec: number;
+    /**
+     * A device that reports on its own (OwnTracks, a Shortcut automation, an
+     * app) is offline after this long without any report. Such devices stay
+     * quiet while they do not move, so silence alone is not staleness.
+     */
+    deviceOfflineAfterSec: number;
     retentionHours: number;
     storeRawHistory: boolean;
   };
@@ -206,6 +216,7 @@ export function loadConfig(): Config {
       hideHomeExactCoordinates: envBool("HIDE_HOME_EXACT_COORDINATES", true),
       protectHomePlace: envBool("PROTECT_HOME_PLACE", true),
       staleAfterSec: envInt("STALE_AFTER_SEC", 900),
+      deviceOfflineAfterSec: Math.max(60, envInt("DEVICE_OFFLINE_AFTER_SEC", 86_400)),
       retentionHours: envInt("RETENTION_HOURS", 24),
       storeRawHistory: envBool("STORE_RAW_HISTORY", false),
     },

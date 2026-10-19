@@ -33,6 +33,7 @@ const config: WhereCtxConfig = {
     hideHomeExactCoordinates: true,
     protectHomePlace: true,
     staleAfterSec: 900,
+    deviceOfflineAfterSec: 86_400,
     retentionHours: 24,
     storeRawHistory: false,
   },
@@ -52,6 +53,9 @@ const USER = asUserId("default");
 
 let nowMs = T0;
 const clock = () => new Date(nowMs);
+
+/** Past the 24 h DEVICE_OFFLINE_AFTER_SEC of the test config. */
+const DAY_PLUS = 86_400_000 + 1000;
 
 function reading(lat: number, lon: number, over: Partial<NormalizedReading> = {}): NormalizedReading {
   return {
@@ -137,11 +141,13 @@ describe("PresenceService.processReading", () => {
 });
 
 describe("PresenceService.checkStale", () => {
-  it("emits became_stale once after the stale window", async () => {
+  it("emits became_stale once when the device goes offline, not when it is merely quiet", async () => {
     await service.processReading(USER, reading(37.0, 127.0));
     expect(await service.checkStale(USER)).toBeNull(); // fresh
 
-    nowMs = T0 + 1000 * 1000; // +1000s > 900s stale window
+    nowMs = T0 + 1000 * 1000; // +1000s: past STALE_AFTER_SEC, but a device at rest stays quiet
+    expect(await service.checkStale(USER)).toBeNull();
+    nowMs = T0 + DAY_PLUS; // past DEVICE_OFFLINE_AFTER_SEC: the device is offline
     const stale = await service.checkStale(USER);
     expect(stale?.type).toBe("presence.became_stale");
     expect(await service.checkStale(USER)).toBeNull(); // only once
@@ -152,7 +158,7 @@ describe("PresenceService.sweepStale", () => {
   it("fires became_stale for the stale user only, once", async () => {
     const OTHER = asUserId("other");
     await service.processReading(USER, reading(37.0, 127.0));
-    nowMs = T0 + 1000 * 1000;
+    nowMs = T0 + DAY_PLUS;
     await service.processReading(OTHER, reading(37.05, 127.0));
 
     const swept = await service.sweepStale();
@@ -221,7 +227,7 @@ describe("end-to-end privacy enforcement", () => {
     const settings = await settingsStore.getOrSeed(USER);
     const current = (await presenceStore.getCurrent(USER))!;
 
-    expect(agentCoarseView(current, settings, clock)).toBeNull();
+    expect(agentCoarseView(current, settings, clock, 900)).toBeNull();
     const auth = authorizePrecise({
       scopes: ROLE_SCOPES.agent,
       settings,
@@ -252,7 +258,7 @@ describe("end-to-end privacy enforcement", () => {
     await service.processReading(USER, reading(37.05, 127.0));
     const settings = await settingsStore.getOrSeed(USER);
     const current = (await presenceStore.getCurrent(USER))!;
-    const view = agentCoarseView(current, settings, clock)!;
+    const view = agentCoarseView(current, settings, clock, 900)!;
     expect(view).not.toHaveProperty("geohash");
     expect(view).not.toHaveProperty("lat");
     expect(JSON.stringify(view)).not.toContain(String(current.coarse?.geohash));
@@ -278,14 +284,14 @@ describe("end-to-end privacy enforcement", () => {
 describe("staleness re-arming", () => {
   it("fires became_stale again after a fresh reading resets the flag", async () => {
     await service.processReading(USER, reading(37.0, 127.0));
-    nowMs = T0 + 1000 * 1000;
+    nowMs = T0 + DAY_PLUS;
     expect((await service.checkStale(USER))?.type).toBe("presence.became_stale");
 
     // A fresh reading re-arms the flag.
     await service.processReading(USER, reading(37.0, 127.0));
     expect(await service.checkStale(USER)).toBeNull();
 
-    nowMs += 1000 * 1000;
+    nowMs += DAY_PLUS;
     expect((await service.checkStale(USER))?.type).toBe("presence.became_stale");
   });
 });

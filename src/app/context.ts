@@ -325,7 +325,7 @@ export async function createAppContext(
   const services: AccountServices = {
     self,
     workspaces: new WorkspaceService(pick(system, ["workspaces", "invites"]), config),
-    sharing: new SharingService(pick(system, ["shares", "settings"]), clock),
+    sharing: new SharingService(pick(system, ["shares", "settings"]), clock, config.privacy.staleAfterSec),
     oauth,
   };
 

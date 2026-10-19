@@ -21,6 +21,7 @@
 import { labelForStatus } from "../geofence/engine.js";
 import type {
   CoarsePresenceView,
+  Freshness,
   Motion,
   PrecisePresenceView,
   PresenceEvent,
@@ -32,6 +33,7 @@ import type {
   TokenScope,
 } from "../types.js";
 import { hasScope } from "../auth/scopes.js";
+import { freshnessOf } from "../presence/freshness.js";
 import { secondsSince, isStale, type Clock, systemClock } from "../util/time.js";
 
 const ACCESS_ORDER: Record<PrivacyMode, number> = {
@@ -56,14 +58,16 @@ export function canReadPresence(scopes: TokenScope[]): boolean {
  */
 export function buildCoarseView(
   presence: PresenceContext,
-  clock: Clock = systemClock,
+  clock: Clock,
+  /** STALE_AFTER_SEC: how recent a report must be to count as live. */
+  liveWithinSec: number,
 ): CoarsePresenceView {
   return {
     status: presence.status,
     label: presence.label ?? labelForStatus(presence.status),
     motion: presence.motion ?? "unknown",
     updatedAgoSec: secondsSince(presence.updatedAt, clock),
-    stale: isStale(presence.updatedAt, presence.staleAfterSec, clock),
+    ...freshnessOf(presence, liveWithinSec, clock),
     privacy: presence.privacy.mode,
   };
 }
@@ -76,23 +80,25 @@ export function buildCoarseView(
 export function agentCoarseView(
   presence: PresenceContext,
   settings: PrivacySettings,
-  clock: Clock = systemClock,
+  clock: Clock,
+  liveWithinSec: number,
 ): CoarsePresenceView | null {
   if (!accessAtLeast(settings.defaultAgentAccess, "coarse")) {
     return null; // hidden
   }
   const area = settings.geoEnabled && settings.areaToAgents ? presence.coarse?.area : undefined;
-  return { ...buildCoarseView(presence, clock), privacy: settings.defaultAgentAccess, ...(area ? { area } : {}) };
+  return { ...buildCoarseView(presence, clock, liveWithinSec), privacy: settings.defaultAgentAccess, ...(area ? { area } : {}) };
 }
 
 /** The coarse presence the owner sees of themself: the area whenever maps are on. */
 export function ownerCoarseView(
   presence: PresenceContext,
   settings: PrivacySettings,
-  clock: Clock = systemClock,
+  clock: Clock,
+  liveWithinSec: number,
 ): CoarsePresenceView {
   const area = settings.geoEnabled ? presence.coarse?.area : undefined;
-  return { ...buildCoarseView(presence, clock), privacy: settings.defaultAgentAccess, ...(area ? { area } : {}) };
+  return { ...buildCoarseView(presence, clock, liveWithinSec), privacy: settings.defaultAgentAccess, ...(area ? { area } : {}) };
 }
 
 /**
@@ -176,7 +182,9 @@ export interface PersonPresence {
   label: string;
   motion: Motion;
   updatedAgoMin: number;
+  /** The device appears offline (see CoarsePresenceView.stale). */
   stale: boolean;
+  freshness: Freshness;
   /** The neighbourhood, when the share shows it. */
   area?: string;
 }
@@ -224,7 +232,8 @@ export function buildPersonView(
   presence: PresenceContext | null,
   share: ShareTerms,
   owner: SharingOwnerContext,
-  clock: Clock = systemClock,
+  clock: Clock,
+  liveWithinSec: number,
 ): PersonView {
   if (owner.sharingPaused) return { paused: true, presence: null, precise: null };
   const area = share.showArea && owner.geoEnabled ? presence?.coarse?.area : undefined;
@@ -234,6 +243,7 @@ export function buildPersonView(
     motion: presence.motion ?? "unknown",
     updatedAgoMin: minutesSince(presence.updatedAt, clock),
     stale: isStale(presence.updatedAt, presence.staleAfterSec, clock),
+    freshness: freshnessOf(presence, liveWithinSec, clock).freshness,
     ...(area ? { area } : {}),
   };
   if (share.level !== "precise") return { paused: false, presence: summary, precise: null };

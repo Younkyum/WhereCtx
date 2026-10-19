@@ -41,6 +41,7 @@ export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxCon
       hideHomeExactCoordinates: true,
       protectHomePlace: true,
       staleAfterSec: 900,
+      deviceOfflineAfterSec: 86_400,
       retentionHours: 24,
       storeRawHistory: false,
     },

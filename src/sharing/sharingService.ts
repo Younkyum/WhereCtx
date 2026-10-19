@@ -50,6 +50,8 @@ export class SharingService {
   constructor(
     private readonly stores: SharingStores,
     private readonly clock: Clock,
+    /** STALE_AFTER_SEC, how recent a report must be to count as live. */
+    private readonly liveWithinSec: number,
   ) {}
 
   async list(me: Actor): Promise<{ outgoing: OutgoingShare[]; incoming: IncomingShare[] }> {
@@ -125,7 +127,7 @@ export class SharingService {
     return {
       user: owner,
       level: share.level,
-      ...buildPersonView(presence, share, ownerContext, this.clock),
+      ...buildPersonView(presence, share, ownerContext, this.clock, this.liveWithinSec),
     };
   }
 }

@@ -22,6 +22,7 @@ const config: WhereCtxConfig = {
     hideHomeExactCoordinates: true,
     protectHomePlace: true,
     staleAfterSec: 900,
+    deviceOfflineAfterSec: 86_400,
     retentionHours: 24,
     storeRawHistory: false,
   },
@@ -148,7 +149,7 @@ describe("MCP server", () => {
     await user.presence.processReading(reading(37.0, 127.0));
     await connect();
     const { data } = await callJson("is_near_place", { name: "home" });
-    expect(data).toEqual({ name: "home", inside: true, near: true });
+    expect(data).toEqual({ name: "home", inside: true, near: true, freshness: "stationary", lastReportAgoSec: 0 });
     expect(data).not.toHaveProperty("lat");
   });
 

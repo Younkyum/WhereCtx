@@ -362,3 +362,33 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
 - **The OAuth migration is `0009_oauth_store`.** The activity logs merged
   first and took 0007 and 0008, so the OAuth table was regenerated after
   them. Neither branch had reached production.
+
+## 2026-10-19: stale means the device is offline
+
+- **A quiet phone is not a stale one.** OwnTracks in significant-change mode
+  publishes nothing while the phone stays put, "even if you don't move for
+  hours", except a `t: "p"` ping: iOS "once in a while", Android every
+  `ping` minutes, 15 by default
+  ([booklet, location](https://owntracks.org/booklet/features/location/),
+  [JSON](https://owntracks.org/booklet/tech/json/); the minutes and default
+  are from the Android app's `Scheduler.kt` and `DefaultsProvider.kt`). With
+  `STALE_AFTER_SEC` at 900, a person at home for an evening read as stale,
+  and agents distrusted a location that was right. Pairing now sets
+  `ping: 15` explicitly.
+- **Two windows, by source.** A reading from a device that reports on its
+  own is stored with `DEVICE_OFFLINE_AFTER_SEC` (default 24 h) as its
+  `staleAfterSec`; a manual reading keeps `STALE_AFTER_SEC`. 24 h is longer
+  than an iPhone may go without a ping overnight; agents that need tighter
+  judgement read `lastReportAgoSec`. Because the window is stored per reading,
+  `stale`, the sweep and `presence.became_stale` change meaning without new
+  code paths: the event now means "the device appears offline", and its type
+  name stays for compatibility.
+- **Say what is known.** Views add `freshness` (`live`, `stationary`,
+  `offline`, `unknown`), `lastReportAgoSec`, `lastMovedAgoSec` (from
+  `presence.moved_at`, migration 0011: the first report within 100 m of the
+  current spot) and `likelyStationary`. A device reading is `stationary` when
+  it is inside a registered place, at rest, or older than `STALE_AFTER_SEC`:
+  such a device would have reported a move. `stale` stays for older clients.
+- **The dashboard shows the age only.** The person reading their own or a
+  shared presence sees "12 min ago", not a stale badge; `stale` is a signal
+  for agents.

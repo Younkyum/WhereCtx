@@ -182,7 +182,7 @@ describe("what a viewer sees", () => {
         user: { id: owner.userId, displayName: "owner" },
         level: "coarse",
         paused: false,
-        presence: { status: "away", label: "away", motion: "unknown", updatedAgoMin: 1, stale: false },
+        presence: { status: "away", label: "away", motion: "unknown", updatedAgoMin: 1, stale: false, freshness: "live" },
         precise: null,
       },
     ]);

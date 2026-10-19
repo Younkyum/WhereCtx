@@ -123,9 +123,23 @@ admin token is generated and printed once.
 
 ## Staleness as a safety signal
 
-Each reading carries `staleAfterSec` (env `STALE_AFTER_SEC`, default 900). Past
-that, presence is marked `stale: true` and a `presence.became_stale` event fires
-(once). Device-reported timestamps more than 5 minutes in the future are
+A phone that reports on movement (OwnTracks in significant-change mode, a
+Shortcut automation, an app) sends nothing while it stays put, apart from an
+occasional ping. Silence from it means "has not moved", not "unknown". So
+`stale` means the device appears offline:
+
+- A reading from a device carries `staleAfterSec` = `DEVICE_OFFLINE_AFTER_SEC`
+  (default 86400, 24 h). Only past that is presence `stale: true` and does
+  `presence.became_stale` fire (once).
+- A reading posted by hand (`source: manual`) has no device behind it. It
+  carries `STALE_AFTER_SEC` (default 900).
+- Every view also says `freshness`: `live` (reported within
+  `STALE_AFTER_SEC` and on the move), `stationary` (at a registered place,
+  at rest, or quiet: still at the last place), `offline` (stale), or
+  `unknown` (a stale manual reading), with `lastReportAgoSec`,
+  `lastMovedAgoSec` and `likelyStationary`.
+
+Device-reported timestamps more than 5 minutes in the future are
 distrusted and clamped to server-receive time, so a skewed or malicious device
 cannot pin presence permanently "fresh".
 

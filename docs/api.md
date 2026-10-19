@@ -59,9 +59,25 @@ Authorization: Bearer AGENT_TOKEN
 ```
 ```json
 { "status":"near_home", "label":"near home", "motion":"walking",
-  "updatedAgoSec":42, "stale":false, "privacy":"coarse" }
+  "updatedAgoSec":42, "stale":false, "lastReportAgoSec":42, "lastMovedAgoSec":3600,
+  "likelyStationary":true, "freshness":"stationary", "privacy":"coarse",
+  "area":"성남시 분당구 삼평동" }
 ```
 `403` with `{ "privacy":"hidden" }` in hidden mode; `404` before any reading.
+
+- `freshness`: `live` (a report within `STALE_AFTER_SEC`, moving),
+  `stationary` (at a registered place, at rest, or quiet: a phone that
+  reports on movement sends nothing while it stays put, so treat it as still
+  at the last place), `offline` (no report for `DEVICE_OFFLINE_AFTER_SEC`,
+  24 h by default), `unknown` (a manual reading older than
+  `STALE_AFTER_SEC`). `likelyStationary` is `freshness == "stationary"`.
+- `stale` is true for `offline` and `unknown` only. `updatedAgoSec` and
+  `lastReportAgoSec` are the same value; `lastMovedAgoSec` counts from the
+  first report at the current spot (within 100 m), absent for readings
+  stored before it was tracked.
+- `area` is the neighbourhood, present only when maps are on and the person
+  lets agents see it (see [Maps](#maps)). A signed-in owner always gets it
+  while maps are on.
 
 ```http
 GET /v1/presence/precise?reason=user_requested_map
@@ -206,7 +222,7 @@ revoking a share do not.
   "user": { "id":"…", "displayName":"Mina" },
   "level": "precise",
   "paused": false,
-  "presence": { "status":"away", "label":"away", "motion":"walking", "updatedAgoMin":3, "stale":false },
+  "presence": { "status":"away", "label":"away", "motion":"walking", "updatedAgoMin":3, "stale":false, "freshness":"live" },
   "precise": "available"
 } ] }
 ```
@@ -444,7 +460,9 @@ ok = fresh && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.head
 ```
 
 Events: `presence.updated`, `presence.entered_place`, `presence.left_place`,
-`presence.became_stale`, `presence.privacy_changed`. Location sharing is not
+`presence.became_stale`, `presence.privacy_changed`. `presence.became_stale`
+means the device appears offline (see `freshness` above); it does not fire
+for a phone that is only quiet at rest. Location sharing is not
 delivered by webhook; its audit is at `GET /v1/shares/audit`.
 
 ## Misc

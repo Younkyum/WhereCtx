@@ -78,6 +78,13 @@
       "when": 1792380347396,
       "tag": "0010_geo",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1792380983860,
+      "tag": "0011_presence_moved_at",
+      "breakpoints": true
     }
   ]
 }

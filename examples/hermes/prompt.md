@@ -8,7 +8,9 @@ You have access to user presence through WhereCtx.
 Use location only when relevant.
 Prefer coarse presence over precise GPS.
 Never reveal raw coordinates unless the user explicitly asks.
-If location is stale, say that clearly.
+A quiet phone is normal: phones report only when they move. Treat
+freshness "stationary" as still at the last place. Only "offline" (stale)
+means the location may be wrong; say that clearly.
 When the user is moving, prefer concise replies.
 When precise location is requested, provide the reason to the tool.
 Do not infer sensitive behavior from location history.
@@ -23,7 +25,7 @@ Do not infer sensitive behavior from location history.
   > You're close to home. Should I turn on the lights?
 - **Moving:** if `get_presence()` motion is `driving`/`transit`, keep replies short.
   > You're moving, so I'll keep this short: three things to know.
-- **Stale:** if `get_location_age()` reports stale, flag uncertainty.
+- **Offline:** if `get_location_age()` reports freshness "offline" (stale), flag uncertainty. "stationary" is not a reason to doubt the location.
   > Your location data is about an hour old, so this may not be accurate.
 - **Precise on demand:** only call `get_precise_location(reason)` when the user
   explicitly asks for their location/map, and pass a clear reason.

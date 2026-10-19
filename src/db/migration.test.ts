@@ -33,6 +33,7 @@ function config(defaultUserId: string): WhereCtxConfig {
       hideHomeExactCoordinates: true,
       protectHomePlace: true,
       staleAfterSec: 900,
+      deviceOfflineAfterSec: 86_400,
       retentionHours: 24,
       storeRawHistory: false,
     },
@@ -254,6 +255,7 @@ describe("migration 0009 on an install that ran the activity logs", () => {
       "0008_ingest_log",
       "0009_oauth_store",
       "0010_geo",
+      "0011_presence_moved_at",
     ]);
   });
 

@@ -27,6 +27,7 @@ import type {
 } from "../types.js";
 import { nowIso, isStale, type Clock, systemClock } from "../util/time.js";
 import { KeyedMutex } from "../util/mutex.js";
+import { movedAtFor, staleAfterFor } from "./freshness.js";
 import type { EventsStore, NewPresenceEvent } from "../store/eventsStore.js";
 import type { HistoryStore } from "../store/historyStore.js";
 import type { PlacesStore } from "../store/placesStore.js";
@@ -153,7 +154,9 @@ export class PresenceService {
       },
       updatedAt: reading.updatedAt,
       receivedAt: nowIso(this.clock),
-      staleAfterSec: config.privacy.staleAfterSec,
+      movedAt: movedAtFor(prev, reading.precise, reading.updatedAt),
+      // A device that reports on movement goes quiet at rest; only a long silence is offline.
+      staleAfterSec: staleAfterFor(reading.source, config.privacy),
       currentPlaceName: geo.matchedPlace?.name,
       staleEventFired: false,
     };

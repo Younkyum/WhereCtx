@@ -49,6 +49,7 @@ interface PresenceRow {
   staleEventFired: boolean;
   updatedAt: string;
   receivedAt: string;
+  movedAt: string | null;
   staleAfterSec: number;
 }
 
@@ -86,6 +87,7 @@ function rowToStored(row: PresenceRow): StoredPresence {
     privacy: { mode: row.privacyMode, allowPreciseToAgents: row.allowPreciseToAgents },
     updatedAt: row.updatedAt,
     receivedAt: row.receivedAt,
+    ...(row.movedAt ? { movedAt: row.movedAt } : {}),
     staleAfterSec: row.staleAfterSec,
     currentPlaceName: row.currentPlaceName ?? undefined,
     staleEventFired: row.staleEventFired,
@@ -117,6 +119,7 @@ function storedToRow(p: StoredPresence): PresenceRow {
     staleEventFired: p.staleEventFired,
     updatedAt: p.updatedAt,
     receivedAt: p.receivedAt,
+    movedAt: p.movedAt ?? null,
     staleAfterSec: p.staleAfterSec,
   };
 }

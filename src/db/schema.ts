@@ -122,6 +122,12 @@ export const presence = sqliteTable("presence", {
 
   updatedAt: text("updated_at").notNull(),
   receivedAt: text("received_at").notNull(),
+  /**
+   * Device time of the first reading at this spot: later reports within
+   * MOVED_THRESHOLD_M (pings, a phone at rest) keep it. Null before 0011.
+   */
+  movedAt: text("moved_at"),
+  /** How long this reading stays fresh: STALE_AFTER_SEC for manual, DEVICE_OFFLINE_AFTER_SEC otherwise. */
   staleAfterSec: integer("stale_after_sec").notNull(),
 });
 

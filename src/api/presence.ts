@@ -63,10 +63,10 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
     if (!stored) return c.json({ error: "no presence recorded yet" }, 404);
     const settings = await scope.settings.getOrSeed();
 
-    const view = agentCoarseView(toPresenceContext(stored), settings, ctx.clock);
+    const view = agentCoarseView(toPresenceContext(stored), settings, ctx.clock, ctx.config.privacy.staleAfterSec);
     if (view && c.get("principal").via === "session") {
       // The owner in the dashboard sees their own area whether or not agents may.
-      return c.json(ownerCoarseView(toPresenceContext(stored), settings, ctx.clock));
+      return c.json(ownerCoarseView(toPresenceContext(stored), settings, ctx.clock, ctx.config.privacy.staleAfterSec));
     }
     if (!view) {
       decide(c, { outcome: "hidden" });

@@ -35,6 +35,7 @@ const config: WhereCtxConfig = {
     hideHomeExactCoordinates: true,
     protectHomePlace: true,
     staleAfterSec: 900,
+    deviceOfflineAfterSec: 86_400,
     retentionHours: 24,
     storeRawHistory: false,
   },
