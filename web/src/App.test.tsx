@@ -730,6 +730,7 @@ describe("place rules and webhook places", () => {
     await open("#places");
     expect(host.textContent).toContain("Place rules");
     expect(host.textContent).toContain("Polygon");
+    expect(host.textContent).toContain("Other events still carry your status");
     await fill(inputLabelled("Count an arrival after"), "5");
     await act(async () => button("Save").click());
     await settle();

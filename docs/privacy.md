@@ -396,10 +396,14 @@ code (README, "Recover access").
 
 ## Webhooks & SSRF
 
-A place with `notifyWebhooks` off keeps its name away from every webhook:
-its events, and `presence.updated` while inside it, are stored with
-`webhook = 0` and the dispatcher reads only `webhook = 1` rows, in SQL. They
-still appear in the person's own history and to their agents. A place
+A place with `notifyWebhooks` off keeps its name and its own events away
+from every webhook: its events, and `presence.updated` while inside it, are
+stored with `webhook = 0` and the dispatcher reads only `webhook = 1` rows,
+in SQL. They still appear in the person's own history and to their agents.
+It does not hide your status: other events, such as
+`presence.became_stale` or `presence.privacy_changed` while you are there,
+still carry `status`, so a quiet `home` place still shows as `"home"` in
+them. A place
 that no longer exists counts as quiet: its rules went with it, so leaving a
 deleted place is recorded and never delivered. A hook's place filter
 narrows place events further.

@@ -554,7 +554,7 @@ export const KO: Record<I18nKey, string> = {
   "placeRules.approachM": "접근 거리",
   "placeRules.emits": "이 장소가 남기는 이벤트",
   "placeRules.notifyWebhooks": "이 장소 이벤트를 웹훅으로 보내기",
-  "placeRules.notifyWebhooksDesc": "끄면 이벤트는 기록에 남지만 어떤 웹훅도 이 장소 이름을 받지 않아요.",
+  "placeRules.notifyWebhooksDesc": "끄면 이 장소의 이벤트와 이름은 기록에만 남고 웹훅으로는 가지 않아요. 다른 이벤트에는 상태가 그대로 담겨서, 집 장소라면 연결이 끊긴 이벤트 같은 데에 \"home\"으로 보일 수 있어요.",
   "placeRules.notifyReminders": "도착하면 리마인더 울리기",
   "placeRules.hint": "머무는 시간은 1분마다 확인해서 도착이나 출발이 최대 1분 늦게 잡힐 수 있어요. 에이전트는 변화가 진행 중이라는 것만 보고, 이 설정은 보지 못해요.",
   "webhooks.places": "장소",

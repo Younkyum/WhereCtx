@@ -552,7 +552,7 @@ export const EN = {
   "placeRules.approachM": "Approach distance",
   "placeRules.emits": "Events this place records",
   "placeRules.notifyWebhooks": "Send this place's events to webhooks",
-  "placeRules.notifyWebhooksDesc": "Off: the events stay in your history, but no webhook ever hears this place's name.",
+  "placeRules.notifyWebhooksDesc": "Off: this place's own events and its name stay in your history and never reach a webhook. Other events still carry your status, so a home place still shows up as \"home\" in, say, a went-offline event.",
   "placeRules.notifyReminders": "Trigger reminders when I arrive",
   "placeRules.hint": "Waiting times are checked about once a minute, so an arrival or departure can count up to a minute late. Agents only see that a change is under way, never these settings.",
   "webhooks.places": "Places",
