@@ -73,17 +73,69 @@ accident.
    into one `NormalizedReading`.
 3. `PresenceService` (`src/presence/service.ts`) runs per user under a
    `KeyedMutex`:
-   - the geofence engine (`src/geofence/*`) computes the status from the
-     user's places, and the reading's freshness window comes from its source
-     (`src/presence/freshness.ts`),
-   - the new presence is stored and diffed against the previous one to emit
-     `presence.updated`, `presence.entered_place`, `presence.left_place`, and
-     `presence.privacy_changed`. A sweep emits `presence.became_stale`.
-   - raw history is recorded when enabled, and matching reminders fire.
+   - the geofence engine (`src/geofence/*`) finds the place the reading is
+     inside (the raw verdict), the dwell reducer turns it into the confirmed
+     place, and the status follows the confirmed place (see
+     [Geofencing](#geofencing)). The reading's freshness window comes from
+     its source (`src/presence/freshness.ts`),
+   - approach rings are checked, and the new presence is stored with its
+     pending enter or leave. The step's events are `presence.updated`,
+     `presence.entered_place`, `presence.left_place`,
+     `presence.approaching_place` and `presence.privacy_changed`, each place
+     event only when its place records that type. A sweep emits
+     `presence.became_stale`, and another confirms a pending enter or leave.
+   - raw history is recorded when enabled, and the reminders of a place just
+     entered fire unless the place has `notifyReminders` off.
 4. The events are stored, then the webhook dispatcher delivers each user's
    events to that user's hooks. Each hook drains on its own from its cursor,
    with at most 8 drains at once, at most 2 per user, and 10 s per drain,
    so a slow endpoint delays only its own hook.
+
+## Geofencing
+
+A place is a circle or a polygon. `src/geofence/shape.ts` turns either into
+one tagged shape, and `measurePlace` answers every point-against-place
+question: inside, near, distance to the boundary, and distance to the
+anchor. The engine, MCP `is_near_place`, history's place labels, the maps
+near-home guard and approach detection all call it. A place keeps
+`lat`/`lon`/`radiusM` as its anchor circle: the geofence itself for a
+circle, the centroid and circumradius of a polygon, computed when the
+polygon is saved. Overlapping places rank by anchor distance.
+`src/geofence/polygon.ts` validates a ring and measures in a local metric
+projection around the centroid; a polygon's near band is the band an
+equal-area circle gets.
+
+The dwell reducer (`src/geofence/dwell.ts`) holds one confirmed place. A
+leave waits out the place's `exitAfterSec` from the first reading outside;
+an enter waits out `enterAfterSec` from the first reading inside; a reading
+back in the confirmed place cancels both. Its state lives on the presence
+row (`current_place_name`, `pending_exit_since`, `pending_place_name`,
+`pending_place_since`), so a restart keeps a pending transition. With
+every delay at 0 a step confirms at once, a plain geofence. The status,
+label and coarse place type follow the confirmed place; with none, the
+status is what it would be inside no place (`near_home`, `near_work`,
+`away`, `transit`).
+
+`PresenceService.sweepDwell` runs on the stale sweep's minute: one query for
+rows with a pending field, then a dwell step per user, under the user's
+lock, with no new reading. Dwell therefore resolves to about a minute. A
+sweep confirms no enter while the last reading is driving, in transit or
+faster than 3 m/s, so driving past a place with an enter delay does not
+count; it may confirm a leave. A place change re-steps the dwell state
+against the stored point: a deleted confirmed place leaves at once, a
+deleted candidate is dropped.
+
+Approach detection (`src/geofence/approach.ts`) runs on readings only. It
+fires `presence.approaching_place` once when a reading moves at least
+25 m (or its accuracy) toward a place with `approachM` set, inside that
+ring, and not into the confirmed or pending place; it re-arms once readings
+are past 1.1 x the ring. The fired names are kept in `approached_places`.
+
+Events of a place with `notifyWebhooks` off are stored with `webhook = 0`,
+and so is `presence.updated` while inside it; the dispatcher's event read
+filters `webhook = 1` in SQL. A hook with a place filter
+(`webhooks.places`) gets place events only for those places;
+`wants()` in the dispatcher is the one match.
 
 ## Read flow
 
@@ -242,7 +294,7 @@ adds at runtime. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-
 | `src/sharing/` | Shares, share audit, person views |
 | `src/devices/` | Pairing: OwnTracks config, link, and QR code; Shortcut settings |
 | `src/normalizer/` | Source payloads to `NormalizedReading` |
-| `src/geofence/` | Haversine distance, geohash, status |
+| `src/geofence/` | Haversine distance, geohash, place shapes and polygons, status, the dwell reducer, approach detection |
 | `src/privacy/` | Privacy settings and the policy views |
 | `src/store/` | Presence, places, events, history, reminders, webhooks |
 | `src/presence/` | `PresenceService` |
@@ -270,7 +322,7 @@ requests into three surfaces:
   to the Hono app through `getRequestListener`.
 
 Boot also prints the setup code while no passkey exists, starts the webhook
-dispatcher, the stale sweep every minute, and the prune sweep
+dispatcher, the stale and dwell sweeps every minute, and the prune sweep
 (`src/app/prune.ts`) every 6 hours. The prune sweep removes old events, dead
 letters, share audit rows, access and ingest log rows, each person's history
 past their retention (the server default for a person with no settings row,

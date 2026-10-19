@@ -492,3 +492,59 @@ than the switches promise. Each fix below is enforced in one place.
 - **Provider failures are errors.** `no_route`, `bad_request` and the rest
   are `error` in the access log, not `denied`: nothing was decided about the
   caller. One table answers each outcome for REST and MCP.
+
+## 2026-10-19: polygon places, dwell, approach, quiet places
+
+- **One spatial primitive.** `measurePlace` (`src/geofence/shape.ts`)
+  answers inside, near, edge distance and anchor distance for a circle or a
+  polygon, and every point-against-place check calls it. A place keeps
+  `lat`/`lon`/`radiusM` as its anchor (a polygon's centroid and
+  circumradius, computed at save, never accepted from the caller), so code
+  that only needs a point, such as the maps road clearance and an ETA
+  destination, keeps working off the anchor. Ranking among overlapping
+  places stays by anchor distance, unchanged for circles.
+- **A polygon's near band** is the band an equal-area circle gets,
+  measured outward from the boundary: `edge <= (nearMultiplier - 1) *
+  sqrt(area / pi)`.
+- **Validation in one pure function.** `validatePolygon` closes an open
+  ring and rejects, each with its own message: a bad coordinate, a
+  zero-length edge, fewer than 3 or more than 200 vertices, a longitude
+  span of 180° or more, edges that cross or touch (collinear overlap and an
+  edge folding back included), under 100 m², over 100 km from the
+  centroid. The projection is local equirectangular around the centroid,
+  good at that size.
+- **Dwell is a reducer with one confirmed place.** `step(state, raw, now,
+  delaysFor)` keeps the singular current place. Delays count from the
+  first reading inside or outside; a reading back in the confirmed place
+  cancels. A deleted place leaves at once and is never entered. The status
+  follows the confirmed place, so all-zero delays reproduce the old
+  geofence exactly.
+- **Dwell resolves to the sweep.** `sweepDwell` runs on the existing
+  one-minute stale sweep; no per-user timers to lose on restart. The pending
+  fields live on the presence row.
+- **Drive-by guard on sweeps only.** A sweep confirms no enter while the
+  last reading is driving, in transit or over 3 m/s; readings always count,
+  and a sweep may confirm a leave.
+- **Approach fires once per approach.** Inside the ring, at least 25 m (or
+  the fix's accuracy) closer than the last reading, not inside, not the
+  confirmed or pending place. It re-arms past 1.1 x the ring. Readings
+  only; never a sweep or a place change.
+- **A rule left out of POST /v1/places keeps its value.** The shape and
+  label are replaced as before; `enterAfterSec`, `exitAfterSec`,
+  `approachM`, `emits`, `notifyWebhooks` and `notifyReminders` merge. An
+  older client (or an agent re-creating a place through MCP) cannot reset
+  rules it does not know about. The dashboard sends the whole place.
+- **A quiet place's name never reaches a webhook.** `notifyWebhooks: false`
+  stores the place's events, and `presence.updated` while inside it (it
+  names the place too), with `webhook = 0`; the dispatcher filters in SQL.
+  A `left_place` for a deleted place uses the defaults.
+- **Webhook place filter is one pure match.** `wants(hook, event)`: the
+  event type filter as before, and for place events the place must be in
+  `places` when set. Changing the place filter stops an in-flight drain, as
+  changing the events does.
+- **`emits` drops the event, not the transition.** A type a place does not
+  emit is not recorded at all; presence still moves.
+- **Agents see transitions, not rules.** `is_near_place` adds `confirmed`
+  and `pending` only when the place has a dwell time or they differ from
+  `inside`, so a plain place answers as before; `get_presence` adds
+  `transition` with the place type, never the name.

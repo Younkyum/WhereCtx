@@ -24,7 +24,11 @@ The default agent-facing view (`GET /v1/presence`, MCP `get_presence`) is:
 ```
 
 No latitude, longitude, geohash, accuracy, or place coordinates. Place lists
-returned to agents contain only `name` + `type`.
+returned to agents contain only `name` + `type`: never a polygon's outline,
+a radius, a label, or a place's rules (dwell times, approach distance,
+recorded events, notify switches). While an arrival or departure waits out
+its dwell time, `get_presence` says `entering` or `leaving`, the place type
+and for how long, never the place's name.
 
 Each person has their own presence, places, and privacy settings. A token
 belongs to the person who made it and reads only that person's data. The
@@ -314,6 +318,12 @@ new id; if that person has no passkey yet, `reset-access` gives them an access
 code (README, "Recover access").
 
 ## Webhooks & SSRF
+
+A place with `notifyWebhooks` off keeps its name away from every webhook:
+its events, and `presence.updated` while inside it, are stored with
+`webhook = 0` and the dispatcher reads only `webhook = 1` rows, in SQL. They
+still appear in the person's own history and to their agents. A hook's
+place filter narrows place events further.
 
 Webhook delivery is a server-side outbound request to an operator-supplied URL.
 WhereCtx blocks targets that resolve to private/reserved addresses (loopback,

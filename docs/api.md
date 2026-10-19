@@ -426,12 +426,54 @@ The operator is the person whose id is `USER_ID`; `GET /v1/me` says
 redacted when they are written, and the boot banners (setup code, generated
 admin token) are never kept.
 
+## Places (admin)
+
+```
+GET    /v1/places          # read_presence: [{name, type}]; manage_places: full places
+POST   /v1/places          # manage_places: create or replace by name
+DELETE /v1/places/:name    # manage_places
+```
+A place is a circle or a polygon, never both:
+
+```json
+{ "name":"office", "type":"work", "polygon":[[127.0123,37.5678],[127.0145,37.5678],[127.0145,37.5691],[127.0123,37.5691]],
+  "enterAfterSec":180, "exitAfterSec":300, "approachM":500,
+  "emits":["presence.entered_place","presence.left_place","presence.approaching_place"],
+  "notifyWebhooks":true, "notifyReminders":true }
+```
+- Circle: `lat`/`lon` (or `useCurrentLocation`) and `radiusM` (default 150,
+  at most 100000).
+- Polygon: a GeoJSON-style ring of `[lon, lat]`, open or closed (the server
+  closes it). 3 to 200 vertices, no zero-length edge, no edges that cross
+  or touch, a longitude span under 180° (no antimeridian), at least
+  100 m², and within 100 km of its centroid. Each broken rule is a `400`
+  naming it. The stored place's `lat`, `lon` and `radiusM` are the
+  polygon's centroid and circumradius.
+- `enterAfterSec` / `exitAfterSec` (0..86400, default 0): how long readings
+  must stay inside before the arrival counts, or outside before the
+  departure counts. They are checked on every reading and once a minute, so
+  a wait can run up to a minute long. A sweep never confirms an arrival
+  while the last reading is driving, in transit or over 3 m/s.
+- `approachM` (10..50000, or null for off, the default): fire
+  `presence.approaching_place` once when readings head toward the place
+  within this many meters of its boundary.
+- `emits` (default all three): the place event types recorded for this
+  place. A type left out is not recorded at all; presence still moves.
+- `notifyWebhooks` (default true): false records the place's events (and
+  `presence.updated` while inside it) without ever delivering them.
+- `notifyReminders` (default true): false keeps arrivals here from
+  triggering reminders.
+
+`POST` replaces the shape and label; a rule it leaves out keeps the value
+the place has (the default for a new place). Saving a place re-checks the
+current presence against it right away.
+
 ## Webhooks (admin)
 
 ```
 GET    /v1/webhooks                 # manage_privacy — secrets stripped
-POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "secret":"…" }
-PATCH  /v1/webhooks/:id             # { "events"?: [...], "active"?: bool }
+POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "places"?: ["home"], "secret":"…" }
+PATCH  /v1/webhooks/:id             # { "events"?: [...], "places"?: [...] | null, "active"?: bool }
 GET    /v1/webhooks/dead-letters    # undeliverable events
 DELETE /v1/webhooks/:id
 ```
@@ -445,6 +487,11 @@ a delivery was in flight across the pause. A delivery in flight when the
 selection changes is the last one sent under the old selection.
 The dashboard creates hooks for `presence.entered_place` and
 `presence.left_place` unless the person picks otherwise.
+`places` (1 to 50 names) limits the place events (`entered_place`,
+`left_place`, `approaching_place`) to those places; every other event type
+is delivered as before. Leaving it out, or `PATCH` with `null`, delivers
+every place. Events of a place with `notifyWebhooks` off are never
+delivered, whatever the hook selects.
 `POST` answers `400` when the URL's host does not resolve, or resolves to a
 private or reserved IP (SSRF guard) unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`.
 The delivery re-checks the address each time. Each user may have 20 webhooks
@@ -486,7 +533,10 @@ ok = fresh && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.head
 ```
 
 Events: `presence.updated`, `presence.entered_place`, `presence.left_place`,
-`presence.became_stale`, `presence.privacy_changed`. `presence.became_stale`
+`presence.approaching_place`, `presence.became_stale`,
+`presence.privacy_changed`. `entered_place` and `left_place` fire when the
+arrival or departure is confirmed, after the place's `enterAfterSec` or
+`exitAfterSec`. `presence.became_stale`
 means the device appears offline (see `freshness` above); it does not fire
 for a phone that is only quiet at rest. Location sharing is not
 delivered by webhook; its audit is at `GET /v1/shares/audit`.
