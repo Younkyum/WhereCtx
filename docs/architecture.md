@@ -136,19 +136,33 @@ first. Neither holds coordinates.
 ## Maps
 
 `src/geo/` holds one adapter per provider (`kakao.ts`, `naver.ts`), each a
-GET with a 5 s timeout, no retries, the response parsed with zod and every
-failure mapped to a `GeoError` kind. `GeoService` owns the rest: which
-provider and key (the person's sealed key, else the operator's), what may be
-sent (`geoEnabled`, rounding to three decimals, nothing near home), a
-per-caller limit, and an access log row per provider call. Route handlers
-and MCP tools reach it only through `scope.geo`, bound to one user.
+GET with a 5 s timeout, a 4 MB body cap, no retries, the response parsed
+with zod (every kept string cleaned and capped) and every failure mapped to
+a `GeoError` kind. Every adapter is reached through `roundingProvider`
+(`types.ts`), which cuts each point to three decimals, so no caller can send
+an unrounded one. The rest is split by concern:
+
+- `keys.ts` (`GeoKeys`): which provider and key (the person's sealed key,
+  else the operator's), the per-person, per-key and daily budgets, and the
+  only place a provider is called, with an access log row per call.
+- `eta.ts`: what an ETA answer may say to whom (the freshness gate,
+  near home by distance, an agent's coarse numbers and filtered roads).
+- `area.ts` (`AreaRefresher`): the background area lookup.
+- `service.ts` (`GeoService`): search and ETA for one caller, and the facade
+  route handlers and MCP tools reach through `scope.geo`, bound to one user.
+- `replies.ts`: each outcome as the REST status, body and access decision,
+  shared by `api/geo.ts` and the MCP tools.
 
 The area of a reading is looked up after the reading is stored:
-`PresenceService.processReading` calls `afterReading` once its lock is
-released, `GeoService.refreshArea` decides whether a lookup is due, and
-`PresenceService.setArea` writes the region names back under the lock, only
-if the person has not moved on since. Every provider call is server-side;
-the dashboard's CSP is unchanged.
+`PresenceService.processReading` drops city and area as it stores a reading
+more than 200 m from the point they were looked up for, then calls
+`afterReading` once its lock is released (as does `reevaluateCurrent` after
+a place change). `AreaRefresher.refresh` decides whether a lookup is due,
+schedules a trailing one when the throttle holds, and
+`PresenceService.setArea` writes the region names and the point back under
+the lock, only if the person has not moved on since. Shutdown cancels
+trailing lookups and waits for running ones. Every provider call is
+server-side; the dashboard's CSP is unchanged.
 
 ## Server log
 
@@ -236,7 +250,7 @@ adds at runtime. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-
 | `src/mcp/` | MCP server (11 tools, each recorded in the access log) and the raw-Node `/mcp` handler |
 | `src/oauth/` | OAuth 2.1 authorization server for MCP clients (oidc-provider), its store, scopes, and consent API |
 | `src/activity/` | Access log and ingest log stores, the recording helper |
-| `src/geo/` | Maps providers (Kakao, Naver, a fake) behind one interface; `GeoService`: keys, rounding, area lookup, search and ETA, each provider call access-logged |
+| `src/geo/` | Maps providers (Kakao, Naver, a fake) behind one rounding boundary; keys and budgets, the ETA policy, the background area lookup, search and ETA, each provider call access-logged |
 | `src/webhooks/` | Dispatcher, delivery payload (shared with the dashboard's example), SSRF guard, secret encryption |
 | `src/dashboard/` | Serves `dist/web` |
 | `src/app/` | Context, scopes, and HTTP app assembly |

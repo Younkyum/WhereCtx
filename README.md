@@ -24,10 +24,10 @@ passkey dashboard and share their location with each other, like Find My.
 - Connects a phone by QR code (OwnTracks) or with ready-made steps (iOS
   Shortcut), and an agent with a generated MCP config.
 - Fires geofence events to signed webhooks.
-- Tells agents how long it takes you to drive somewhere with live traffic,
-  and which neighbourhood you are in, through Kakao or Naver with your own
-  key. Off until you turn it on; your position leaves the server rounded to
-  about 100 m, and never from home.
+- Tells agents roughly how long it takes you to drive to one of your places
+  with live traffic, and which neighbourhood you are in, through Kakao or
+  Naver with your own key. Off until you turn it on; your position leaves the
+  server rounded to about 100 m, and never from home.
 
 ## Quick start with Docker
 

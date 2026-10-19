@@ -386,7 +386,7 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
 - **Say what is known.** Views add `freshness` (`live`, `stationary`,
   `offline`, `unknown`), `lastReportAgoSec`, `lastMovedAgoSec` (from
   `presence.moved_at`, migration 0011: the first report within 100 m of the
-  current spot) and `likelyStationary`. A device reading is `stationary` when
+  current spot) and `likelyStationary` (dropped on 2026-10-19, below). A device reading is `stationary` when
   it is inside a registered place, at rest, or older than `STALE_AFTER_SEC`:
   such a device would have reported a move. `stale` stays for older clients.
 - **The dashboard shows the age only.** The person reading their own or a
@@ -430,7 +430,65 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
   `server_secrets`. Saving merges kinds, so the map SDK keys of a later
   release (a Kakao JavaScript key, a Naver web client id) fit beside the
   REST keys with no migration. The sealing key lives in the same database:
-  this guards a leaked table or a partial dump, not the whole file.
+  this guards a leaked table or a partial dump, not the whole file. (Saving
+  now replaces the bag; see below.)
 - **The area is a consent like a share level.** Agents see it only with
   `areaToAgents`; a person only through a share's `showArea`, which widens
   the share and needs a fresh passkey; the owner always, while maps are on.
+
+## 2026-10-19: maps after an adversarial review
+
+A two-model review of the maps work found ways an agent could learn more
+than the switches promise. Each fix below is enforced in one place.
+
+- **An agent's route is coarse.** Turn-by-turn steps and the first road of
+  a route name the street the person starts on (Kakao's sample begins on
+  판교역로241번길). Agents now get minutes in 5-minute steps, whole
+  kilometres, the arrival to 5 minutes and no fares, and main roads only:
+  none with a point within 1.5 km of the origin or of a registered
+  destination (from Kakao `vertexes` and the run of Naver's `path` a
+  section covers), no side streets (`\d+번?길$`), and none without
+  geometry. Steps, and a destination given as an address, need the same
+  gate as `get_precise_location`. A registered destination is any place,
+  not only home: an agent sees place names, never where they are. The owner
+  keeps the provider's answer. Rejected: rounding only, since even a
+  rounded number with a named nearby street triangulates.
+- **Rounding at one boundary.** `roundingProvider` wraps every adapter, so
+  destinations are rounded too and no future caller can forget.
+- **Near home is a refusal, by distance.** An agent near home used to get a
+  route from the home place, which told it the person was home. Now it is
+  refused. Near home is measured to every home place (radius times
+  `NEAR_RADIUS_MULTIPLIER`), so a custom place beside home no longer hides
+  it. Home no longer times the way home on every load; the owner presses a
+  button.
+- **Freshness from the server's clock.** Ages come from `receivedAt`; the
+  arrival point is stored (`moved_lat`, `moved_lon`) so a drift of small
+  steps counts as moving; a phone that went quiet while driving is
+  `unknown`. The offline window is worked out at read time from the source
+  (OwnTracks, the app and Home Assistant use `DEVICE_OFFLINE_AFTER_SEC`; a
+  manual reading, a Shortcut and Tasker use `STALE_AFTER_SEC`), so stored
+  rows and config changes agree. `stale_after_sec` is still written for a
+  rolled-back build. `likelyStationary` and `trafficAware` repeated other
+  fields and go. A route starts only from a `live` reading or a `stationary`
+  one inside a registered place.
+- **The area follows the reading.** A move of more than 200 m from the
+  point the area was looked up for drops it at ingest; a move inside the
+  throttle gets one trailing lookup. The area is looked up only for a
+  consumer (the owner's new `areaOnHome`, `areaToAgents`, a share with
+  `showArea`).
+- **The cache is no trail.** Cells are HMAC-keyed, rows live for the
+  shorter of seven days and `retentionHours`, and turning maps off or
+  removing a key drops them.
+- **Budgets per person and per key.** Every provider call counts (a route
+  by address is two), the owner's and the key test's included; a daily cap
+  (`GEO_OPERATOR_DAILY_CAP`) protects the operator's key from other
+  people. In memory, so a restart resets them.
+- **Widening needs the person.** Turning on a switch that sends more out
+  needs a fresh passkey in the dashboard; a `manage_privacy` token cannot.
+  Turning off `skipProviderNearHome` counts as widening too.
+- **Keys bound to their row.** The sealed bag carries `userId|provider` as
+  associated data, a save replaces the bag, and a row that cannot be opened
+  is reported `unusable` instead of failing the page.
+- **Provider failures are errors.** `no_route`, `bad_request` and the rest
+  are `error` in the access log, not `denied`: nothing was decided about the
+  caller. One table answers each outcome for REST and MCP.
