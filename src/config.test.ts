@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { loadConfig } from "./config.js";
 import { normalizeDatabaseUrl } from "./db/url.js";
 
 describe("normalizeDatabaseUrl", () => {
@@ -81,5 +82,56 @@ describe("env documentation", () => {
     // The fake maps provider is refused in production, so the NAS file never passes it.
     const testOnly = ["GEO_PROVIDER_FAKE"];
     expect([...configVars].filter((v) => !passed.has(v) && !fixed.includes(v) && !testOnly.includes(v))).toEqual([]);
+  });
+});
+
+describe("map tiles (MAP_TILE_URL, MAP_TILE_ATTRIBUTION, MAP_TILE_ATTRIBUTION_URL)", () => {
+  const VARS = ["MAP_TILE_URL", "MAP_TILE_ATTRIBUTION", "MAP_TILE_ATTRIBUTION_URL"] as const;
+  afterEach(() => {
+    for (const v of VARS) delete process.env[v];
+  });
+  const load = (env: Partial<Record<(typeof VARS)[number], string>>) => {
+    for (const v of VARS) delete process.env[v];
+    Object.assign(process.env, env);
+    return loadConfig().mapTiles;
+  };
+
+  it("defaults to OpenStreetMap's tiles, credited and linked", () => {
+    expect(load({})).toEqual({
+      url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      origin: "https://tile.openstreetmap.org",
+      attribution: "© OpenStreetMap contributors",
+      attributionUrl: "https://www.openstreetmap.org/copyright",
+    });
+  });
+
+  it("takes a self-hosted template, its one origin, and plain-text credit without a link", () => {
+    expect(load({ MAP_TILE_URL: "https://tiles.example.org:8443/osm/{z}/{x}/{y}{r}.png?v=2", MAP_TILE_ATTRIBUTION: "© OSM, tiles by us", MAP_TILE_ATTRIBUTION_URL: "off" })).toEqual({
+      url: "https://tiles.example.org:8443/osm/{z}/{x}/{y}{r}.png?v=2",
+      origin: "https://tiles.example.org:8443",
+      attribution: "© OSM, tiles by us",
+      attributionUrl: null,
+    });
+  });
+
+  it("is null when maps are off", () => {
+    expect(load({ MAP_TILE_URL: "off" })).toBeNull();
+  });
+
+  it.each([
+    ["http://tile.openstreetmap.org/{z}/{x}/{y}.png", /https/],
+    ["https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", /only \{z\}, \{x\}, \{y\} and \{r\}/],
+    ["https://{z}.tiles.example.org/{x}/{y}.png", /one host/],
+    ["https://tiles.example.org/{z}/{x}.png", /\{z\}, \{x\} and \{y\}/],
+    ["https://user:pw@tiles.example.org/{z}/{x}/{y}.png", /without credentials/],
+    ["not a url {z}{x}{y}", /https URL/],
+  ])("refuses MAP_TILE_URL=%s at boot", (url, why) => {
+    expect(() => load({ MAP_TILE_URL: url })).toThrow(why);
+  });
+
+  it("refuses an empty or unprintable attribution, and a link that is not https", () => {
+    expect(() => load({ MAP_TILE_ATTRIBUTION: "a‮b" })).toThrow(/MAP_TILE_ATTRIBUTION/);
+    expect(() => load({ MAP_TILE_ATTRIBUTION: "x".repeat(201) })).toThrow(/MAP_TILE_ATTRIBUTION/);
+    expect(() => load({ MAP_TILE_ATTRIBUTION_URL: "javascript:alert(1)" })).toThrow(/MAP_TILE_ATTRIBUTION_URL/);
   });
 });

@@ -12,7 +12,8 @@
  */
 
 import { z } from "zod";
-import { errorForStatus, getJson, malformed, providerText } from "./http.js";
+import { getJson, malformed, providerText } from "./http.js";
+import { kakaoFailure } from "./problems.js";
 import {
   GeoError,
   type GeocodeCandidate,
@@ -83,9 +84,6 @@ const Directions = z.object({
     .min(1),
 });
 
-/** Kakao's error body: `{ code, msg }` (navi) or `{ errorType, message }` (local). */
-const ErrorBody = z.object({ code: z.number() }).partial();
-
 /** Guide types that mark the start, the end and a waypoint rather than a turn. */
 const ENDPOINT_GUIDES = new Set([100, 101, 1000]);
 
@@ -133,10 +131,7 @@ export class KakaoProvider implements GeoProvider {
     const url = new URL(path, base);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
     const { status, body } = await getJson(this.fetchFn, url, { Authorization: `KakaoAK ${this.options.restKey}` });
-    if (status < 200 || status >= 300) {
-      if (ErrorBody.safeParse(body).data?.code === -10) throw new GeoError("quota", "the Kakao quota was reached");
-      throw errorForStatus(status);
-    }
+    if (status < 200 || status >= 300) throw kakaoFailure(status, body, [this.options.restKey]);
     const parsed = schema.safeParse(body);
     if (!parsed.success) throw malformed();
     return parsed.data;

@@ -27,7 +27,7 @@ import { useApp } from "../context";
 import { geoErrorKey, motionOf, safeHttpUrl, statusOf } from "../lib";
 import type { Eta, MyPoint, Person, Place, PreciseLocation, Presence, PrivacySettings } from "../model";
 import { homeScene } from "../mapScene";
-import { MapView, useMapConfig } from "../MapView";
+import { MapView, useMapTiles } from "../MapView";
 import { Empty, Hint, Loaded, Page, Panel, useAction, useFormat, useLoad, useNotify } from "../ui";
 
 type Mine = { presence: Presence | null; paused: boolean; geoEnabled: boolean; hiddenFromAgents: boolean };
@@ -78,8 +78,8 @@ export function HomeView() {
   const fmt = useFormat();
   const notify = useNotify();
   const [mine, reloadMine] = useLoad(loadMine, []);
-  const mapConfig = useMapConfig();
-  const mapped = Boolean(mapConfig?.provider);
+  const tiles = useMapTiles();
+  const mapped = Boolean(tiles);
   // My point is read only for a map that will be drawn.
   const [myPoint, reloadMyPoint] = useLoad(
     () => (mapped ? api<MyPoint>("/v1/presence/precise").catch(() => null) : Promise.resolve(null)),
@@ -153,7 +153,7 @@ export function HomeView() {
           {(m) => <MyStatus mine={m} sharing={sharing} onShare={() => void shareNow()} />}
         </Loaded>
       </Card>
-      <MapView config={mapConfig} scene={scene} hint={me?.nearHome ? t("map.nearHome", { place: me.nearHome.name }) : undefined} />
+      <MapView tiles={tiles} scene={scene} hint={me?.nearHome ? t("map.nearHome", { place: me.nearHome.name }) : undefined} />
       <Panel title={t("people.title")}>
         <Loaded state={people}>
           {(list) =>

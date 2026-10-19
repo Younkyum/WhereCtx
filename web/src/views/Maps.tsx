@@ -1,8 +1,8 @@
 /**
- * Maps & routes: which provider answers (Kakao or Naver), my own keys for
- * them, what may leave the server with my location, the map key this
- * dashboard draws maps with, and a route to try, drawn on the map.
- * Keys are write-only here: the server answers a hint, never the key.
+ * Maps & routes: which provider answers routes and addresses (Kakao or
+ * Naver), my own keys for them, what may leave the server with my location,
+ * where the dashboard's map tiles come from, and a route to try, drawn on the
+ * map. Keys are write-only here: the server answers a hint, never the key.
  */
 
 import { Badge } from "@astryxdesign/core/Badge";
@@ -14,7 +14,7 @@ import { Selector } from "@astryxdesign/core/Selector";
 import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../context";
 import type { I18nKey } from "../i18n";
@@ -26,26 +26,18 @@ import {
   type GeoCredential,
   type GeoProviderName,
   type GeoStatus,
+  type KeyTest,
   type PrivacySettings,
 } from "../model";
 import { routeScene } from "../mapScene";
-import { MapView, useMapConfig } from "../MapView";
-import { Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useFormat, useLoad, useNotify } from "../ui";
+import { MapView, tileHost, useMapTiles } from "../MapView";
+import { FormDialog, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useFormat, useLoad, useNotify } from "../ui";
 
 /** Where each provider documents getting a key (checked 2026-10-19). */
 const KEY_DOCS: Record<GeoProviderName, string> = {
   kakao: "https://developers.kakaomobility.com/guide/navi-api/start.html",
   naver: "https://api.ncloud-docs.com/docs/application-maps-overview",
 };
-
-/** Where each provider documents its map script and the domain a map key is registered for (checked 2026-10-19). */
-const MAP_DOCS: Record<GeoProviderName, string> = {
-  kakao: "https://apis.map.kakao.com/web/guide/",
-  naver: "https://navermaps.github.io/maps.js.ncp/docs/tutorial-2-Getting-Started.html",
-};
-
-/** The key kind a provider's map key is saved as (src/geo/mapSdk.ts). */
-const MAP_KIND: Record<GeoProviderName, string> = { kakao: "jsKey", naver: "mapKeyId" };
 
 /** The fields each provider's REST key form asks for, in order. */
 const KEY_FIELDS: Record<GeoProviderName, readonly { kind: string; secret: boolean; label: I18nKey }[]> = {
@@ -79,14 +71,14 @@ export function MapsView() {
                 {(p) => (
                   <KeyRow
                     provider={p}
-                    saved={status.credentials.find((c) => c.provider === p && (c.rest || c.status === "unusable"))}
+                    saved={status.credentials.find((c) => c.provider === p)}
                     operator={status.operator.includes(p)}
                     onChanged={reload}
                   />
                 )}
               </Rows>
             </Panel>
-            <MapKeysPanel status={status} privacy={privacy} onChanged={reload} />
+            <MapTilesPanel />
             {privacy.geoEnabled ? <TryRoute /> : null}
           </VStack>
         )}
@@ -179,23 +171,30 @@ function KeyRow({
   const notify = useNotify();
   const confirm = useConfirm();
   const fields = KEY_FIELDS[provider];
+  const [editing, setEditing] = useState(false);
   const [values, setValues] = useState<Record<string, string>>({});
   const complete = fields.every((f) => (values[f.kind] ?? "").trim().length >= 8);
-  const [saving, save] = useAction(async () => {
+  const save = async () => {
     const body = Object.fromEntries(fields.map((f) => [f.kind, values[f.kind]!.trim()]));
     await api(`/v1/geo/credentials/${provider}`, { method: "PUT", body });
-    setValues({});
     notify.ok(t("maps.keySaved"));
     await onChanged();
-  });
+  };
+  const edit = (open: boolean) => {
+    setValues({});
+    setEditing(open);
+  };
+  const [refusal, setRefusal] = useState<Extract<KeyTest, { ok: false }> | null>(null);
   const [testing, test] = useAction(async () => {
-    const r = await api<{ test: { ok: boolean; label?: string; message?: string } }>(`/v1/geo/credentials/${provider}/test`, { method: "POST" });
-    if (r.test.ok) notify.ok(t("maps.testOk", { place: r.test.label ?? "" }));
-    else notify.fail(new Error(t("maps.testFailed", { why: r.test.message ?? "" })));
+    setRefusal(null);
+    const r = await api<{ test: KeyTest }>(`/v1/geo/credentials/${provider}/test`, { method: "POST" });
+    if (r.test.ok) notify.ok(t("maps.testOk", { place: r.test.label }));
+    else if (r.test.code) setRefusal(r.test);
+    else notify.fail(new Error(t("maps.testFailed", { why: r.test.message })));
     await onChanged();
   });
   const remove = async () => {
-    const title = t(saved?.map ? "maps.removeConfirmKeepsMap" : "maps.removeConfirm", { provider: t(`maps.p.${provider}`) });
+    const title = t("maps.removeConfirm", { provider: t(`maps.p.${provider}`) });
     if (!(await confirm({ title, action: t("common.delete") }))) return;
     try {
       await api(`/v1/geo/credentials/${provider}`, { method: "DELETE" });
@@ -204,10 +203,6 @@ function KeyRow({
       notify.fail(e);
     }
     await onChanged();
-  };
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    if (complete) void save();
   };
   const hint = saved ? fields.map((f) => saved.kinds[f.kind]).find(Boolean) : undefined;
   const subtitle = (
@@ -233,11 +228,20 @@ function KeyRow({
   return (
     <VStack gap={2}>
       <Row title={t(`maps.p.${provider}`)} subtitle={subtitle}>
+        <Button label={t(saved ? "maps.replaceKey" : "maps.addKey")} size="sm" variant={saved ? "secondary" : "primary"} onClick={() => edit(true)} />
         {saved ? <Button label={t("maps.test")} size="sm" isLoading={testing} onClick={() => void test()} /> : null}
         {saved ? <Button label={t("common.delete")} size="sm" variant="destructive" clickAction={remove} /> : null}
       </Row>
-      <form onSubmit={submit}>
-        <HStack gap={2} wrap="wrap" vAlign="end">
+      {refusal?.code ? <Refusal provider={provider} refusal={refusal} onDismiss={() => setRefusal(null)} /> : null}
+      {editing ? (
+        <FormDialog
+          isOpen
+          onOpenChange={edit}
+          title={t(saved ? "maps.replaceKeyTitle" : "maps.addKeyTitle", { provider: t(`maps.p.${provider}`) })}
+          submitLabel={t("maps.saveKey")}
+          canSubmit={complete}
+          onSubmit={save}
+        >
           {fields.map((f) => (
             <TextInput
               key={f.kind}
@@ -246,110 +250,44 @@ function KeyRow({
               autoComplete="off"
               value={values[f.kind] ?? ""}
               onChange={(v) => setValues({ ...values, [f.kind]: v })}
-              width={260}
             />
           ))}
-          <Button type="submit" label={t(saved ? "maps.replaceKey" : "maps.saveKey")} variant="primary" isLoading={saving} isDisabled={!complete} />
-        </HStack>
-      </form>
+          <Hint>{t("maps.keyWriteOnly")}</Hint>
+        </FormDialog>
+      ) : null}
     </VStack>
   );
 }
 
-function MapKeysPanel({ status, privacy, onChanged }: { status: GeoStatus; privacy: PrivacySettings; onChanged: () => Promise<void> }) {
+/** A key test the provider turned down: which API, what to fix, and what the provider said. */
+function Refusal({ provider, refusal, onDismiss }: { provider: GeoProviderName; refusal: Extract<KeyTest, { ok: false }>; onDismiss: () => void }) {
   const { t } = useApp();
-  const map = status.map;
-  const line = !privacy.geoEnabled
-    ? t("maps.mapActive.off")
-    : map
-      ? t(`maps.mapActive.${map.source}`, { provider: t(`maps.p.${map.provider}`) })
-      : t("maps.mapActive.none");
+  const name = t(`maps.p.${provider}`);
   return (
-    <Panel title={t("maps.mapKey")}>
-      <VStack gap={4}>
-        <Text>{line}</Text>
-        <Hint>{t("maps.mapPrivacy", { provider: t(map ? `maps.p.${map.provider}` : "maps.p.any") })}</Hint>
-        <Rows items={[...GEO_PROVIDERS]} keyOf={(p) => p}>
-          {(p) => (
-            <MapKeyRow
-              provider={p}
-              saved={status.credentials.find((c) => c.provider === p)}
-              operator={status.operatorMap.includes(p)}
-              onChanged={onChanged}
-            />
-          )}
-        </Rows>
-      </VStack>
+    <Banner
+      status="warning"
+      title={t("maps.testRefused", { provider: name, api: t(`maps.testApi.${refusal.api ?? "geocoding"}`) })}
+      description={
+        <VStack gap={1}>
+          <Text>{t(`maps.problem.${provider}.${refusal.code ?? "upstream"}`)}</Text>
+          {refusal.providerMessage ? <Text type="supporting">{t("maps.providerSaid", { provider: name, words: refusal.providerMessage })}</Text> : null}
+        </VStack>
+      }
+      isDismissable
+      onDismiss={onDismiss}
+    />
+  );
+}
+
+/** Where the dashboard's maps come from, and what that tile server sees. */
+function MapTilesPanel() {
+  const { t } = useApp();
+  const tiles = useMapTiles();
+  if (tiles === undefined) return null;
+  return (
+    <Panel title={t("maps.mapTiles")}>
+      <Hint>{tiles ? t("maps.mapTilesPrivacy", { host: tileHost(tiles.url) }) : t("maps.mapTilesOff")}</Hint>
     </Panel>
-  );
-}
-
-function MapKeyRow({
-  provider,
-  saved,
-  operator,
-  onChanged,
-}: {
-  provider: GeoProviderName;
-  saved: GeoCredential | undefined;
-  operator: boolean;
-  onChanged: () => Promise<void>;
-}) {
-  const { t } = useApp();
-  const notify = useNotify();
-  const confirm = useConfirm();
-  const [key, setKey] = useState("");
-  const hint = saved?.map ? saved.kinds[MAP_KIND[provider]] : undefined;
-  const [saving, save] = useAction(async () => {
-    await api(`/v1/geo/credentials/${provider}/map`, { method: "PUT", body: { key: key.trim() } });
-    setKey("");
-    notify.ok(t("maps.mapSaved"));
-    await onChanged();
-  });
-  const remove = async () => {
-    if (!(await confirm({ title: t("maps.mapRemoveConfirm", { provider: t(`maps.p.${provider}`) }), action: t("common.delete") }))) return;
-    try {
-      await api(`/v1/geo/credentials/${provider}/map`, { method: "DELETE" });
-      notify.ok(t("toast.deleted"));
-    } catch (e) {
-      notify.fail(e);
-    }
-    await onChanged();
-  };
-  const subtitle = (
-    <VStack gap={0.5}>
-      <Text type="supporting">
-        {hint !== undefined ? t("maps.mapSavedKey", { hint: `••••${hint}` }) : operator ? t("maps.mapUsingOperator") : t("maps.mapNoKey")}
-      </Text>
-      <Text type="supporting">{t(`maps.mapHow.${provider}`, { origin: window.location.origin })}</Text>
-      <Link href={MAP_DOCS[provider]} isExternalLink>
-        {t(`maps.mapGuide.${provider}`)}
-      </Link>
-    </VStack>
-  );
-  return (
-    <VStack gap={2}>
-      <Row title={t(`maps.p.${provider}`)} subtitle={subtitle}>
-        {hint !== undefined ? <Button label={t("common.delete")} size="sm" variant="destructive" clickAction={remove} /> : null}
-      </Row>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (key.trim().length >= 8) void save();
-        }}
-      >
-        <HStack gap={2} wrap="wrap" vAlign="end">
-          <TextInput label={t(`maps.mapKind.${provider}`)} autoComplete="off" value={key} onChange={setKey} width={300} />
-          <Button
-            type="submit"
-            label={t(hint !== undefined ? "maps.replaceKey" : "maps.saveKey")}
-            variant="primary"
-            isLoading={saving}
-            isDisabled={key.trim().length < 8}
-          />
-        </HStack>
-      </form>
-    </VStack>
   );
 }
 
@@ -417,7 +355,7 @@ function TryRoute() {
 
 function RouteMap({ eta }: { eta: Eta }) {
   const { t } = useApp();
-  const mapConfig = useMapConfig();
+  const tiles = useMapTiles();
   const scene = useMemo(() => routeScene(eta.path ?? [], eta.destination.label, t("map.start")), [eta, t]);
-  return <MapView config={mapConfig} scene={scene} />;
+  return <MapView tiles={tiles} scene={scene} />;
 }

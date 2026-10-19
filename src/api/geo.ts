@@ -1,11 +1,9 @@
 /**
  * Maps: my provider keys, address search, and ETA from where I am.
  *   GET    /v1/geo                              -> which provider and key calls use, my keys' hints (session)
- *   GET    /v1/geo/map-config                   -> the map script and key my dashboard loads, or none (session)
+ *   GET    /v1/geo/map-config                   -> the tiles my dashboard draws maps on, or none (session)
  *   PUT    /v1/geo/credentials/:provider        -> save my REST keys for kakao|naver (session, step-up)
- *   DELETE /v1/geo/credentials/:provider        -> forget my REST keys for it, keeping its map key (session, step-up)
- *   PUT    /v1/geo/credentials/:provider/map    -> save my map key for it (session, step-up)
- *   DELETE /v1/geo/credentials/:provider/map    -> forget my map key for it, if any (session)
+ *   DELETE /v1/geo/credentials/:provider        -> forget my keys for it (session, step-up)
  *   POST   /v1/geo/credentials/:provider/test   -> look up Seoul City Hall with them, never my location (session)
  *   GET    /v1/geo/search?q=                    -> candidates with coordinates (manage_places)
  *   GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
@@ -22,8 +20,7 @@ import type { RouteContext } from "../app/context.js";
 import { credentialOf } from "../activity/record.js";
 import type { GeoCaller } from "../geo/keys.js";
 import { etaReply, searchReply, type GeoReply } from "../geo/replies.js";
-import { MAP_KEY_PATTERN } from "../geo/mapSdk.js";
-import { GEO_PROVIDERS, ROUTE_AVOID, type GeoProviderName } from "../geo/types.js";
+import { GEO_PROVIDERS, ROUTE_AVOID, type GeoCredentials, type GeoProviderName } from "../geo/types.js";
 import { decide, refuse } from "./accessAudit.js";
 import { noStore, requireFreshSession, requireScope, requireSession } from "./middleware.js";
 import { zodMessages } from "./validation.js";
@@ -33,12 +30,11 @@ import type { Context } from "hono";
 /** The REST key kinds each provider's form takes; a key is printable ASCII without spaces. */
 const key = z.string().trim().min(8).max(256).regex(/^[\x21-\x7e]+$/, "a key has no spaces or non-ASCII characters");
 const KEY_FORMS = {
-  kakao: z.object({ restKey: key }).strict(),
-  naver: z.object({ clientId: key, clientSecret: key }).strict(),
-} satisfies Record<GeoProviderName, z.ZodType>;
+  kakao: z.object({ restKey: key }).strict().transform((k) => ({ provider: "kakao" as const, ...k })),
+  naver: z.object({ clientId: key, clientSecret: key }).strict().transform((k) => ({ provider: "naver" as const, ...k })),
+} satisfies Record<GeoProviderName, z.ZodType<GeoCredentials, unknown>>;
 
 const Provider = z.enum(GEO_PROVIDERS);
-const MapKeyForm = z.object({ key: z.string().trim().regex(MAP_KEY_PATTERN, "a map key is 8 to 128 letters, digits, - or _") }).strict();
 
 const EtaQuery = z.object({
   to: z.string().trim().min(1).max(200),
@@ -71,27 +67,9 @@ export function geoRouter(ctx: RouteContext): Hono<AppEnv> {
 
   app.get("/", requireSession, noStore, async (c) => c.json(await c.get("scope").geo.status()));
 
-  app.get("/map-config", requireSession, noStore, async (c) => c.json(await c.get("scope").geo.mapConfig()));
-
-  app.put("/credentials/:provider/map", requireSession, requireFreshSession(ctx), async (c) => {
-    const provider = Provider.safeParse(c.req.param("provider"));
-    if (!provider.success) return c.json({ error: "unknown provider" }, 404);
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: "request body must be valid JSON" }, 400);
-    }
-    const parsed = MapKeyForm.safeParse(body);
-    if (!parsed.success) return c.json({ error: "invalid key", detail: zodMessages(parsed.error) }, 400);
-    return c.json({ credential: await c.get("scope").geo.saveMapKey(provider.data, parsed.data.key) });
-  });
-
-  // Removing the map key only narrows what leaves, so it needs no fresh passkey.
-  app.delete("/credentials/:provider/map", requireSession, async (c) => {
-    const provider = Provider.safeParse(c.req.param("provider"));
-    if (!provider.success) return c.json({ error: "unknown provider" }, 404);
-    return c.json({ credential: await c.get("scope").geo.saveMapKey(provider.data, null) });
+  app.get("/map-config", requireSession, (c) => {
+    const tiles = ctx.config.mapTiles;
+    return c.json({ tiles: tiles && { url: tiles.url, attribution: tiles.attribution, attributionUrl: tiles.attributionUrl } });
   });
 
   app.put("/credentials/:provider", requireSession, requireFreshSession(ctx), async (c) => {
@@ -105,7 +83,7 @@ export function geoRouter(ctx: RouteContext): Hono<AppEnv> {
     }
     const parsed = KEY_FORMS[provider.data].safeParse(body);
     if (!parsed.success) return c.json({ error: "invalid key", detail: zodMessages(parsed.error) }, 400);
-    const saved = await c.get("scope").geo.saveCredential(provider.data, parsed.data);
+    const saved = await c.get("scope").geo.saveCredential(parsed.data);
     return c.json({ credential: saved });
   });
 

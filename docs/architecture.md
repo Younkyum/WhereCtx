@@ -164,17 +164,18 @@ the lock, only if the person has not moved on since. Shutdown cancels
 trailing lookups and waits for running ones. Every provider call is
 server-side.
 
-The one exception is the dashboard's map. `mapSdk.ts` (`MAP_SDKS`,
-`SDK_ORIGINS`) names, per provider, the map key kind, the script URL and
-origin, and every host the script loads from. `GET /v1/geo/map-config` hands
-the signed-in owner their script URL. The provider's script never runs in
-the dashboard page: `MapView` (`web/src/MapView.tsx`) frames
-`/dashboard/map.html`, whose script (`web/src/mapFrame.ts`) loads the
-provider's script and draws through one adapter per provider. The two talk
-only by `postMessage`, in the shapes and parsers of `web/src/mapScene.ts`:
-the dashboard sends `load` and `draw`, the frame answers `hello`, `ready`,
-`failed` (`refused`, `blocked` or `load`) and `pick`. `MapView` falls back
-to the existing views when there is no map or it fails, and says why.
+A provider's refusal is read from its error body in `src/geo/problems.ts`:
+`kakaoFailure` and `naverFailure` turn a status and body into a `GeoError`
+with a `KeyProblem` (what to fix) and the provider's own words with every
+key masked. The key test reports both, with the API that failed.
+
+The dashboard's maps involve no provider. `MapView`
+(`web/src/MapView.tsx`) asks `GET /v1/geo/map-config` for the tiles
+(`MAP_TILE_URL`, parsed at boot by `src/dashboard/mapTiles.ts`) and draws
+the page's scene (`web/src/mapScene.ts`) with Leaflet, which only
+`web/src/mapCanvas.ts` touches and which is its own chunk, loaded with the
+first map. Titles and the attribution reach the page as text nodes. With
+no tiles, `MapView` shows the existing views instead.
 
 ## Server log
 
@@ -240,15 +241,14 @@ The dashboard talks to `/v1/*` with the session cookie. It keeps only the
 language, the color mode, and the selected workspace in `localStorage`. No credential is stored there.
 
 The CSP (`src/app/securityHeaders.ts`) is `script-src 'self'`, `img-src
-'self'` and `frame-src 'self'`. `style-src` allows `'unsafe-inline'` for the
+'self'` plus the tile origin `MAP_TILE_URL` names (nothing more when it is
+`off`), and `frame-src 'none'`. `style-src` allows `'unsafe-inline'` for the
 two stylesheets the design system adds at runtime. `pageSecurity` is the one
-writer of the CSP, `Referrer-Policy` and `X-Frame-Options`, by path alone:
-every response gets the strict policy, `no-referrer` and `DENY`, but
-`/dashboard/map.html`, the map frame, which gets both providers' map hosts
-in `script-src`, `img-src` and `connect-src`, `frame-ancestors 'self'`,
-`SAMEORIGIN` and `strict-origin`. No response depends on who asks, so
-`index.html` and `map.html` are plain `no-cache` files. See
-[decisions.md](decisions.md#2026-10-19-maps-in-the-dashboard).
+writer of the CSP, `Referrer-Policy` (`no-referrer`) and `X-Frame-Options`
+(`DENY`), the same for every response; the OAuth server sends the same
+values. The policy depends on configuration alone, so `index.html` is a
+plain `no-cache` file. See
+[decisions.md](decisions.md#2026-10-19-dashboard-maps-on-open-tiles-and-key-tests-that-say-why).
 
 ## Components
 

@@ -599,10 +599,8 @@ describe("maps", () => {
       status: 200,
       body: {
         active: { provider: "kakao", source: "own" },
-        map: null,
-        credentials: [{ provider: "kakao", status: "ok", rest: true, map: false, kinds: { restKey: "cdef" }, updatedAt: "2026-10-19T00:00:00Z", lastUsedAt: null, lastError: null }],
+        credentials: [{ provider: "kakao", status: "ok", kinds: { restKey: "cdef" }, updatedAt: "2026-10-19T00:00:00Z", lastUsedAt: null, lastError: null }],
         operator: [],
-        operatorMap: [],
       },
     }));
     route("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: false, skipProviderNearHome: true, geoProvider: null } } }));
@@ -614,6 +612,11 @@ describe("maps", () => {
     expect(host.textContent).toContain("Saved key ••••cdef");
     expect(host.textContent).toContain("Routes and addresses go to Kakao with your key.");
 
+    expect(host.querySelector('input[type="password"]')).toBeNull();
+    const add = [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Add key");
+    await act(async () => add[0]!.click());
+    await settle();
+    expect(document.querySelector("dialog")?.textContent).toContain("Add your Naver key");
     await fill(inputLabelled("Client ID"), "naver-client-id-1234");
     await fill(inputLabelled("Client Secret"), "naver-client-secret-5678");
     await act(async () => button("Save key").click());
@@ -625,6 +628,40 @@ describe("maps", () => {
     await act(async () => toggle.click());
     await settle();
     expect(bodies).toContainEqual({ geoEnabled: true });
+  });
+
+  it("says what the provider refused when a key test fails, what to fix, and the provider's own words", async () => {
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/geo", () => ({
+      status: 200,
+      body: {
+        active: { provider: "kakao", source: "own" },
+        credentials: [{ provider: "kakao", status: "ok", kinds: { restKey: "cdef" }, updatedAt: "2026-10-19T00:00:00Z", lastUsedAt: null, lastError: null }],
+        operator: [],
+      },
+    }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true, geoProvider: null } } }));
+    route("POST /v1/geo/credentials/kakao/test", () => ({
+      status: 200,
+      body: {
+        test: {
+          ok: false,
+          error: "auth",
+          message: "Kakao Map is turned off for this app",
+          api: "geocoding",
+          code: "map_service_disabled",
+          providerMessage: "App(WhereCtx) disabled OPEN_MAP_AND_LOCAL service.",
+        },
+      },
+    }));
+    location.hash = "#maps";
+    await act(async () => root.render(<App />));
+    await settle();
+    await act(async () => button("Test").click());
+    await settle();
+    expect(host.textContent).toContain("Kakao turned down the address lookup.");
+    expect(host.textContent).toContain("제품 설정, 카카오맵, set 사용 설정 to ON");
+    expect(host.textContent).toContain("Kakao said: \u201cApp(WhereCtx) disabled OPEN_MAP_AND_LOCAL service.\u201d");
   });
 
   it("asks for the drive time home only when the button is pressed", async () => {
@@ -667,6 +704,10 @@ describe("maps", () => {
     location.hash = "#places";
     await act(async () => root.render(<App />));
     await settle();
+    expect(host.querySelector("input")).toBeNull();
+    await act(async () => button("Add by address or name").click());
+    await settle();
+    expect(document.querySelector("dialog")?.textContent).toContain("Add by address or name");
     await fill(inputLabelled("Address or place name"), "판교역");
     await act(async () => button("Search").click());
     await settle();
@@ -679,5 +720,6 @@ describe("maps", () => {
     await act(async () => button("Save place").click());
     await settle();
     expect(posted).toMatchObject({ name: "판교역 경강선", type: "custom", lat: 37.3951, lon: 127.1109 });
+    expect(document.querySelector("dialog[open]")).toBeNull();
   });
 });
