@@ -1,0 +1,32 @@
+{
+  "code": 0,
+  "message": "길찾기를 성공하였습니다.",
+  "currentDateTime": "2024-09-03T14:39:25",
+  "route": {
+    "traoptimal": [
+      {
+        "summary": {
+          "start": { "location": [127.1058342, 37.3597080] },
+          "goal": { "location": [129.0759854, 35.1794698], "dir": 2 },
+          "distance": 380044,
+          "duration": 15856847,
+          "departureTime": "2024-09-03T14:39:24",
+          "bbox": [[127.0833901, 35.1793190], [129.1969372, 37.3597094]],
+          "tollFare": 21000,
+          "taxiFare": 352360,
+          "fuelPrice": 45056
+        },
+        "path": [[127.1059979, 37.3597094], [129.0762855, 35.1793190]],
+        "section": [
+          { "pointIndex": 315, "pointCount": 1018, "distance": 95575, "name": "경부고속도로", "congestion": 1, "speed": 83 },
+          { "pointIndex": 2157, "pointCount": 812, "distance": 92508, "name": "상주영천고속도로", "congestion": 1, "speed": 108 },
+          { "pointIndex": 2968, "pointCount": 833, "distance": 89391, "name": "경부고속도로", "congestion": 1, "speed": 106 }
+        ],
+        "guide": [
+          { "pointIndex": 50, "type": 3, "instructions": "머내공원사거리에서 '서분당(고기)IC' 방면으로 우회전", "distance": 1075, "duration": 262406 },
+          { "pointIndex": 4065, "type": 88, "instructions": "목적지", "distance": 904, "duration": 147960 }
+        ]
+      }
+    ]
+  }
+}
