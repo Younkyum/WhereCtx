@@ -50,7 +50,9 @@ of the presented token.
 settings row seeded at boot, and if that user has no admin token one is
 generated for it. Changing `USER_ID` after first boot does not move any data:
 existing rows and env tokens keep their original owner (boot warns when an env
-token belongs to someone else).
+token belongs to someone else). It does move the operator role, which is
+whoever `USER_ID` names (the Server logs view, `isOperator`); `reset-access`
+lets that person sign in if they have no passkey.
 
 ## Accounts, workspaces, passkeys
 
@@ -242,3 +244,60 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
   leave their cursors in place, and waits for drains before closing the DB.
 - **MCP stays on bearer tokens.** Each token belongs to one person. OAuth 2.1
   for MCP clients is a later step.
+
+## 2026-10-18: activity logs and the server log
+
+- **The owner's own reads are not access-logged.** The access log answers
+  "which agent read my location". A session is the person looking at their
+  own data, so recording it would bury the agent rows. Tokens are always
+  recorded, admin tokens included.
+- **Record by structure, not by call site.** REST records in one middleware
+  mounted on the presence, places and events prefixes; MCP registers every
+  tool through one wrapper. A new route or tool is recorded without anyone
+  remembering to. The outcome comes from the response, so handlers do not
+  change.
+- **Logs hold no coordinates.** `ingest_log` has no column for them and
+  stores a redacted rejection message. The access log stores the reason an
+  agent gave, never the answer.
+- **No per-day cap on the ingest log.** A phone reporting every 5 minutes
+  writes 288 rows a day, about 2,000 per device at the 7-day default. That
+  is small for SQLite, and a cap would hide exactly the burst of rejections
+  a person needs to see.
+- **The operator is `USER_ID`.** The server log is about the whole install,
+  so only the instance owner reads it, from a session. It is redacted when
+  written, so the view shows what `docker logs` shows minus secrets and
+  coordinates, and the boot banners never enter it.
+- **History is pruned whether or not it is on.** Before, turning history off
+  left the stored points forever.
+
+## 2026-10-18: activity logs, second round
+
+- **A typed decision, not the response body.** The access and ingest logs
+  read outcomes back out of JSON bodies. Now the code that decides (a scope
+  guard, the privacy policy, a handler, an MCP tool's `Reply`) records an
+  `AccessDecision`, and the recorder fills in only what was left open, from
+  the status. A body change can no longer change what the log says.
+- **Default on for tokens.** Every token request on every `/v1` route but
+  ingest and sign-in is recorded, not only the presence routes: privacy,
+  webhook and token changes made with an admin token are the ones a person
+  most needs to see. A test sends a token request to every mounted route.
+- **MCP records per request, not per handler.** The SDK refuses bad
+  arguments and unknown tools before any handler runs, so a handler wrapper
+  missed them. The server watches its transport instead and writes one row
+  per `tools/call` when the response goes out.
+- **Never store what the caller chose.** A path no route matched and a tool
+  name that does not exist are recorded as `unknown`, so the log cannot be
+  filled with attacker-chosen text.
+- **Fold, do not drop.** Identical requests within a minute become one row
+  with a count, so a looping agent is visible without flooding the table.
+  The window slides from the latest request. 0007 was unreleased, so it was
+  amended rather than followed by a new migration.
+- **Secrets are a type.** The setup code, access codes and generated admin
+  tokens are a `Secret`; only the stdout banner takes one. Errors are logged
+  as a fixed set of fields, because drizzle puts query parameters in its
+  error messages and regexes cannot recognise every value.
+- **A webhook drain stops when its hook changed.** Its cursor writes only go
+  forward, only while the hook is active and has the selection the drain
+  read, so pausing, resuming or unsubscribing during a delivery cannot
+  replay or over-deliver.
+

@@ -36,6 +36,14 @@ import type {
   TokenScope,
 } from "../types.js";
 import type { WorkspaceRole } from "../accounts/types.js";
+import type {
+  AccessAction,
+  AccessOutcome,
+  AccessSurface,
+  CredentialKind,
+  IngestOutcome,
+  IngestRoute,
+} from "../activity/types.js";
 import type { AuthenticatorTransportFuture } from "@simplewebauthn/server";
 
 export const tokens = sqliteTable(
@@ -469,3 +477,58 @@ export const schema = {
 // (`new Date().toISOString()`). We intentionally avoid SQL CURRENT_TIMESTAMP
 // defaults, which emit a different `YYYY-MM-DD HH:MM:SS` format and would break
 // `updatedAgoSec` math and lexical sorting.
+
+/**
+ * Every agent or token request for a user's data, on REST and MCP. Sessions
+ * (the owner in the dashboard) are not recorded. No coordinates. Identical
+ * requests within a minute share a row: `count` of them, the first at
+ * `created_at` and the latest at `last_at`. Pruned after
+ * ACCESS_LOG_RETENTION_DAYS.
+ */
+export const accessLog = sqliteTable(
+  "access_log",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    credentialKind: text("credential_kind").$type<CredentialKind>().notNull(),
+    credentialId: text("credential_id").notNull(),
+    credentialName: text("credential_name").notNull(),
+    surface: text("surface").$type<AccessSurface>().notNull(),
+    action: text("action").$type<AccessAction>().notNull(),
+    precise: integer("precise", { mode: "boolean" }).notNull(),
+    reason: text("reason"),
+    outcome: text("outcome").$type<AccessOutcome>().notNull(),
+    denial: text("denial"),
+    count: integer("count").notNull().default(1),
+    createdAt: text("created_at").notNull(),
+    lastAt: text("last_at").notNull(),
+  },
+  (t) => ({
+    userCreatedIdx: index("access_log_user_created_idx").on(t.userId, t.createdAt, t.id),
+    createdAtIdx: index("access_log_created_at_idx").on(t.createdAt),
+    coalesceIdx: index("access_log_coalesce_idx").on(t.userId, t.credentialId, t.lastAt),
+  }),
+);
+
+/**
+ * What each device sent and what became of it, without the reading itself:
+ * there is no coordinate column. Pruned after INGEST_LOG_RETENTION_DAYS.
+ */
+export const ingestLog = sqliteTable(
+  "ingest_log",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    tokenId: text("token_id"),
+    tokenName: text("token_name"),
+    source: text("source").$type<IngestRoute>().notNull(),
+    outcome: text("outcome").$type<IngestOutcome>().notNull(),
+    reason: text("reason"),
+    receivedAt: text("received_at").notNull(),
+  },
+  (t) => ({
+    userReceivedIdx: index("ingest_log_user_received_idx").on(t.userId, t.receivedAt, t.id),
+    tokenReceivedIdx: index("ingest_log_token_received_idx").on(t.tokenId, t.receivedAt),
+    receivedAtIdx: index("ingest_log_received_at_idx").on(t.receivedAt),
+  }),
+);

@@ -11,6 +11,7 @@
 
 import { Hono } from "hono";
 import { accessAtLeast, agentEventView } from "../privacy/policy.js";
+import { decide } from "./accessAudit.js";
 import { requireScope } from "./middleware.js";
 import { parseLimit } from "./validation.js";
 import type { AppEnv } from "./types.js";
@@ -24,6 +25,7 @@ export function eventsRouter(): Hono<AppEnv> {
     const settings = await scope.settings.getOrSeed();
     const isAdmin = scopes.includes("manage_privacy");
     if (!isAdmin && !accessAtLeast(settings.defaultAgentAccess, "coarse")) {
+      decide(c, { outcome: "hidden" });
       return c.json({ error: "events are hidden from agents by policy", privacy: "hidden" }, 403);
     }
     const limit = parseLimit(c.req.query("limit"), 50, 500);

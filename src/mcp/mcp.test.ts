@@ -31,12 +31,13 @@ const config: WhereCtxConfig = {
   webhooks: { allowPrivateTargets: false },
   events: { retentionHours: 720 },
   sharing: { auditRetentionDays: 365 },
+  activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
 };
 
 const USER = asUserId("default");
 
-const agentToken: Principal = { via: "token", userId: USER, scopes: ROLE_SCOPES.agent };
-const adminToken: Principal = { via: "token", userId: USER, scopes: ROLE_SCOPES.admin };
+const agentToken: Principal = { via: "token", userId: USER, scopes: ROLE_SCOPES.agent, tokenId: "agent-id", tokenName: "agent" };
+const adminToken: Principal = { via: "token", userId: USER, scopes: ROLE_SCOPES.admin, tokenId: "admin-id", tokenName: "admin" };
 
 function reading(lat: number, lon: number): NormalizedReading {
   return {

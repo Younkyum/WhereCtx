@@ -12,10 +12,15 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { AppContext } from "../app/context.js";
 import { nodeClientKey, type RateLimiter } from "../api/rateLimit.js";
 import { resolveTokenPrincipal } from "../auth/principal.js";
+import { accessRecorder } from "../activity/record.js";
 import { buildMcpServer } from "./server.js";
+import { log } from "../util/log.js";
 
 // Match the REST body cap (app/server.ts bodyLimit) for consistency.
 const MAX_BODY_BYTES = 64 * 1024;
+
+/** Most JSON-RPC messages one POST may batch; each tool call in it is a log row. */
+export const MAX_BATCH_MESSAGES = 10;
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const text = JSON.stringify(body);
@@ -77,7 +82,9 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: RateLimiter) {
       authLimiter?.record(clientKey);
       return sendJson(res, 401, { error: "unauthorized" });
     }
+    const record = accessRecorder(ctx.forUser(principal.userId), principal, "mcp");
     if (!principal.scopes.includes("read_presence")) {
+      await record({ action: "mcp.request", outcome: "denied", denial: "requires read_presence scope" });
       return sendJson(res, 403, { error: "forbidden", detail: "requires read_presence scope" });
     }
 
@@ -88,6 +95,11 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: RateLimiter) {
       } catch (e) {
         const msg = e instanceof Error ? e.message : "bad request";
         return sendJson(res, msg === "payload too large" ? 413 : 400, { error: msg });
+      }
+      if (Array.isArray(body) && body.length > MAX_BATCH_MESSAGES) {
+        const message = `batch too large (at most ${MAX_BATCH_MESSAGES} messages)`;
+        await record({ action: "mcp.request", outcome: "denied", denial: message });
+        return sendJson(res, 400, { jsonrpc: "2.0", id: null, error: { code: -32600, message } });
       }
     }
 
@@ -106,8 +118,7 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: RateLimiter) {
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("mcp request error:", e);
+      log.error("mcp request failed", e);
       if (!res.headersSent) sendJson(res, 500, { error: "internal server error" });
     }
   };

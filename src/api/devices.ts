@@ -1,6 +1,12 @@
 /**
- * Device pairing (manage_tokens; a session must have re-proved its passkey,
- * since this mints a token exactly like POST /v1/tokens).
+ * Devices (manage_tokens).
+ *   GET /v1/devices
+ *     -> each device token with when it last sent (lastReceivedAt, from the
+ *        ingest log) and what became of that, and its accepted and rejected
+ *        uploads over the last 24 hours. No coordinates.
+ *
+ * Device pairing (a session must have re-proved its passkey, since this
+ * mints a token exactly like POST /v1/tokens).
  *   POST /v1/devices/pair {name, kind: "owntracks"|"shortcut"}
  *     -> a new device token plus what the phone needs to use it:
  *        owntracks: the remote-config object, its owntracks:/// import link,
@@ -34,6 +40,8 @@ const PairSchema = z.object({
 export function devicesRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   app.use("*", requireScope("manage_tokens"));
+
+  app.get("/", async (c) => c.json({ devices: await c.get("scope").ingestLog.deviceSummaries() }));
 
   app.post("/pair", noStore, requireFreshSession(ctx), async (c) => {
     const body = await parseBody(c, PairSchema);

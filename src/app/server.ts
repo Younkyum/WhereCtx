@@ -10,6 +10,7 @@ import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
 import { RateLimiter, authFailureGuard } from "../api/rateLimit.js";
 import { authenticate, sessionAuth } from "../api/middleware.js";
+import { auditAccess, restActionOf } from "../api/accessAudit.js";
 import type { AppEnv, SessionEnv } from "../api/types.js";
 import { authRouter, type AuthRouterLimits } from "../api/auth.js";
 import { meRouter } from "../api/me.js";
@@ -24,6 +25,9 @@ import { privacyRouter } from "../api/privacy.js";
 import { tokensRouter } from "../api/tokens.js";
 import { devicesRouter } from "../api/devices.js";
 import { webhooksRouter } from "../api/webhooks.js";
+import { activityRouter } from "../api/activity.js";
+import { adminRouter } from "../api/admin.js";
+import { log } from "../util/log.js";
 
 export interface BuildAppOptions {
   /** Shared with the MCP handler so both surfaces count auth failures together. */
@@ -95,16 +99,17 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
 
   // Auth is mounted here, the one REST place holding the full context; routers
   // get only the user scope `authenticate` attaches (from a token or a session
-  // cookie). Device clients (Shortcut/OwnTracks) may pass the token via ?token=
-  // or Basic auth on ingest only.
-  const mount = (path: string, router: Hono<AppEnv>, auth = authenticate(ctx)): void => {
-    app.use(`${path}/*`, auth);
+  // cookie). Every token request on these prefixes lands in the owner's access
+  // log; `auditAccess` runs first so it sees the final response.
+  const mount = (path: string, router: Hono<AppEnv>): void => {
+    app.use(`${path}/*`, auditAccess(ctx, restActionOf), authenticate(ctx));
     app.route(path, router);
   };
   // Account routes act for a signed-in person only, through the account scope
-  // `sessionAuth` attaches rather than raw stores.
+  // `sessionAuth` attaches rather than raw stores. A token is refused there and
+  // recorded as "account".
   const mountSession = (path: string, router: Hono<SessionEnv>): void => {
-    app.use(`${path}/*`, sessionAuth(ctx));
+    app.use(`${path}/*`, auditAccess(ctx, () => "account"), sessionAuth(ctx));
     app.route(path, router);
   };
   app.route("/v1/auth", authRouter(ctx, ctx.auth, options.authRouterLimits));
@@ -112,7 +117,10 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   mountSession("/v1/workspaces", workspacesRouter());
   mountSession("/v1/shares", sharesRouter());
   mountSession("/v1/people", peopleRouter());
-  mount("/v1/ingest", ingestRouter(ctx), authenticate(ctx, { deviceCredentials: true }));
+  // Device clients (Shortcut/OwnTracks) may pass the token via ?token= or Basic
+  // auth on ingest only. Ingest keeps its own log (ingest_log), not this one.
+  app.use("/v1/ingest/*", authenticate(ctx, { deviceCredentials: true }));
+  app.route("/v1/ingest", ingestRouter(ctx));
   mount("/v1/presence", presenceRouter(ctx));
   mount("/v1/places", placesRouter(ctx));
   mount("/v1/events", eventsRouter());
@@ -120,11 +128,12 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   mount("/v1/webhooks", webhooksRouter(ctx));
   mount("/v1/tokens", tokensRouter(ctx));
   mount("/v1/devices", devicesRouter(ctx));
+  mount("/v1/activity", activityRouter());
+  mount("/v1/admin", adminRouter(ctx));
 
   app.notFound((c) => c.json({ error: "not found" }, 404));
   app.onError((err, c) => {
-    // eslint-disable-next-line no-console
-    console.error("request error:", err);
+    log.error("request failed", err, { method: c.req.method, path: c.req.path });
     return c.json({ error: "internal server error" }, 500);
   });
 

@@ -4,6 +4,7 @@
  * that user. A user holds at most one code; issuing replaces it.
  */
 
+import { Secret } from "../util/secret.js";
 import { and, eq, gt, lt } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { accessCodes } from "../db/schema.js";
@@ -27,7 +28,7 @@ export class AccessCodesStore {
   ) {}
 
   /** Issue a fresh code for `userId`; the plaintext is returned once. */
-  async issue(userId: UserId): Promise<{ code: string; expiresAt: string }> {
+  async issue(userId: UserId): Promise<{ code: Secret; expiresAt: string }> {
     const code = generateCode(4, 6);
     const now = this.clock();
     const row = {
@@ -40,7 +41,7 @@ export class AccessCodesStore {
       .insert(accessCodes)
       .values(row)
       .onConflictDoUpdate({ target: accessCodes.userId, set: row });
-    return { code, expiresAt: row.expiresAt };
+    return { code: new Secret(code), expiresAt: row.expiresAt };
   }
 
   /** The user a live code was issued for, or null. */

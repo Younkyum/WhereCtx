@@ -31,6 +31,7 @@ import { SecretBox } from "../webhooks/secretBox.js";
 import { systemClock, type Clock } from "../util/time.js";
 import { AccessCodesStore } from "../accounts/accessCodesStore.js";
 import { PasskeyAuth, generateSetupCode, setupCodeHash } from "../accounts/authService.js";
+import { Secret } from "../util/secret.js";
 import { Ceremonies } from "../accounts/ceremonies.js";
 import { InvitesStore } from "../accounts/invitesStore.js";
 import { NoncesStore } from "../accounts/noncesStore.js";
@@ -46,6 +47,8 @@ import { WorkspaceService } from "../accounts/workspaceService.js";
 import { WorkspacesStore } from "../accounts/workspacesStore.js";
 import { SharesStore } from "../sharing/sharesStore.js";
 import { SharingService } from "../sharing/sharingService.js";
+import { AccessLogStore } from "../activity/accessLogStore.js";
+import { IngestLogStore } from "../activity/ingestLogStore.js";
 import type { PresenceEvent, UserId } from "../types.js";
 
 export interface SystemStores {
@@ -68,6 +71,8 @@ export interface SystemStores {
   serverSecrets: ServerSecretsStore;
   nonces: NoncesStore;
   shares: SharesStore;
+  accessLog: AccessLogStore;
+  ingestLog: IngestLogStore;
 }
 
 type Unbound<F, A> = F extends (first: A, ...args: infer P) => infer R ? (...args: P) => R : never;
@@ -99,12 +104,15 @@ function scopeFor(system: SystemStores, userId: UserId) {
       ]),
     },
     events: bindFirst(system.events, userId, ["listRecent"]),
-    history: bindFirst(system.history, userId, ["listRecent"]),
+    history: bindFirst(system.history, userId, ["listRange"]),
     reminders: bindFirst(system.reminders, userId, ["create", "countActive", "listActive"]),
+    accessLog: bindFirst(system.accessLog, userId, ["record", "list"]),
+    ingestLog: bindFirst(system.ingestLog, userId, ["record", "list", "deviceSummaries"]),
     webhooks: bindFirst(system.webhooks, userId, [
       "list",
       "count",
       "create",
+      "update",
       "delete",
       "listDeadLetters",
     ]),
@@ -180,7 +188,7 @@ export type RouteContext = Pick<AppContext, "config" | "clock" | "onEvents">;
 export interface BootstrapInfo {
   seed: SeedResult;
   /** One-time code for registering the first passkey; set while none exists. */
-  setupCode?: string;
+  setupCode?: Secret;
 }
 
 export interface AppContextOptions {
@@ -233,6 +241,8 @@ export async function createAppContext(
     serverSecrets: new ServerSecretsStore(db, clock),
     nonces: new NoncesStore(db, clock),
     shares: new SharesStore(db, clock),
+    accessLog: new AccessLogStore(db, clock),
+    ingestLog: new IngestLogStore(db, clock),
   };
   const system: SystemStores = {
     ...stores,
@@ -248,9 +258,10 @@ export async function createAppContext(
     }),
   };
 
-  // `defaultUserId` is read only here: it owns the env-configured tokens, the
-  // first settings row, the Default workspace, and the setup passkey. Request
-  // paths take their user from the credential.
+  // `defaultUserId` owns the env-configured tokens, the first settings row,
+  // the Default workspace, and the setup passkey. Request paths take their
+  // user from the credential; the only other reader is api/admin.ts
+  // `isOperator`, which compares that user against it.
   const owner = config.defaultUserId;
   await system.settings.getOrSeed(owner);
   await system.users.ensure(owner, owner);
@@ -303,14 +314,14 @@ export async function createAppContext(
  * While no passkey exists, mint a fresh setup code (only its hash is stored,
  * so any instance can check it); once one does, drop any leftover hash.
  */
-async function rotateSetupCode(system: SystemStores): Promise<string | undefined> {
+async function rotateSetupCode(system: SystemStores): Promise<Secret | undefined> {
   if ((await system.passkeys.countAll()) > 0) {
     await system.serverSecrets.clearSetupCode();
     return undefined;
   }
   const code = generateSetupCode();
   await system.serverSecrets.putSetupCodeHash(setupCodeHash(code));
-  return code;
+  return new Secret(code);
 }
 
 function pick<T, K extends keyof T>(source: T, keys: readonly K[]): Pick<T, K> {

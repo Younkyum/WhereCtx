@@ -16,7 +16,7 @@ import { ROLE_SCOPES, type TokenScope, type UserId } from "../types.js";
 export const SESSION_SCOPES: readonly TokenScope[] = ["write_location", ...ROLE_SCOPES.admin];
 
 export type Principal =
-  | { via: "token"; userId: UserId; scopes: TokenScope[] }
+  | { via: "token"; userId: UserId; scopes: TokenScope[]; tokenId: string; tokenName: string }
   | {
       via: "session";
       userId: UserId;
@@ -33,7 +33,15 @@ export async function resolveTokenPrincipal(
   secret: string | null | undefined,
 ): Promise<Principal | null> {
   const token = await ctx.system.tokens.verify(secret);
-  return token && { via: "token", userId: token.userId, scopes: token.scopes };
+  return (
+    token && {
+      via: "token",
+      userId: token.userId,
+      scopes: token.scopes,
+      tokenId: token.id,
+      tokenName: token.name,
+    }
+  );
 }
 
 /** `renewed` means the session's expiry slid forward and the cookie should be re-sent. */

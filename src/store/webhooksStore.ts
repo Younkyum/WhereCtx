@@ -10,12 +10,13 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, inArray, isNotNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { webhookDeliveries, webhooks } from "../db/schema.js";
 import { asUserId, type PresenceEvent, type UserId } from "../types.js";
 import { isEncryptedSecret, type SecretBox } from "../webhooks/secretBox.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
+import { log } from "../util/log.js";
 
 /** Highest possible 16-byte hex id; used to seed a cursor "past" a timestamp. */
 const MAX_ID = "f".repeat(32);
@@ -23,6 +24,12 @@ const MAX_ID = "f".repeat(32);
 /** Encode a composite delivery cursor "(createdAt, eventId)" as a string. */
 export function formatCursor(createdAt: string, eventId: string): string {
   return `${createdAt}|${eventId}`;
+}
+
+/** One spelling per selection: ["*"] when it includes "*" or is empty, otherwise each type once, in order. */
+export function normalizeEvents(events: readonly string[]): string[] {
+  if (events.length === 0 || events.includes("*")) return ["*"];
+  return [...new Set(events)];
 }
 
 export interface DeadLetter {
@@ -75,19 +82,13 @@ export class WebhooksStore {
     let secret: string | undefined;
     if (row.secret !== null) {
       if (isEncryptedSecret(row.secret) && !this.secretBox) {
-        // eslint-disable-next-line no-console
-        console.error(
-          `webhook ${row.id}: secret is encrypted but WEBHOOK_ENCRYPTION_KEY is not set; skipping hook`,
-        );
+        log.error("webhook secret is encrypted but WEBHOOK_ENCRYPTION_KEY is not set; skipping hook", undefined, { webhookId: row.id });
         return null;
       }
       try {
         secret = this.secretBox ? this.secretBox.decrypt(row.secret) : row.secret;
       } catch {
-        // eslint-disable-next-line no-console
-        console.error(
-          `webhook ${row.id}: failed to decrypt secret (wrong WEBHOOK_ENCRYPTION_KEY?); skipping hook`,
-        );
+        log.error("webhook secret failed to decrypt (wrong WEBHOOK_ENCRYPTION_KEY?); skipping hook", undefined, { webhookId: row.id });
         return null;
       }
     }
@@ -118,7 +119,7 @@ export class WebhooksStore {
       id: randomBytes(16).toString("hex"),
       userId,
       url: input.url,
-      events: input.events.length > 0 ? input.events : ["*"],
+      events: normalizeEvents(input.events),
       secret:
         input.secret === undefined
           ? null
@@ -176,12 +177,27 @@ export class WebhooksStore {
     return rows.some((r) => !isEncryptedSecret(r.secret));
   }
 
-  /** Advance a hook's delivery cursor to the composite (createdAt, eventId). */
-  async setCursor(id: string, createdAt: string, eventId: string): Promise<void> {
-    await this.db
+  /**
+   * Advance a drain's hook to the composite cursor (createdAt, eventId), only
+   * forward, only while the hook is active, and only while its event
+   * selection is the one the drain read. False means the hook was paused,
+   * resumed (which moves the cursor to then), re-subscribed or rewound since,
+   * and the drain must stop: its copy of the hook is stale.
+   */
+  async setCursor(hook: Pick<Webhook, "id" | "events">, createdAt: string, eventId: string): Promise<boolean> {
+    const cursor = formatCursor(createdAt, eventId);
+    const result = await this.db
       .update(webhooks)
-      .set({ cursor: formatCursor(createdAt, eventId) })
-      .where(eq(webhooks.id, id));
+      .set({ cursor })
+      .where(
+        and(
+          eq(webhooks.id, hook.id),
+          eq(webhooks.active, true),
+          eq(webhooks.events, hook.events),
+          or(isNull(webhooks.cursor), lt(webhooks.cursor, cursor)),
+        ),
+      );
+    return (result.rowsAffected ?? 0) > 0;
   }
 
   /** Record an event that was permanently undeliverable (dead-letter). */
@@ -276,6 +292,34 @@ export class WebhooksStore {
       .from(webhooks)
       .where(eq(webhooks.userId, userId))) as Array<{ c: number }>;
     return rows[0]?.c ?? 0;
+  }
+
+  /**
+   * Change an owned hook's event selection or pause it. Turning a paused hook
+   * back on moves its cursor to now, so it does not replay what happened while
+   * it was off. Returns the hook, or null when the user has no such hook.
+   */
+  async update(
+    userId: UserId,
+    id: string,
+    patch: { events?: string[]; active?: boolean },
+  ): Promise<Webhook | null> {
+    const owned = and(eq(webhooks.userId, userId), eq(webhooks.id, id));
+    const fresh = formatCursor(nowIso(this.clock), MAX_ID);
+    const result = await this.db
+      .update(webhooks)
+      .set({
+        ...(patch.events ? { events: normalizeEvents(patch.events) } : {}),
+        ...(patch.active === undefined ? {} : { active: patch.active }),
+        // SET reads the row as it was, so this sees whether the hook was off.
+        ...(patch.active
+          ? { cursor: sql`CASE WHEN ${webhooks.active} THEN ${webhooks.cursor} ELSE ${fresh} END` }
+          : {}),
+      })
+      .where(owned);
+    if ((result.rowsAffected ?? 0) === 0) return null;
+    const rows = (await this.db.select().from(webhooks).where(owned)) as WebhookRow[];
+    return rows[0] ? this.rowToWebhook(rows[0]) : null;
   }
 
   /** Delete an owned hook together with its dead letters, atomically. */

@@ -83,8 +83,9 @@ export interface Config {
   allowMemberWorkspaces: boolean;
   databaseUrl: string;
   /**
-   * Owner of bootstrap tokens and the first-boot settings row. Read only by
-   * `createAppContext`; request paths take the user from their credential.
+   * Owner of bootstrap tokens and the first-boot settings row, and the
+   * operator who may read server logs (api/admin.ts). Request paths take the
+   * user from their credential.
    */
   defaultUserId: UserId;
   bootstrapTokens: {
@@ -111,6 +112,12 @@ export interface Config {
   sharing: {
     /** How long the share audit (grants, revokes, precise views) is kept (days). */
     auditRetentionDays: number;
+  };
+  activity: {
+    /** How long the record of agent reads (access_log) is kept (days). */
+    accessLogRetentionDays: number;
+    /** How long the record of device uploads (ingest_log) is kept (days). */
+    ingestLogRetentionDays: number;
   };
   geofence: {
     nearRadiusMultiplier: number;
@@ -166,6 +173,10 @@ export function loadConfig(): Config {
     },
     sharing: {
       auditRetentionDays: Math.max(1, envInt("SHARE_AUDIT_RETENTION_DAYS", 365)),
+    },
+    activity: {
+      accessLogRetentionDays: Math.max(1, envInt("ACCESS_LOG_RETENTION_DAYS", 90)),
+      ingestLogRetentionDays: Math.max(1, envInt("INGEST_LOG_RETENTION_DAYS", 7)),
     },
     geofence: {
       nearRadiusMultiplier,

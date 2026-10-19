@@ -24,7 +24,9 @@ import type { EventsStore } from "../store/eventsStore.js";
 import type { Webhook, WebhooksStore } from "../store/webhooksStore.js";
 import type { PresenceEvent } from "../types.js";
 import type { Clock } from "../util/time.js";
+import { WEBHOOK_HEADERS, WEBHOOK_USER_AGENT, eventPayload } from "./payload.js";
 import { assertSafeWebhookUrl } from "./ssrf.js";
+import { log } from "../util/log.js";
 
 type FetchFn = typeof fetch;
 
@@ -46,17 +48,6 @@ export interface DispatcherOptions {
   perUserSlots?: number;
   /** A drain stops starting deliveries after this long. Default 10 s. */
   drainBudgetMs?: number;
-}
-
-function eventPayload(ev: PresenceEvent): Record<string, unknown> {
-  return {
-    id: ev.id,
-    event: ev.type,
-    place: ev.placeName,
-    status: ev.status,
-    source: ev.source,
-    timestamp: ev.createdAt,
-  };
 }
 
 function subscribed(hook: Webhook, type: string): boolean {
@@ -134,8 +125,7 @@ export class WebhookDispatcher {
     try {
       hooks = await this.opts.webhooksStore.listActive();
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("webhook dispatch tick error:", e);
+      log.error("webhook dispatch tick failed", e);
       return [];
     }
     if (this.halt.signal.aborted) return [];
@@ -179,8 +169,7 @@ export class WebhookDispatcher {
     this.touched.set(hook.id, this.seq++);
     const done = this.drainHook(hook)
       .catch((e) => {
-        // eslint-disable-next-line no-console
-        console.error("webhook drain error:", e);
+        log.error("webhook drain failed", e, { webhookId: hook.id });
       })
       .finally(() => {
         this.slots.delete(hook.id);
@@ -203,15 +192,19 @@ export class WebhookDispatcher {
       if (this.halt.signal.aborted) return;
       // Out of budget: the persisted cursor is where the next tick resumes.
       if (this.opts.clock().getTime() - startedAt >= this.drainBudgetMs) return;
+      // Each advance also checks the hook is still as this drain read it; when
+      // it is not (paused, resumed, re-subscribed), stop and let the next tick
+      // start from the stored hook.
+      const advance = () => this.opts.webhooksStore.setCursor(hook, ev.createdAt, ev.id);
       if (!subscribed(hook, ev.type)) {
-        await this.opts.webhooksStore.setCursor(hook.id, ev.createdAt, ev.id);
+        if (!(await advance())) return;
         continue;
       }
       const key = `${hook.id}:${ev.id}`;
       const result = await this.deliver(hook, ev);
       if (result.ok) {
         this.attempts.delete(key);
-        await this.opts.webhooksStore.setCursor(hook.id, ev.createdAt, ev.id);
+        if (!(await advance())) return;
         continue;
       }
       if (this.halt.signal.aborted) return;
@@ -219,13 +212,10 @@ export class WebhookDispatcher {
       const n = (this.attempts.get(key) ?? 0) + 1;
       this.attempts.set(key, n);
       if (n >= this.maxAttempts) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `webhook ${hook.id}: dead-lettering event ${ev.id} after ${n} attempts (${result.error})`,
-        );
+        log.warn("webhook event dead-lettered", { webhookId: hook.id, eventId: ev.id, attempts: n, error: result.error });
         await this.opts.webhooksStore.recordDeadLetter(hook.id, ev, result.error);
         this.attempts.delete(key);
-        await this.opts.webhooksStore.setCursor(hook.id, ev.createdAt, ev.id);
+        if (!(await advance())) return;
         continue;
       }
       // Stop draining this hook; retry from here on the next tick.
@@ -247,8 +237,8 @@ export class WebhookDispatcher {
     const body = JSON.stringify(eventPayload(ev));
     const headers: Record<string, string> = {
       "content-type": "application/json",
-      "x-wherectx-event": ev.type,
-      "user-agent": "wherectx/0.1",
+      [WEBHOOK_HEADERS.event]: ev.type,
+      "user-agent": WEBHOOK_USER_AGENT,
     };
     if (hook.secret) {
       // BREAKING CHANGE (v0.2): The signed payload is `${timestamp}.${body}`, NOT
@@ -263,8 +253,8 @@ export class WebhookDispatcher {
       // and rejecting when |now - timestamp| exceeds a small tolerance (e.g. 5 min).
       const ts = Math.floor(this.opts.clock().getTime() / 1000).toString();
       const sig = createHmac("sha256", hook.secret).update(`${ts}.${body}`).digest("hex");
-      headers["x-wherectx-timestamp"] = ts;
-      headers["x-wherectx-signature"] = `sha256=${sig}`;
+      headers[WEBHOOK_HEADERS.timestamp] = ts;
+      headers[WEBHOOK_HEADERS.signature] = `sha256=${sig}`;
     }
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), this.timeoutMs);

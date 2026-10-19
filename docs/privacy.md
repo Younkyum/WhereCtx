@@ -131,8 +131,60 @@ cannot pin presence permanently "fresh".
 
 ## Raw history
 
-Disabled by default (`STORE_RAW_HISTORY=false`). When enabled, raw points are
-pruned past `RETENTION_HOURS`. Raw history is admin-only (`GET /v1/presence/history`).
+Disabled by default (`STORE_RAW_HISTORY=false` seeds each person's
+`storeRawHistory`; each person turns it on in Privacy). When enabled, each
+reading's coordinates are kept and pruned past that person's
+`retentionHours` (default `RETENTION_HOURS`, at most 8760). Pruning keeps
+running after history is turned off, on every reading and in the 6-hourly
+sweep, so points kept earlier still age out.
+
+Only the person reads their own history: the dashboard's History view, or
+`GET /v1/presence/history` with `manage_privacy` (their session, or their
+admin token, whose read is recorded in the access log). A location share
+gives a viewer no history.
+
+## What is logged, for how long, and who sees it
+
+| Log | What a row holds | Kept | Who can read it |
+|-----|------------------|------|-----------------|
+| Access log (`access_log`) | Every token request to the person's `/v1` routes (all but ingest and sign-in: presence, places, events, privacy, webhooks, tokens, devices, and token attempts at account, activity and admin routes) and every MCP tool call, refused calls included. The token's id and name, REST or MCP, the action (never a raw path or tool name), whether it sought coordinates, the reason given for a precise request, the outcome (allowed, denied, hidden, error) and why it was denied. Identical requests within a minute share a row with a count. No coordinates. The reason and denial go through the same redaction as an ingest rejection. | `ACCESS_LOG_RETENTION_DAYS`, default 90 days | The person, signed in (Agent access view, `GET /v1/activity/access`). No token can read it. |
+| Ingest log (`ingest_log`) | Every authenticated upload from a device: which token (none for the dashboard's "share now"), which route, accepted, rejected, ignored or a server error, and why. No coordinates: the table has no column for them, and a rejection message is redacted before it is stored. | `INGEST_LOG_RETENTION_DAYS`, default 7 days | The person, signed in (Devices view, `GET /v1/activity/ingest`, and the summary in `GET /v1/devices`). |
+| Share audit (`share_audit`) | Grants, changes, revokes, and who viewed the person's precise location. | `SHARE_AUDIT_RETENTION_DAYS`, default 365 days | The person (`GET /v1/shares/audit`). |
+| Server log | What the server reports: errors, webhook failures, boot notices. Written through one logger that redacts as it writes (see below). | stdout/stderr (for `docker logs`) as long as the host keeps them; the last 1000 entries in memory until restart | The operator (the `USER_ID` person) in the Server logs view, `GET /v1/admin/logs`. Nobody else, no token. |
+
+The person's own reads in the dashboard are not in the access log: it
+records agents, not the owner looking at their own data. A request that fails
+authentication names no owner and lands in no person's log.
+
+What keeps secrets and locations out of the server log, and what it does not
+promise:
+
+- **By construction.** The setup code, an access code and a generated admin
+  token are a `Secret` value, not a string. The log's `info`, `warn`,
+  `error` and `debug` calls do not accept one (a type error), and one that
+  reaches a field anyway prints as `[redacted]`. Only the boot banner and
+  the `reset-access` command print them, to stdout, and never into the
+  in-memory log the Server logs view reads. An error is logged as a fixed set
+  of fields (name, first line of its message, code, stack frames, cause), so
+  a failed database query is logged by its SQL with placeholders, never by
+  the values it was given.
+- **By pattern.** Everything else is redacted as it is written: values under
+  keys whose last word is token, secret, password, authorization, cookie,
+  session, signature, lat, lon or precise (and keys such as `sessionId`,
+  `setupCode`, `apiKey`); and inside any string, Bearer and Basic
+  credentials, `wctx_` tokens, session cookies, a password in a URL
+  (`scheme://user:pass@`), any query parameter whose name mentions token,
+  secret, password, key, code or auth, coordinates written as `lat=`/`lon=`
+  or a pair with three or more decimals, and long opaque runs. Patterns are
+  a safety net, not a guarantee: a short value with no telling name or
+  shape, such as a coordinate with two decimals in free text or a geohash,
+  would not be recognised. Code that logs is written not to pass such
+  values.
+
+The operator role follows `USER_ID`. Changing `USER_ID` on an existing
+install moves the Server logs view (and `isOperator`) to the person with the
+new id; if that person has no passkey yet, `reset-access` gives them an access
+code (README, "Recover access").
 
 ## Webhooks & SSRF
 

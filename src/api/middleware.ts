@@ -30,6 +30,7 @@ import {
 import { hasFreshAuth } from "../accounts/types.js";
 import type { TokenScope } from "../types.js";
 import { readSessionCookie, sessionRequestAllowed, setSessionCookie } from "./session.js";
+import { refuse } from "./accessAudit.js";
 import type { AppEnv, SessionEnv } from "./types.js";
 
 type Presented = { via: "token"; secret: string | null } | { via: "session" };
@@ -109,23 +110,28 @@ export function sessionAuth(ctx: AppContext): MiddlewareHandler<SessionEnv> {
   return async (c, next) => {
     const principal = await authenticateRequest(ctx, c, false);
     if (principal instanceof Response) return principal;
-    if (principal.via !== "session") {
-      return c.json({ error: "forbidden", detail: "requires a signed-in session" }, 403);
-    }
+    c.set("principal", principal);
+    if (principal.via !== "session") return refuse(c, 403, "forbidden", "requires a signed-in session");
     const { userId, sessionId, reauthAt } = principal;
     c.set("account", ctx.forSession({ userId, sessionId, reauthAt }));
     await next();
   };
 }
 
+/**
+ * Only the signed-in person passes; a token gets 403. For views of the owner's
+ * own records (the activity logs) that no agent or device should read.
+ */
+export const requireSession: MiddlewareHandler<AppEnv> = async (c, next) => {
+  if (c.get("principal").via !== "session") return refuse(c, 403, "forbidden", "requires a signed-in session");
+  await next();
+};
+
 /** Require that the authenticated principal carries a specific scope, or 403. */
 export function requireScope(scope: TokenScope): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     if (!c.get("principal").scopes.includes(scope)) {
-      return c.json(
-        { error: "forbidden", detail: `requires ${scope} scope` },
-        403,
-      );
+      return refuse(c, 403, "forbidden", `requires ${scope} scope`);
     }
     await next();
   };
@@ -136,10 +142,7 @@ export function requireAnyScope(...scopes: TokenScope[]): MiddlewareHandler<AppE
   return async (c, next) => {
     const { scopes: granted } = c.get("principal");
     if (!scopes.some((s) => granted.includes(s))) {
-      return c.json(
-        { error: "forbidden", detail: `requires one of: ${scopes.join(", ")}` },
-        403,
-      );
+      return refuse(c, 403, "forbidden", `requires one of: ${scopes.join(", ")}`);
     }
     await next();
   };

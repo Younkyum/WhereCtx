@@ -50,6 +50,7 @@ export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxCon
     webhooks: { allowPrivateTargets: true },
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
+    activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
     ...overrides,
   };
 }
@@ -280,5 +281,5 @@ export async function bootApp(
     testConfig({ bootstrapTokens: { admin: OWNER_ADMIN }, ...overrides }),
     { clock: clock.fn, ceremony: new FakeCeremony() },
   );
-  return { ctx, app: buildApp(ctx, build), setupCode: bootstrap.setupCode! };
+  return { ctx, app: buildApp(ctx, build), setupCode: bootstrap.setupCode!.reveal() };
 }

@@ -42,6 +42,7 @@ const config: WhereCtxConfig = {
   webhooks: { allowPrivateTargets: false },
   events: { retentionHours: 720 },
   sharing: { auditRetentionDays: 365 },
+  activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
 };
 
 const T0 = Date.parse("2026-06-05T00:00:00.000Z");
@@ -128,8 +129,8 @@ describe("PresenceService.processReading", () => {
 
   it("does not record raw history when disabled", async () => {
     await service.processReading(USER, reading(37.0, 127.0));
-    const history = await new HistoryStore(handle.db, clock).listRecent(USER);
-    expect(history).toHaveLength(0);
+    const history = await new HistoryStore(handle.db, clock).listRange(USER, { from: "0000", to: "9999", limit: 100 });
+    expect(history.points).toHaveLength(0);
   });
 });
 
@@ -175,7 +176,7 @@ describe("TokenStore", () => {
     expect(result.warnings.length).toBeGreaterThanOrEqual(2);
     expect(result.generatedAdminSecret).toBeDefined();
 
-    const verified = await store.verify(result.generatedAdminSecret);
+    const verified = await store.verify(result.generatedAdminSecret!.reveal());
     expect(verified?.role).toBe("admin");
     expect(verified?.scopes).toContain("manage_tokens");
     expect(await store.verify("wrong")).toBeNull();
@@ -187,7 +188,7 @@ describe("TokenStore", () => {
     const strong = "a-very-strong-agent-token-1234567890";
     const first = await store.seedBootstrap(USER, { agent: strong });
     expect(first.generatedAdminSecret).toBeDefined();
-    expect((await store.verify(first.generatedAdminSecret))?.userId).toBe(USER);
+    expect((await store.verify(first.generatedAdminSecret!.reveal()))?.userId).toBe(USER);
     expect((await store.seedBootstrap(USER, { agent: strong })).generatedAdminSecret).toBeUndefined();
   });
 

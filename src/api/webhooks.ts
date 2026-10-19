@@ -2,6 +2,7 @@
  * Webhook subscription management API (plan section 9.7/9.8).
  *   GET    /v1/webhooks      -> list (manage_privacy)
  *   POST   /v1/webhooks      -> create (manage_privacy)
+ *   PATCH  /v1/webhooks/:id  -> change {events?, active?} (manage_privacy)
  *   DELETE /v1/webhooks/:id  -> delete with its dead letters (manage_privacy)
  *
  * Delivery itself is handled by the dispatcher in Phase 4.
@@ -12,6 +13,7 @@ import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
 import { PRESENCE_EVENT_TYPES } from "../types.js";
 import { assertSafeWebhookUrl, SsrfError } from "../webhooks/ssrf.js";
+import { parseBody } from "./accountHttp.js";
 import { requireScope } from "./middleware.js";
 import { parseLimit, zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
@@ -31,6 +33,16 @@ const WebhookSchema = z.object({
   events: z.array(z.enum(EVENT_TYPES)).optional(),
   secret: z.string().min(8).max(256).optional(),
 });
+
+const PatchSchema = z
+  .object({
+    events: z.array(z.enum(EVENT_TYPES)).min(1).optional(),
+    active: z.boolean().optional(),
+  })
+  .strict()
+  .refine((p) => p.events !== undefined || p.active !== undefined, {
+    message: "nothing to change (events or active)",
+  });
 
 export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -81,6 +93,15 @@ export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
     const limit = parseLimit(c.req.query("limit"), 100, 500);
     const deadLetters = await c.get("scope").webhooks.listDeadLetters(limit);
     return c.json({ deadLetters });
+  });
+
+  app.patch("/:id", async (c) => {
+    const body = await parseBody(c, PatchSchema);
+    if (body instanceof Response) return body;
+    const updated = await c.get("scope").webhooks.update(c.req.param("id"), body);
+    if (!updated) return c.json({ error: "webhook not found" }, 404);
+    const { secret: _s, ...rest } = updated;
+    return c.json({ webhook: rest });
   });
 
   app.delete("/:id", async (c) => {

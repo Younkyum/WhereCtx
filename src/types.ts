@@ -212,6 +212,10 @@ export interface PrivacySettings {
   sharingPaused: boolean;
 }
 
+/** Most points one GET /v1/presence/history returns, and how many by default. */
+export const HISTORY_MAX_POINTS = 5000;
+export const HISTORY_DEFAULT_POINTS = 1000;
+
 /** Coarse presence view returned to agents by default (plan section 5). */
 export interface CoarsePresenceView {
   status: PresenceStatus;
