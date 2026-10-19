@@ -402,7 +402,12 @@ describe("WebhookDispatcher cursor", () => {
 
 describe("the dashboard's example delivery", () => {
   it("has the headers and body fields a real signed delivery has", async () => {
-    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], secret: "s3cret-s3cret" });
+    await webhooks.create(USER, {
+      url: "https://example.test/hook",
+      events: ["*"],
+      secret: "s3cret-s3cret",
+      authHeader: { name: "Authorization", value: "Bearer example-credential-1234" },
+    });
     nowMs += 1000;
     await events.append(USER, { type: "presence.entered_place", placeName: "home", status: "home", source: "owntracks" });
     let sent: { headers: Record<string, string>; body: string } | undefined;
@@ -411,9 +416,110 @@ describe("the dashboard's example delivery", () => {
       return new Response(null, { status: 200 });
     });
     await makeDispatcher({ fetchFn: fetchFn as any }).tick();
-    const example = exampleDelivery("presence.entered_place", true);
+    const example = exampleDelivery("presence.entered_place", {
+      signed: true,
+      authHeader: { name: "Authorization", hint: "…1234" },
+    });
     expect(Object.keys(example.headers).sort()).toEqual(Object.keys(sent!.headers).sort());
+    expect(example.headers["Authorization"]).toBe("••••••••1234");
     expect(Object.keys(example.body).sort()).toEqual(Object.keys(JSON.parse(sent!.body)).sort());
-    expect(Object.keys(exampleDelivery("presence.updated", false).headers)).not.toContain("x-wherectx-signature");
+    expect(Object.keys(exampleDelivery("presence.updated", { signed: false }).headers)).not.toContain("x-wherectx-signature");
+  });
+});
+
+describe("WebhookDispatcher auth header", () => {
+  const VALUE = "Bearer n8n-header-credential-9f3k";
+  const authHeader = { name: "Authorization", value: VALUE };
+
+  async function capture(fetchImpl: (url: string, init: any) => Promise<Response>, over: Partial<DispatcherOptions> = {}) {
+    const sent: Array<{ url: string; init: any }> = [];
+    const fetchFn = vi.fn(async (url: string, init: any) => {
+      sent.push({ url, init });
+      return fetchImpl(url, init);
+    });
+    await makeDispatcher({ fetchFn: fetchFn as any, ...over }).tick();
+    return sent;
+  }
+
+  it("is sent on every delivery to its own hook, beside the signature, and to no other hook", async () => {
+    const secret = "shhh-very-secret-value";
+    await webhooks.create(USER, { url: "https://example.test/with", events: ["*"], secret, authHeader });
+    await webhooks.create(USER, { url: "https://example.test/without", events: ["*"] });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    nowMs += 1;
+    await events.append(USER, { type: "presence.left_place", placeName: "home" });
+
+    const sent = await capture(async () => new Response(null, { status: 200 }));
+    const to = (url: string) => sent.filter((s) => s.url === url);
+    expect(to("https://example.test/with")).toHaveLength(2);
+    for (const { init } of to("https://example.test/with")) {
+      expect(init.headers["Authorization"]).toBe(VALUE);
+      const sig = createHmac("sha256", secret).update(`${init.headers["x-wherectx-timestamp"]}.${init.body}`).digest("hex");
+      expect(init.headers["x-wherectx-signature"]).toBe(`sha256=${sig}`);
+    }
+    expect(to("https://example.test/without")).toHaveLength(2);
+    for (const { init } of to("https://example.test/without")) {
+      expect(Object.keys(init.headers).map((k) => k.toLowerCase())).not.toContain("authorization");
+      expect(JSON.stringify(init.headers)).not.toContain(VALUE);
+    }
+  });
+
+  it("is sealed at rest and still sent in the clear to the receiver", async () => {
+    const { SecretBox } = await import("./secretBox.js");
+    const store = new WebhooksStore(handle.db, clock, new SecretBox("install-key"));
+    await store.create(USER, { url: "https://example.test/hook", events: ["*"], authHeader: { name: "X-Api-Key", value: "key-0123456789" } });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    const sent = await capture(async () => new Response(null, { status: 200 }), { webhooksStore: store });
+    expect(sent[0]!.init.headers["X-Api-Key"]).toBe("key-0123456789");
+  });
+
+  it("does not follow a redirect, so the header never reaches the Location", async () => {
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], authHeader });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    const sent = await capture(
+      async () => new Response(null, { status: 302, headers: { location: "https://elsewhere.test/steal" } }),
+      { maxAttempts: 1 },
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.url).toBe("https://example.test/hook");
+    expect(sent[0]!.init.redirect).toBe("manual");
+    expect((await webhooks.listDeadLetters(USER))[0]!.error).toContain("302");
+  });
+
+  it("never reaches a log line or a dead letter when a delivery fails quoting it", async () => {
+    const { clearLogs, recentLogs } = await import("../util/log.js");
+    clearLogs();
+    const written: string[] = [];
+    const spies = [process.stdout, process.stderr].map((stream) =>
+      vi.spyOn(stream, "write").mockImplementation((chunk: any) => {
+        written.push(String(chunk));
+        return true;
+      }),
+    );
+    try {
+      await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], authHeader: { name: "X-Api-Key", value: "plain-api-key-77aa" } });
+      await webhooks.create(USER, { url: "https://example.test/bearer", events: ["*"], authHeader });
+      nowMs += 1000;
+      await events.append(USER, { type: "presence.updated", status: "home" });
+      await capture(
+        async (_url, init) => {
+          const [name, value] = Object.entries(init.headers as Record<string, string>).find(([k]) => k === "X-Api-Key" || k === "Authorization")!;
+          throw new TypeError(`Headers.append: "${name}: ${value}" is an invalid header value.`);
+        },
+        { maxAttempts: 1 },
+      );
+      const dead = await webhooks.listDeadLetters(USER);
+      expect(dead).toHaveLength(2);
+      const everywhere = [JSON.stringify(dead), JSON.stringify(recentLogs()), written.join("")].join("\n");
+      expect(everywhere).toContain("invalid header value");
+      for (const leaked of ["plain-api-key", "api-key-77aa", "n8n-header-credential", "credential-9f3k"]) {
+        expect(everywhere).not.toContain(leaked);
+      }
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 });

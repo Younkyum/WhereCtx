@@ -15,7 +15,8 @@
  * drain stops after `drainBudgetMs` and resumes from its cursor next tick.
  *
  * Deliveries are signed with HMAC-SHA256 over the body when the hook has a
- * secret. A permanently-failing endpoint is skipped after MAX_ATTEMPTS so it
+ * secret, and carry the hook's auth header when it has one; redirects are
+ * never followed, so neither reaches another URL. A permanently-failing endpoint is skipped after MAX_ATTEMPTS so it
  * cannot block its own queue forever (head-of-line guard).
  */
 
@@ -223,7 +224,21 @@ export class WebhookDispatcher {
     }
   }
 
+  /**
+   * A failed delivery's error is logged and kept as a dead letter, and a
+   * fetch error can quote a header; the auth header's value never survives.
+   */
   private async deliver(
+    hook: Webhook,
+    ev: PresenceEvent,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    const result = await this.send(hook, ev);
+    const value = hook.authHeader?.value;
+    if (result.ok || !value) return result;
+    return { ok: false, error: result.error.replaceAll(value, "[redacted]") };
+  }
+
+  private async send(
     hook: Webhook,
     ev: PresenceEvent,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -256,6 +271,7 @@ export class WebhookDispatcher {
       headers[WEBHOOK_HEADERS.timestamp] = ts;
       headers[WEBHOOK_HEADERS.signature] = `sha256=${sig}`;
     }
+    if (hook.authHeader) headers[hook.authHeader.name] = hook.authHeader.value;
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), this.timeoutMs);
     try {

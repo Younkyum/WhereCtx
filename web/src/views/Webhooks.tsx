@@ -66,7 +66,7 @@ function EventSummary({ events }: { events: string[] }) {
 function ExampleDelivery({ events, signed }: { events: string[]; signed: boolean }) {
   const { t } = useApp();
   const type = events.find((e): e is PresenceEventType => oneOf(PRESENCE_EVENT_TYPES, e)) ?? "presence.entered_place";
-  const { headers, body } = exampleDelivery(type, signed);
+  const { headers, body } = exampleDelivery(type, { signed });
   const text =
     `POST <your URL>\n` +
     Object.entries(headers)
