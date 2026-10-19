@@ -5,14 +5,14 @@
  * the store's SQL decides whether that counterpart is a current co-member.
  *
  * This module loads and audits; what a viewer may see is decided by
- * `buildPersonView` (../privacy/policy.ts). Sharing with a person is separate
+ * `PresenceViews.person` (../privacy/policy.ts). Sharing with a person is separate
  * from what the owner's agents may see: `defaultAgentAccess` does not narrow
  * it, `sharingPaused` does, and the viewer's agent tokens never reach it
  * (it is session-only).
  */
 
 import { fail, hasFreshAuth, ok, type Actor, type Result } from "../accounts/types.js";
-import { buildPersonView, type PersonView } from "../privacy/policy.js";
+import type { PersonView, PresenceViews } from "../privacy/policy.js";
 import type { SettingsStore } from "../privacy/settingsStore.js";
 import type { ShareLevel, UserId } from "../types.js";
 import type { Clock } from "../util/time.js";
@@ -50,8 +50,7 @@ export class SharingService {
   constructor(
     private readonly stores: SharingStores,
     private readonly clock: Clock,
-    /** STALE_AFTER_SEC, how recent a report must be to count as live. */
-    private readonly liveWithinSec: number,
+    private readonly views: PresenceViews,
   ) {}
 
   async list(me: Actor): Promise<{ outgoing: OutgoingShare[]; incoming: IncomingShare[] }> {
@@ -127,7 +126,7 @@ export class SharingService {
     return {
       user: owner,
       level: share.level,
-      ...buildPersonView(presence, share, ownerContext, this.clock, this.liveWithinSec),
+      ...this.views.person(presence, share, ownerContext),
     };
   }
 }

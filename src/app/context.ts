@@ -56,6 +56,7 @@ import type { PresenceEvent, UserId } from "../types.js";
 import { GeoService } from "../geo/service.js";
 import { GeoCredentialsStore } from "../geo/credentialsStore.js";
 import { GeoCacheStore } from "../geo/cacheStore.js";
+import { presenceViews, type PresenceViews } from "../privacy/policy.js";
 
 export interface SystemStores {
   tokens: TokenStore;
@@ -188,6 +189,8 @@ export interface AppContext {
   config: WhereCtxConfig;
   handle: DbHandle;
   clock: Clock;
+  /** Presence views bound to the freshness config and the clock. */
+  views: PresenceViews;
   system: SystemStores;
   forUser(userId: UserId): UserScope;
   forSession(actor: Actor): AccountScope;
@@ -203,7 +206,7 @@ export interface AppContext {
 }
 
 /** What route handlers and MCP tools may touch besides their user scope. */
-export type RouteContext = Pick<AppContext, "config" | "clock" | "onEvents">;
+export type RouteContext = Pick<AppContext, "config" | "clock" | "views" | "onEvents">;
 
 export interface BootstrapInfo {
   seed: SeedResult;
@@ -232,6 +235,7 @@ export async function createAppContext(
   options: AppContextOptions = {},
 ): Promise<{ ctx: AppContext; bootstrap: BootstrapInfo }> {
   const clock = options.clock ?? systemClock;
+  const views = presenceViews(config.privacy, clock);
   const handle = createDb(config.databaseUrl);
   await ensureSchema(handle);
   const db = handle.db;
@@ -271,6 +275,7 @@ export async function createAppContext(
   };
   const geo: GeoService = new GeoService({
     config,
+    views,
     credentials: new GeoCredentialsStore(db, new SecretBox(await stores.serverSecrets.geoCredentialKey()), clock),
     cache: new GeoCacheStore(db, clock),
     settings: stores.settings,
@@ -325,7 +330,7 @@ export async function createAppContext(
   const services: AccountServices = {
     self,
     workspaces: new WorkspaceService(pick(system, ["workspaces", "invites"]), config),
-    sharing: new SharingService(pick(system, ["shares", "settings"]), clock, config.privacy.staleAfterSec),
+    sharing: new SharingService(pick(system, ["shares", "settings"]), clock, views),
     oauth,
   };
 
@@ -333,6 +338,7 @@ export async function createAppContext(
     config,
     handle,
     clock,
+    views,
     system,
     forUser: (userId) => scopeFor(system, userId),
     forSession: (actor) => accountScopeFor(services, actor),

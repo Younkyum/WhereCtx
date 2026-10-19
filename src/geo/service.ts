@@ -21,13 +21,14 @@ import type { AccessAction, AccessSurface, Credential } from "../activity/types.
 import { haversineMeters } from "../geofence/distance.js";
 import { isAtOrNearHome } from "../privacy/policy.js";
 import type { SettingsStore } from "../privacy/settingsStore.js";
+import type { PresenceViews } from "../privacy/policy.js";
 import type { PlacesStore } from "../store/placesStore.js";
 import type { PresenceStore } from "../store/presenceStore.js";
 import { RateLimiter } from "../api/rateLimit.js";
 import type { Place, PrivacySettings, UserId } from "../types.js";
 import { log } from "../util/log.js";
 import { KeyedMutex } from "../util/mutex.js";
-import { isStale, secondsSince, systemClock, type Clock } from "../util/time.js";
+import { systemClock, type Clock } from "../util/time.js";
 import type { GeoCacheStore } from "./cacheStore.js";
 import { UNUSABLE_KEY, type GeoCredentialsStore, type StoredGeoCredential } from "./credentialsStore.js";
 import { FakeGeoProvider } from "./fake.js";
@@ -142,6 +143,7 @@ export type AreaUpdate = { region: ReverseResult | null; forPoint?: LatLon };
 
 export interface GeoServiceDeps {
   config: WhereCtxConfig;
+  views: PresenceViews;
   credentials: GeoCredentialsStore;
   cache: GeoCacheStore;
   settings: SettingsStore;
@@ -346,9 +348,8 @@ export class GeoService {
     if (!settings.geoEnabled) return { kind: "denied", reason: "maps are turned off (geoEnabled)" };
     const presence = await this.deps.presence.getCurrent(userId);
     if (!presence?.precise) return { kind: "no_location" };
-    if (isStale(presence.updatedAt, presence.staleAfterSec, this.clock)) {
-      return { kind: "stale", updatedAgoSec: secondsSince(presence.updatedAt, this.clock) };
-    }
+    const fresh = this.deps.views.freshness(presence);
+    if (fresh.stale) return { kind: "stale", updatedAgoSec: fresh.lastReportAgoSec };
     const places = await this.deps.places.list(userId);
     const nearHome = settings.skipProviderNearHome && isAtOrNearHome(presence);
     const home = places.find((p) => p.type === "home");

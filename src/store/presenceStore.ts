@@ -8,6 +8,7 @@
 import { eq } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { presence } from "../db/schema.js";
+import type { LatLon } from "../geo/types.js";
 import {
   asUserId,
   type CoarsePlaceType,
@@ -23,6 +24,10 @@ import {
 export interface StoredPresence extends PresenceContext {
   currentPlaceName?: string;
   staleEventFired: boolean;
+  /** Where the person arrived at `movedAt` (freshness.ts `arrivalFor`). */
+  movedFrom?: LatLon;
+  /** Written for an older build rolled back onto this database; never read (see schema). */
+  staleAfterSec: number;
 }
 
 interface PresenceRow {
@@ -50,6 +55,8 @@ interface PresenceRow {
   updatedAt: string;
   receivedAt: string;
   movedAt: string | null;
+  movedLat: number | null;
+  movedLon: number | null;
   staleAfterSec: number;
 }
 
@@ -88,6 +95,7 @@ function rowToStored(row: PresenceRow): StoredPresence {
     updatedAt: row.updatedAt,
     receivedAt: row.receivedAt,
     ...(row.movedAt ? { movedAt: row.movedAt } : {}),
+    ...(row.movedLat !== null && row.movedLon !== null ? { movedFrom: { lat: row.movedLat, lon: row.movedLon } } : {}),
     staleAfterSec: row.staleAfterSec,
     currentPlaceName: row.currentPlaceName ?? undefined,
     staleEventFired: row.staleEventFired,
@@ -120,13 +128,15 @@ function storedToRow(p: StoredPresence): PresenceRow {
     updatedAt: p.updatedAt,
     receivedAt: p.receivedAt,
     movedAt: p.movedAt ?? null,
+    movedLat: p.movedFrom?.lat ?? null,
+    movedLon: p.movedFrom?.lon ?? null,
     staleAfterSec: p.staleAfterSec,
   };
 }
 
 /** Drop internal bookkeeping fields for external (API/MCP) consumers. */
 export function toPresenceContext(stored: StoredPresence): PresenceContext {
-  const { currentPlaceName: _c, staleEventFired: _s, ...ctx } = stored;
+  const { currentPlaceName: _c, staleEventFired: _s, movedFrom: _m, staleAfterSec: _w, ...ctx } = stored;
   return ctx;
 }
 
@@ -142,21 +152,11 @@ export class PresenceStore {
    * Readings across all users whose `became_stale` has not fired yet, for the
    * periodic sweep to age-check. Cross-user: system handle only.
    */
-  async listUnfiredStale(): Promise<
-    Array<{ userId: UserId; updatedAt: string; staleAfterSec: number }>
-  > {
-    const rows = (await this.db
-      .select({
-        userId: presence.userId,
-        updatedAt: presence.updatedAt,
-        staleAfterSec: presence.staleAfterSec,
-      })
+  async listUnfiredStale(): Promise<Array<{ userId: UserId; source: IngestSource; receivedAt: string }>> {
+    const rows = await this.db
+      .select({ userId: presence.userId, source: presence.source, receivedAt: presence.receivedAt })
       .from(presence)
-      .where(eq(presence.staleEventFired, false))) as Array<{
-      userId: string;
-      updatedAt: string;
-      staleAfterSec: number;
-    }>;
+      .where(eq(presence.staleEventFired, false));
     return rows.map((r) => ({ ...r, userId: asUserId(r.userId) }));
   }
 

@@ -268,12 +268,12 @@ describe("dashboard app", () => {
     location.hash = "";
   });
 
-  it("shows how long ago, never a stale badge, for me and for people who share with me", async () => {
+  it("shows how long ago, never a stale badge, and 'device offline' only when the device is offline", async () => {
     route("GET /v1/me", () => ({ status: 200, body: ME }));
     route("GET /v1/privacy", () => ({ status: 200, body: { settings: { sharingPaused: false } } }));
     route("GET /v1/presence", () => ({
       status: 200,
-      body: { status: "home", label: "home", motion: "stationary", updatedAgoSec: 12 * 60, stale: true, freshness: "offline", privacy: "coarse" },
+      body: { status: "home", label: "home", motion: "stationary", updatedAgoSec: 12 * 60, stale: false, freshness: "stationary", privacy: "coarse" },
     }));
     route("GET /v1/people", () => ({
       status: 200,
@@ -294,6 +294,7 @@ describe("dashboard app", () => {
     expect(host.textContent).toContain("12 min ago");
     expect(host.textContent).not.toMatch(/stale|fresh/i);
     expect(host.textContent).not.toMatch(/\d+ d ago/);
+    expect(host.textContent!.match(/device offline/g)).toHaveLength(1);
   });
 
   it("on plain http, links the passkey warning to the README section that explains it", async () => {

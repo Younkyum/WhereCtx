@@ -25,9 +25,9 @@ import type {
   PrivacySettings,
   UserId,
 } from "../types.js";
-import { nowIso, isStale, type Clock, systemClock } from "../util/time.js";
+import { nowIso, type Clock, systemClock } from "../util/time.js";
 import { KeyedMutex } from "../util/mutex.js";
-import { movedAtFor, staleAfterFor } from "./freshness.js";
+import { arrivalFor, isPastWindow, offlineAfterSec } from "./freshness.js";
 import type { EventsStore, NewPresenceEvent } from "../store/eventsStore.js";
 import type { HistoryStore } from "../store/historyStore.js";
 import type { PlacesStore } from "../store/placesStore.js";
@@ -133,6 +133,7 @@ export class PresenceService {
       label = labelForStatus("transit");
     }
 
+    const receivedAt = nowIso(this.clock);
     const next: StoredPresence = {
       userId,
       status,
@@ -153,10 +154,9 @@ export class PresenceService {
         allowPreciseToAgents: settings.allowPreciseLocation,
       },
       updatedAt: reading.updatedAt,
-      receivedAt: nowIso(this.clock),
-      movedAt: movedAtFor(prev, reading.precise, reading.updatedAt),
-      // A device that reports on movement goes quiet at rest; only a long silence is offline.
-      staleAfterSec: staleAfterFor(reading.source, config.privacy),
+      receivedAt,
+      ...arrivalFor(prev, reading.precise, receivedAt),
+      staleAfterSec: offlineAfterSec(reading.source, config.privacy),
       currentPlaceName: geo.matchedPlace?.name,
       staleEventFired: false,
     };
@@ -246,8 +246,7 @@ export class PresenceService {
     return this.mutex.run(userId, async () => {
       const current = await this.deps.presenceStore.getCurrent(userId);
       if (!current) return null;
-      const stale = isStale(current.updatedAt, current.staleAfterSec, this.clock);
-      if (!stale || current.staleEventFired) return null;
+      if (!isPastWindow(current, this.deps.config.privacy, this.clock) || current.staleEventFired) return null;
       await this.deps.presenceStore.setStaleEventFired(userId, true);
       return this.deps.eventsStore.append(userId, {
         type: "presence.became_stale",
@@ -265,7 +264,7 @@ export class PresenceService {
    */
   async sweepStale(): Promise<PresenceEvent[]> {
     const candidates = await this.deps.presenceStore.listUnfiredStale();
-    const due = candidates.filter((c) => isStale(c.updatedAt, c.staleAfterSec, this.clock));
+    const due = candidates.filter((c) => isPastWindow(c, this.deps.config.privacy, this.clock));
     const results = await Promise.allSettled(due.map((c) => this.checkStale(c.userId)));
     const events: PresenceEvent[] = [];
     results.forEach((r, i) => {

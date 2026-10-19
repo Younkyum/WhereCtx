@@ -122,7 +122,7 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
   const p = mine.presence;
   const motion = p ? motionOf(p.motion) : null;
   const meta = p
-    ? t("home.updated", { age: fmt.ago(Math.floor(p.updatedAgoSec / 60)) })
+    ? t("home.updated", { age: fmt.ago(Math.floor(p.updatedAgoSec / 60)) }) + (p.freshness === "offline" ? ` · ${t("home.offline")}` : "")
     : t(mine.problem === "hidden" ? "home.hiddenFromAgents" : "home.none");
   return (
     <HStack gap={4} wrap="wrap" vAlign="center">
@@ -181,7 +181,9 @@ function PersonCard({ person: p }: { person: Person }) {
           <VStack gap={1}>
             <Text weight="medium">{t(`st.${statusOf(pr.status)}`)}</Text>
             {pr.area ? <Text>{pr.area}</Text> : null}
-            <Text type="supporting">{fmt.ago(pr.updatedAgoMin)}</Text>
+            <Text type="supporting">
+              {fmt.ago(pr.updatedAgoMin) + (pr.freshness === "offline" ? ` · ${t("home.offline")}` : "")}
+            </Text>
             <HStack gap={1} wrap="wrap">
               {motion ? <Badge label={t(`motion.${motion}`)} /> : null}
               {p.precise === "available" ? <Badge variant="info" label={t("badge.preciseAvailable")} /> : null}

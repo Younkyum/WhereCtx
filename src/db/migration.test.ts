@@ -255,7 +255,7 @@ describe("migration 0009 on an install that ran the activity logs", () => {
       "0008_ingest_log",
       "0009_oauth_store",
       "0010_geo",
-      "0011_presence_moved_at",
+      "0011_presence_freshness_area",
     ]);
   });
 

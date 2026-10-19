@@ -14,12 +14,7 @@
 
 import { Hono, type MiddlewareHandler } from "hono";
 import type { RouteContext } from "../app/context.js";
-import {
-  agentCoarseView,
-  authorizePrecise,
-  ownerCoarseView,
-  buildPreciseView,
-} from "../privacy/policy.js";
+import { authorizePrecise, buildPreciseView } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
 import { haversineMeters } from "../geofence/distance.js";
 import type { Place } from "../types.js";
@@ -63,10 +58,10 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
     if (!stored) return c.json({ error: "no presence recorded yet" }, 404);
     const settings = await scope.settings.getOrSeed();
 
-    const view = agentCoarseView(toPresenceContext(stored), settings, ctx.clock, ctx.config.privacy.staleAfterSec);
+    const view = ctx.views.agentCoarse(toPresenceContext(stored), settings);
     if (view && c.get("principal").via === "session") {
       // The owner in the dashboard sees their own area whether or not agents may.
-      return c.json(ownerCoarseView(toPresenceContext(stored), settings, ctx.clock, ctx.config.privacy.staleAfterSec));
+      return c.json(ctx.views.ownerCoarse(toPresenceContext(stored), settings));
     }
     if (!view) {
       decide(c, { outcome: "hidden" });

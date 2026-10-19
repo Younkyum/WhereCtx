@@ -136,6 +136,7 @@ export const EN = {
 
   "home.title": "Home",
   "home.mine": "Your status",
+  "home.offline": "device offline",
   "home.updated": "updated {age}",
   "home.none": "No location yet. Share it now or connect a device.",
   "home.hiddenFromAgents": "Your agent access is set to hidden.",

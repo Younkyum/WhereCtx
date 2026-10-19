@@ -103,14 +103,15 @@ export interface Config {
     /** Seeds privacy_settings.protect_home_place on first boot. */
     protectHomePlace: boolean;
     /**
-     * A manual reading (posted from the dashboard) is stale after this long,
-     * and any reading counts as live within it.
+     * A reading something else fires (manual, a Shortcut automation, Tasker)
+     * is stale after this long, and any reading received within it counts as
+     * live (presence/freshness.ts).
      */
     staleAfterSec: number;
     /**
-     * A device that reports on its own (OwnTracks, a Shortcut automation, an
-     * app) is offline after this long without any report. Such devices stay
-     * quiet while they do not move, so silence alone is not staleness.
+     * A connected device (OwnTracks, the mobile app, Home Assistant) is
+     * offline after this long without any report. Such devices stay quiet
+     * while they do not move, so silence alone is not staleness.
      */
     deviceOfflineAfterSec: number;
     retentionHours: number;

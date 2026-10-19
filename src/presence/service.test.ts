@@ -12,7 +12,7 @@ import {
 } from "../store/index.js";
 import type { NormalizedReading } from "../normalizer/types.js";
 import {
-  agentCoarseView,
+  presenceViews,
   authorizePrecise,
   canReadPresence,
 } from "../privacy/policy.js";
@@ -53,6 +53,7 @@ const USER = asUserId("default");
 
 let nowMs = T0;
 const clock = () => new Date(nowMs);
+const views = presenceViews({ staleAfterSec: 900, deviceOfflineAfterSec: 86_400 }, clock);
 
 /** Past the 24 h DEVICE_OFFLINE_AFTER_SEC of the test config. */
 const DAY_PLUS = 86_400_000 + 1000;
@@ -227,7 +228,7 @@ describe("end-to-end privacy enforcement", () => {
     const settings = await settingsStore.getOrSeed(USER);
     const current = (await presenceStore.getCurrent(USER))!;
 
-    expect(agentCoarseView(current, settings, clock, 900)).toBeNull();
+    expect(views.agentCoarse(current, settings)).toBeNull();
     const auth = authorizePrecise({
       scopes: ROLE_SCOPES.agent,
       settings,
@@ -258,7 +259,7 @@ describe("end-to-end privacy enforcement", () => {
     await service.processReading(USER, reading(37.05, 127.0));
     const settings = await settingsStore.getOrSeed(USER);
     const current = (await presenceStore.getCurrent(USER))!;
-    const view = agentCoarseView(current, settings, clock, 900)!;
+    const view = views.agentCoarse(current, settings)!;
     expect(view).not.toHaveProperty("geohash");
     expect(view).not.toHaveProperty("lat");
     expect(JSON.stringify(view)).not.toContain(String(current.coarse?.geohash));

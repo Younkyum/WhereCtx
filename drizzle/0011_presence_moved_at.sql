@@ -1,1 +1,0 @@
-ALTER TABLE `presence` ADD `moved_at` text;

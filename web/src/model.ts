@@ -69,9 +69,13 @@ export interface Me {
   sessions: { id: string; userAgent: string | null; createdAt: string; lastSeenAt: string; current: boolean }[];
 }
 
+/** How far to trust a presence (src/types.ts FRESHNESS). */
+export type Freshness = "live" | "stationary" | "offline" | "unknown";
+
 export interface Presence {
   status: string;
   stale: boolean;
+  freshness?: Freshness;
   motion?: string | null;
   updatedAgoSec: number;
   /** The neighbourhood, while maps are on. */
@@ -143,7 +147,7 @@ export interface Person {
   user: UserRef;
   level: GrantedLevel;
   paused: boolean;
-  presence: { status: string; stale: boolean; motion?: string | null; updatedAgoMin: number; area?: string } | null;
+  presence: { status: string; stale: boolean; freshness?: Freshness; motion?: string | null; updatedAgoMin: number; area?: string } | null;
   precise?: "available" | PreciseLocation | null;
   preciseWithheld?: Withheld | null;
 }

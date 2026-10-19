@@ -123,11 +123,20 @@ export const presence = sqliteTable("presence", {
   updatedAt: text("updated_at").notNull(),
   receivedAt: text("received_at").notNull(),
   /**
-   * Device time of the first reading at this spot: later reports within
-   * MOVED_THRESHOLD_M (pings, a phone at rest) keep it. Null before 0011.
+   * Server time of the first report at this spot: later reports within
+   * MOVED_THRESHOLD_M of `moved_lat`/`moved_lon` (pings, a phone at rest,
+   * GPS jitter) keep it. Null before 0011.
    */
   movedAt: text("moved_at"),
-  /** How long this reading stays fresh: STALE_AFTER_SEC for manual, DEVICE_OFFLINE_AFTER_SEC otherwise. */
+  /** Where the person arrived at `moved_at`: the point later reports are measured from. */
+  movedLat: real("moved_lat"),
+  movedLon: real("moved_lon"),
+  /**
+   * The source's window when the reading was stored. Nothing reads it any
+   * more (freshness works the window out from the source and the config at
+   * read time); it is still written so an older build rolled back onto this
+   * database keeps working.
+   */
   staleAfterSec: integer("stale_after_sec").notNull(),
 });
 

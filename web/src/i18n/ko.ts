@@ -138,6 +138,7 @@ export const KO: Record<I18nKey, string> = {
 
   "home.title": "홈",
   "home.mine": "내 상태",
+  "home.offline": "기기 연결 끊김",
   "home.updated": "{age} 갱신",
   "home.none": "아직 위치 기록이 없어요. 지금 공유하거나 기기를 연결하세요.",
   "home.hiddenFromAgents": "에이전트 접근이 '숨김'으로 설정돼 있어요.",
