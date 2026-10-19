@@ -30,6 +30,7 @@ import {
   type PrivacySettings,
 } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
+import { PlaceRules } from "./PlaceRules";
 
 function usePlaceTypes() {
   const { t } = useApp();
@@ -82,6 +83,7 @@ export function PlacesView() {
           }
         </Loaded>
       </Panel>
+      <PlaceRules state={places} onSaved={reload} />
       <AddByAddress onAdded={reload} />
       <AddHere onAdded={reload} />
       <AddByCoordinates onAdded={reload} />

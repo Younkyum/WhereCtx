@@ -1,8 +1,8 @@
 /**
  * Webhooks: send my own presence events to another service. Choose which
- * events each endpoint gets, see what a delivery looks like (built by the same
- * code the server sends with), change a hook's events or pause it, and see
- * deliveries that failed for good.
+ * events each endpoint gets and for which places, see what a delivery looks
+ * like (built by the same code the server sends with), change a hook's
+ * events or pause it, and see deliveries that failed for good.
  */
 
 import { Badge } from "@astryxdesign/core/Badge";
@@ -23,7 +23,7 @@ import { exampleDelivery } from "../../../src/webhooks/payload";
 import { api } from "../api";
 import { useApp } from "../context";
 import { pickEvents } from "../lib";
-import { oneOf, type DeadLetter, type Webhook } from "../model";
+import { oneOf, type DeadLetter, type Place, type Webhook } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
 
 export const SIGNATURE_DOCS = "https://github.com/Younkyum/WhereCtx/blob/main/docs/api.md#delivery-signature";
@@ -51,14 +51,37 @@ function EventPicker({ value, onChange }: { value: string[]; onChange: (events: 
   );
 }
 
-function EventSummary({ events }: { events: string[] }) {
+/**
+ * Every place, or some of them by name; ["*"] means every place, as the event
+ * picker's "*" does. Hidden while there are no places to pick.
+ */
+function PlacePicker({ names, value, onChange }: { names: string[]; value: string[]; onChange: (places: string[]) => void }) {
   const { t } = useApp();
-  if (events.includes("*")) return <Badge variant="info" label={t("webhooks.all")} />;
+  const shown = [...new Set([...names, ...value.filter((v) => v !== "*")])];
+  if (shown.length === 0) return null;
+  return (
+    <CheckboxList label={t("webhooks.places")} value={value} onChange={(next) => onChange(pickEvents(value, next))} hasDividers>
+      <CheckboxListItem value="*" label={t("webhooks.allPlaces")} description={t("webhooks.allPlacesDesc")} />
+      {shown.map((name) => (
+        <CheckboxListItem key={name} value={name} label={name} />
+      ))}
+    </CheckboxList>
+  );
+}
+
+/** The REST spelling of a picked place selection: null for every place. */
+const placesBody = (picked: string[]): string[] | null => (picked.includes("*") || picked.length === 0 ? null : picked);
+
+function EventSummary({ events, places }: { events: string[]; places?: string[] }) {
+  const { t } = useApp();
   return (
     <HStack gap={1} wrap="wrap">
-      {events.map((e) => (
-        <Badge key={e} variant="neutral" label={oneOf(PRESENCE_EVENT_TYPES, e) ? t(`webhooks.event.${e}`) : e} />
-      ))}
+      {events.includes("*") ? (
+        <Badge variant="info" label={t("webhooks.all")} />
+      ) : (
+        events.map((e) => <Badge key={e} variant="neutral" label={oneOf(PRESENCE_EVENT_TYPES, e) ? t(`webhooks.event.${e}`) : e} />)
+      )}
+      {places?.map((name) => <Badge key={`place:${name}`} variant="info" label={name} />)}
     </HStack>
   );
 }
@@ -86,19 +109,21 @@ function ExampleDelivery({ events, signed }: { events: string[]; signed: boolean
   );
 }
 
-function HookRow({ hook, onChanged }: { hook: Webhook; onChanged: () => Promise<void> }) {
+function HookRow({ hook, placeNames, onChanged }: { hook: Webhook; placeNames: string[]; onChanged: () => Promise<void> }) {
   const { t } = useApp();
   const notify = useNotify();
   const confirm = useConfirm();
-  const [editing, setEditing] = useState<string[] | null>(null);
-  const patch = async (body: { events?: string[]; active?: boolean }) => {
+  const [editing, setEditing] = useState<{ events: string[]; places: string[] } | null>(null);
+  const patch = async (body: { events?: string[]; places?: string[] | null; active?: boolean }) => {
     await api(`/v1/webhooks/${encodeURIComponent(hook.id)}`, { method: "PATCH", body });
     notify.ok(t("toast.saved"));
     await onChanged();
   };
   const [saving, save] = useAction(async () => {
-    if (!editing?.length) return;
-    await patch({ events: editing });
+    if (!editing?.events.length) return;
+    const places = placesBody(editing.places);
+    const samePlaces = JSON.stringify(places) === JSON.stringify(hook.places ?? null);
+    await patch({ events: editing.events, ...(samePlaces ? {} : { places }) });
     setEditing(null);
   });
   const remove = async () => {
@@ -119,7 +144,7 @@ function HookRow({ hook, onChanged }: { hook: Webhook; onChanged: () => Promise<
             {hook.url}
           </Text>
         }
-        subtitle={<EventSummary events={hook.events ?? []} />}
+        subtitle={<EventSummary events={hook.events ?? []} places={hook.places} />}
       >
         <Switch
           label={t("webhooks.active")}
@@ -133,14 +158,21 @@ function HookRow({ hook, onChanged }: { hook: Webhook; onChanged: () => Promise<
           }}
           size="sm"
         />
-        {editing ? null : <Button label={t("webhooks.editEvents")} size="sm" onClick={() => setEditing(hook.events ?? [])} />}
+        {editing ? null : (
+          <Button
+            label={t("webhooks.editEvents")}
+            size="sm"
+            onClick={() => setEditing({ events: hook.events ?? [], places: hook.places ?? ["*"] })}
+          />
+        )}
         <Button label={t("common.delete")} variant="destructive" size="sm" clickAction={remove} />
       </Row>
       {editing ? (
         <VStack gap={3}>
-          <EventPicker value={editing} onChange={setEditing} />
+          <EventPicker value={editing.events} onChange={(events) => setEditing({ ...editing, events })} />
+          <PlacePicker names={placeNames} value={editing.places} onChange={(places) => setEditing({ ...editing, places })} />
           <HStack gap={2}>
-            <Button label={t("common.save")} variant="primary" isLoading={saving} isDisabled={!editing.length} onClick={() => void save()} />
+            <Button label={t("common.save")} variant="primary" isLoading={saving} isDisabled={!editing.events.length} onClick={() => void save()} />
             <Button label={t("common.cancel")} onClick={() => setEditing(null)} />
           </HStack>
         </VStack>
@@ -157,19 +189,24 @@ export function WebhooksView() {
     () => api<{ deadLetters: DeadLetter[] }>("/v1/webhooks/dead-letters?limit=20").then((r) => r.deadLetters ?? []),
     [],
   );
+  const [places] = useLoad(() => api<{ places: Place[] }>("/v1/places").then((r) => r.places ?? []), []);
+  const placeNames = places.kind === "ready" ? places.data.map((p) => p.name) : [];
   const reload = async () => {
     await Promise.all([reloadHooks(), reloadDead()]);
   };
   const [url, setUrl] = useState("");
   const [secret, setSecret] = useState("");
   const [events, setEvents] = useState<string[]>(DEFAULT_EVENTS);
+  const [placesPicked, setPlacesPicked] = useState<string[]>(["*"]);
   const valid = /^https?:\/\//i.test(url.trim()) && events.length > 0;
   const [busy, add] = useAction(async () => {
-    await api("/v1/webhooks", { body: { url: url.trim(), events, ...(secret ? { secret } : {}) } });
+    const picked = placesBody(placesPicked);
+    await api("/v1/webhooks", { body: { url: url.trim(), events, ...(picked ? { places: picked } : {}), ...(secret ? { secret } : {}) } });
     notify.ok(t("toast.added"));
     setUrl("");
     setSecret("");
     setEvents(DEFAULT_EVENTS);
+    setPlacesPicked(["*"]);
     await reload();
   });
   return (
@@ -180,7 +217,7 @@ export function WebhooksView() {
           {(list) =>
             list.length ? (
               <Rows items={list} keyOf={(w) => w.id}>
-                {(w) => <HookRow hook={w} onChanged={reload} />}
+                {(w) => <HookRow hook={w} placeNames={placeNames} onChanged={reload} />}
               </Rows>
             ) : (
               <Empty text={t("webhooks.empty")} />
@@ -201,6 +238,7 @@ export function WebhooksView() {
               <TextInput label={t("webhooks.secret")} value={secret} onChange={setSecret} width={240} />
             </HStack>
             <EventPicker value={events} onChange={setEvents} />
+            <PlacePicker names={placeNames} value={placesPicked} onChange={setPlacesPicked} />
             <ExampleDelivery events={events} signed={secret !== ""} />
             <HStack>
               <Button type="submit" label={t("webhooks.addButton")} variant="primary" isLoading={busy} isDisabled={!valid} />

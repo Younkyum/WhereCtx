@@ -679,3 +679,78 @@ describe("maps", () => {
     expect(posted).toMatchObject({ name: "판교역 경강선", type: "custom", lat: 37.3951, lon: 127.1109 });
   });
 });
+
+describe("place rules and webhook places", () => {
+  const OFFICE = [
+    [127.012345, 37.567891],
+    [127.014567, 37.567891],
+    [127.014567, 37.569123],
+    [127.012345, 37.567891],
+  ];
+
+  async function open(hash: string) {
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    location.hash = hash;
+    await act(async () => root.render(<App />));
+    await settle();
+  }
+
+  async function fill(input: HTMLInputElement, value: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+  }
+
+  const inputLabelled = (label: string) => {
+    const l = [...host.querySelectorAll("label")].find((x) => x.textContent?.trim().startsWith(label));
+    const input = (l?.htmlFor && document.getElementById(l.htmlFor)) || l?.parentElement?.querySelector("input");
+    if (!input) throw new Error(`no input "${label}"`);
+    return input as HTMLInputElement;
+  };
+
+  afterEach(() => {
+    location.hash = "";
+  });
+
+  it("saves a polygon place's rules with its outline, so the shape is kept", async () => {
+    let posted: any;
+    route("GET /v1/places", () => ({
+      status: 200,
+      body: {
+        places: [
+          { name: "office", type: "work", lat: 37.5685, lon: 127.0134, radiusM: 120, polygon: OFFICE, enterAfterSec: 0, exitAfterSec: 0, approachM: null, emits: ["presence.entered_place", "presence.left_place", "presence.approaching_place"], notifyWebhooks: true, notifyReminders: true },
+        ],
+      },
+    }));
+    route("POST /v1/places", (b) => ((posted = b), { status: 201, body: { place: b } }));
+    await open("#places");
+    expect(host.textContent).toContain("Place rules");
+    expect(host.textContent).toContain("Polygon");
+    await fill(inputLabelled("Count an arrival after"), "5");
+    await act(async () => button("Save").click());
+    await settle();
+    expect(posted).toMatchObject({ name: "office", type: "work", polygon: OFFICE, enterAfterSec: 300, exitAfterSec: 0, approachM: null });
+    expect(posted).not.toHaveProperty("lat");
+  });
+
+  it("creates a webhook for chosen places only", async () => {
+    let created: any;
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: [] } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    route("GET /v1/places", () => ({
+      status: 200,
+      body: { places: [{ name: "home", type: "home", lat: 37, lon: 127, radiusM: 150 }, { name: "gym", type: "custom", lat: 37.1, lon: 127, radiusM: 80 }] },
+    }));
+    route("POST /v1/webhooks", (body) => ((created = body), { status: 201, body: { webhook: { id: "h2" } } }));
+    await open("#webhooks");
+    expect(host.textContent).toContain("All places");
+    const gym = [...host.querySelectorAll("li")].find((li) => li.textContent?.startsWith("gym"))!;
+    await act(async () => gym.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await fill(host.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
+    await act(async () => button("Add").click());
+    await settle();
+    expect(created).toEqual({ url: "https://n8n.example/hook", events: ["presence.entered_place", "presence.left_place"], places: ["gym"] });
+  });
+});

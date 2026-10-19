@@ -7,6 +7,7 @@
 import type { WorkspaceRole } from "../../src/accounts/types";
 import type { AccessEntry as ServerAccessEntry } from "../../src/activity/types";
 import type { GeoProviderName } from "../../src/geo/types";
+import type { PlaceRules } from "../../src/types";
 
 export type { WorkspaceRole };
 export {
@@ -193,12 +194,16 @@ export interface InvitePreview {
   expiresAt: string;
 }
 
-export interface Place {
+export interface Place extends Partial<PlaceRules> {
   name: string;
   type: PlaceType;
+  label?: string;
   lat: number;
   lon: number;
   radiusM: number;
+  /** A polygon place's closed [lon, lat] ring; lat/lon/radiusM are then its centroid and circumradius. */
+  polygon?: Array<[number, number]>;
+  updatedAt?: string;
 }
 
 export interface PresenceEvent {
@@ -212,6 +217,8 @@ export interface Webhook {
   id: string;
   url: string;
   events: string[];
+  /** Place names a place event must name; absent: every place. */
+  places?: string[];
   active: boolean;
 }
 
