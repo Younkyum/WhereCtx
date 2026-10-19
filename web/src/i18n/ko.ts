@@ -559,6 +559,7 @@ export const KO: Record<I18nKey, string> = {
   "placeRules.hint": "머무는 시간은 1분마다 확인해서 도착이나 출발이 최대 1분 늦게 잡힐 수 있어요. 에이전트는 변화가 진행 중이라는 것만 보고, 이 설정은 보지 못해요.",
   "webhooks.places": "장소",
   "webhooks.allPlaces": "모든 장소",
+  "webhooks.pickPlace": "장소를 하나 이상 고르거나 모든 장소를 골라 주세요.",
   "webhooks.allPlacesDesc": "어느 장소든 도착·출발·접근과 장소에 있는 동안의 업데이트를 보내요. 장소가 없는 이벤트는 항상 보내요.",
 
   "header.name": "헤더 이름",

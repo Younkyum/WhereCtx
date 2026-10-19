@@ -51,26 +51,37 @@ function EventPicker({ value, onChange }: { value: string[]; onChange: (events: 
   );
 }
 
-/**
- * Every place, or some of them by name; ["*"] means every place, as the event
- * picker's "*" does. Hidden while there are no places to pick.
- */
-function PlacePicker({ names, value, onChange }: { names: string[]; value: string[]; onChange: (places: string[]) => void }) {
+/** Every place (null), or some places by name; an empty list is not yet a choice. */
+type PlaceSelection = string[] | null;
+
+/** List values: any string can be a place name, so places get a prefix and the "*" pickEvents knows cannot collide. */
+const ALL_PLACES = "*";
+const placeValue = (name: string) => `place:${name}`;
+
+/** Hidden while there are no places to pick. */
+function PlacePicker({ names, value, onChange }: { names: string[]; value: PlaceSelection; onChange: (places: PlaceSelection) => void }) {
   const { t } = useApp();
-  const shown = [...new Set([...names, ...value.filter((v) => v !== "*")])];
+  const shown = [...new Set([...names, ...(value ?? [])])];
   if (shown.length === 0) return null;
+  const listed = value === null ? [ALL_PLACES] : value.map(placeValue);
+  const pick = (next: string[]) => {
+    const picked = pickEvents(listed, next);
+    onChange(picked.includes(ALL_PLACES) ? null : shown.filter((name) => picked.includes(placeValue(name))));
+  };
   return (
-    <CheckboxList label={t("webhooks.places")} value={value} onChange={(next) => onChange(pickEvents(value, next))} hasDividers>
-      <CheckboxListItem value="*" label={t("webhooks.allPlaces")} description={t("webhooks.allPlacesDesc")} />
-      {shown.map((name) => (
-        <CheckboxListItem key={name} value={name} label={name} />
-      ))}
-    </CheckboxList>
+    <VStack gap={1}>
+      <CheckboxList label={t("webhooks.places")} value={listed} onChange={pick} hasDividers>
+        <CheckboxListItem value={ALL_PLACES} label={t("webhooks.allPlaces")} description={t("webhooks.allPlacesDesc")} />
+        {shown.map((name) => (
+          <CheckboxListItem key={name} value={placeValue(name)} label={name} />
+        ))}
+      </CheckboxList>
+      {value?.length === 0 ? <Hint>{t("webhooks.pickPlace")}</Hint> : null}
+    </VStack>
   );
 }
 
-/** The REST spelling of a picked place selection: null for every place. */
-const placesBody = (picked: string[]): string[] | null => (picked.includes("*") || picked.length === 0 ? null : picked);
+const pickedSome = (places: PlaceSelection): boolean => places === null || places.length > 0;
 
 function EventSummary({ events, places }: { events: string[]; places?: string[] }) {
   const { t } = useApp();
@@ -113,15 +124,15 @@ function HookRow({ hook, placeNames, onChanged }: { hook: Webhook; placeNames: s
   const { t } = useApp();
   const notify = useNotify();
   const confirm = useConfirm();
-  const [editing, setEditing] = useState<{ events: string[]; places: string[] } | null>(null);
+  const [editing, setEditing] = useState<{ events: string[]; places: PlaceSelection } | null>(null);
   const patch = async (body: { events?: string[]; places?: string[] | null; active?: boolean }) => {
     await api(`/v1/webhooks/${encodeURIComponent(hook.id)}`, { method: "PATCH", body });
     notify.ok(t("toast.saved"));
     await onChanged();
   };
   const [saving, save] = useAction(async () => {
-    if (!editing?.events.length) return;
-    const places = placesBody(editing.places);
+    if (!editing?.events.length || !pickedSome(editing.places)) return;
+    const { places } = editing;
     const samePlaces = JSON.stringify(places) === JSON.stringify(hook.places ?? null);
     await patch({ events: editing.events, ...(samePlaces ? {} : { places }) });
     setEditing(null);
@@ -162,7 +173,7 @@ function HookRow({ hook, placeNames, onChanged }: { hook: Webhook; placeNames: s
           <Button
             label={t("webhooks.editEvents")}
             size="sm"
-            onClick={() => setEditing({ events: hook.events ?? [], places: hook.places ?? ["*"] })}
+            onClick={() => setEditing({ events: hook.events ?? [], places: hook.places ?? null })}
           />
         )}
         <Button label={t("common.delete")} variant="destructive" size="sm" clickAction={remove} />
@@ -172,7 +183,7 @@ function HookRow({ hook, placeNames, onChanged }: { hook: Webhook; placeNames: s
           <EventPicker value={editing.events} onChange={(events) => setEditing({ ...editing, events })} />
           <PlacePicker names={placeNames} value={editing.places} onChange={(places) => setEditing({ ...editing, places })} />
           <HStack gap={2}>
-            <Button label={t("common.save")} variant="primary" isLoading={saving} isDisabled={!editing.events.length} onClick={() => void save()} />
+            <Button label={t("common.save")} variant="primary" isLoading={saving} isDisabled={!editing.events.length || !pickedSome(editing.places)} onClick={() => void save()} />
             <Button label={t("common.cancel")} onClick={() => setEditing(null)} />
           </HStack>
         </VStack>
@@ -197,16 +208,17 @@ export function WebhooksView() {
   const [url, setUrl] = useState("");
   const [secret, setSecret] = useState("");
   const [events, setEvents] = useState<string[]>(DEFAULT_EVENTS);
-  const [placesPicked, setPlacesPicked] = useState<string[]>(["*"]);
-  const valid = /^https?:\/\//i.test(url.trim()) && events.length > 0;
+  const [placesPicked, setPlacesPicked] = useState<PlaceSelection>(null);
+  const valid = /^https?:\/\//i.test(url.trim()) && events.length > 0 && pickedSome(placesPicked);
   const [busy, add] = useAction(async () => {
-    const picked = placesBody(placesPicked);
-    await api("/v1/webhooks", { body: { url: url.trim(), events, ...(picked ? { places: picked } : {}), ...(secret ? { secret } : {}) } });
+    await api("/v1/webhooks", {
+      body: { url: url.trim(), events, ...(placesPicked ? { places: placesPicked } : {}), ...(secret ? { secret } : {}) },
+    });
     notify.ok(t("toast.added"));
     setUrl("");
     setSecret("");
     setEvents(DEFAULT_EVENTS);
-    setPlacesPicked(["*"]);
+    setPlacesPicked(null);
     await reload();
   });
   return (

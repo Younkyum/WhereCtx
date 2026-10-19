@@ -755,4 +755,49 @@ describe("place rules and webhook places", () => {
     await settle();
     expect(created).toEqual({ url: "https://n8n.example/hook", events: ["presence.entered_place", "presence.left_place"], places: ["gym"] });
   });
+
+  const placeItem = (name: string) =>
+    [...host.querySelectorAll("li")].find((li) => li.textContent?.startsWith(name))!.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+
+  it("will not save a hook with no place picked, and says why", async () => {
+    const hooks = [{ id: "h1", url: "https://ha.example/hook", events: ["*"], active: true }];
+    let patched: any;
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: hooks } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    route("GET /v1/places", () => ({ status: 200, body: { places: [{ name: "gym", type: "custom", lat: 37.1, lon: 127, radiusM: 80 }] } }));
+    route("PATCH /v1/webhooks/h1", (body) => ((patched = body), { status: 200, body: { webhook: hooks[0] } }));
+    await open("#webhooks");
+    await fill(host.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
+    const allPlaces = () => [...host.querySelectorAll("li")].filter((li) => li.textContent?.startsWith("All places"));
+    await act(async () => allPlaces()[0]!.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    expect(button("Add").disabled).toBe(true);
+    expect(host.textContent).toContain("Pick at least one place, or All places.");
+
+    await act(async () => button("Change events").click());
+    await settle();
+    await act(async () => allPlaces()[0]!.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    expect(button("Save").disabled).toBe(true);
+    await act(async () => button("Save").click());
+    await settle();
+    expect(patched).toBeUndefined();
+  });
+
+  it("tells a place named * apart from all places", async () => {
+    let created: any;
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: [] } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    route("GET /v1/places", () => ({
+      status: 200,
+      body: { places: [{ name: "*", type: "custom", lat: 37, lon: 127, radiusM: 150 }, { name: "gym", type: "custom", lat: 37.1, lon: 127, radiusM: 80 }] },
+    }));
+    route("POST /v1/webhooks", (body) => ((created = body), { status: 201, body: { webhook: { id: "h2" } } }));
+    await open("#webhooks");
+    await act(async () => placeItem("*").click());
+    expect(placeItem("*").checked).toBe(true);
+    expect(placeItem("gym").checked).toBe(false);
+    await fill(host.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
+    await act(async () => button("Add").click());
+    await settle();
+    expect(created).toEqual({ url: "https://n8n.example/hook", events: ["presence.entered_place", "presence.left_place"], places: ["*"] });
+  });
 });
