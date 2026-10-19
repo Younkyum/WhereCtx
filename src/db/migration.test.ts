@@ -257,6 +257,7 @@ describe("migration 0009 on an install that ran the activity logs", () => {
       "0010_geo",
       "0011_presence_freshness_area",
       "0012_geofence_rules",
+      "0013_webhook_auth_header",
     ]);
   });
 
@@ -317,5 +318,22 @@ describe("migration 0012 on an install with places and events", () => {
     expect(home).not.toHaveProperty("polygon");
     const deliverable = await ctx.system.events.listSince(alice, null);
     expect(deliverable.map((e) => e.id)).toEqual(["ev1"]);
+  });
+});
+
+describe("migration 0013 on an install with webhooks", () => {
+  const BEFORE_WEBHOOK_AUTH_HEADER = 13;
+
+  it("keeps each hook and its signing secret, with no auth header", async () => {
+    const handle = createDb(dbUrl);
+    await migrate(handle.db, { migrationsFolder: firstMigrations(BEFORE_WEBHOOK_AUTH_HEADER) });
+    await handle.client.execute({
+      sql: "INSERT INTO webhooks (id, user_id, url, events, secret, active, cursor, created_at) VALUES (?, ?, ?, ?, ?, 1, NULL, ?)",
+      args: ["h1", "default", "https://example.test/hook", '["*"]', "legacy-secret", new Date().toISOString()],
+    });
+    await migrate(handle.db, { migrationsFolder: migrationsFolder() });
+    const rows = await handle.client.execute("SELECT secret, places, auth_header FROM webhooks WHERE id = 'h1'");
+    expect(rows.rows[0]).toMatchObject({ secret: "legacy-secret", places: null, auth_header: null });
+    handle.client.close();
   });
 });

@@ -15,8 +15,10 @@
  * drain stops after `drainBudgetMs` and resumes from its cursor next tick.
  *
  * Deliveries are signed with HMAC-SHA256 over the body when the hook has a
- * secret. A permanently-failing endpoint is skipped after MAX_ATTEMPTS so it
- * cannot block its own queue forever (head-of-line guard).
+ * secret, and carry the hook's auth header when it has one. The transport
+ * connects only to addresses it has checked and never follows a redirect, so
+ * neither reaches another URL. A permanently-failing endpoint is skipped after
+ * MAX_ATTEMPTS so it cannot block its own queue forever (head-of-line guard).
  */
 
 import { createHmac } from "node:crypto";
@@ -24,30 +26,48 @@ import type { EventsStore } from "../store/eventsStore.js";
 import type { Webhook, WebhooksStore } from "../store/webhooksStore.js";
 import type { PresenceEvent } from "../types.js";
 import type { Clock } from "../util/time.js";
+import { authHeaderNeedsHttps } from "./authHeader.js";
 import { WEBHOOK_HEADERS, WEBHOOK_USER_AGENT, eventPayload } from "./payload.js";
-import { assertSafeWebhookUrl } from "./ssrf.js";
+import { assertSafeWebhookUrl, SsrfError, type Resolver } from "./ssrf.js";
+import { connectTransport, type Transport } from "./transport.js";
 import { log } from "../util/log.js";
-
-type FetchFn = typeof fetch;
 
 export interface DispatcherOptions {
   webhooksStore: WebhooksStore;
   eventsStore: EventsStore;
   clock: Clock;
-  fetchFn?: FetchFn;
+  /** Replaces the connecting transport (tests). */
+  fetchFn?: Transport;
   timeoutMs?: number;
   maxAttempts?: number;
   batchSize?: number;
   /** Allow delivery to private/reserved IPs (LAN targets). Default false. */
   allowPrivateTargets?: boolean;
   /** Override DNS resolution (tests). */
-  urlResolver?: (host: string) => Promise<string[]>;
+  urlResolver?: Resolver;
   /** Drains running at once across all users. Default 8. */
   maxConcurrent?: number;
   /** Drains one user may run at once. Default 2. */
   perUserSlots?: number;
   /** A drain stops starting deliveries after this long. Default 10 s. */
   drainBudgetMs?: number;
+}
+
+const CONNECT_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "EPIPE"]);
+
+/**
+ * What a failed request is recorded as when the hook has an auth header: a
+ * fixed category, never the error's own text, which can quote request headers.
+ * An SsrfError is this server's own wording about the address.
+ */
+export function failureCategory(e: unknown): string {
+  if (e instanceof SsrfError) return e.message;
+  const err = (e ?? {}) as { name?: string; code?: string };
+  const code = err.code ?? "";
+  if (err.name === "AbortError" || err.name === "TimeoutError" || code === "ABORT_ERR" || code === "ETIMEDOUT") return "timeout";
+  if (code === "EPROTO" || /^(ERR_TLS|ERR_SSL|ERR_OSSL|CERT_|UNABLE_TO_|DEPTH_ZERO|SELF_SIGNED)/.test(code)) return "tls_error";
+  if (CONNECT_CODES.has(code)) return "connect_error";
+  return "request_failed";
 }
 
 /**
@@ -62,7 +82,7 @@ export function wants(hook: Pick<Webhook, "events" | "places">, ev: Pick<Presenc
 }
 
 export class WebhookDispatcher {
-  private readonly fetchFn: FetchFn;
+  private readonly fetchFn: Transport;
   private readonly timeoutMs: number;
   private readonly maxAttempts: number;
   private readonly batchSize: number;
@@ -70,7 +90,12 @@ export class WebhookDispatcher {
   private readonly maxConcurrent: number;
   private readonly perUserSlots: number;
   private readonly drainBudgetMs: number;
-  private readonly attempts = new Map<string, number>();
+  /**
+   * Failed attempts per hook and event, counted against one credential: when
+   * the hook's stored auth header changes, the count starts over, so failures
+   * under the old value never dead-letter under the new one.
+   */
+  private readonly attempts = new Map<string, { sealed: string | null; counts: Map<string, number> }>();
 
   /** The slot table: one entry per running drain. */
   private readonly slots = new Map<string, { userId: string; done: Promise<void> }>();
@@ -87,11 +112,11 @@ export class WebhookDispatcher {
   private timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly opts: DispatcherOptions) {
-    this.fetchFn = opts.fetchFn ?? globalThis.fetch;
+    this.allowPrivateTargets = opts.allowPrivateTargets ?? false;
+    this.fetchFn = opts.fetchFn ?? connectTransport({ allowPrivate: this.allowPrivateTargets, resolver: opts.urlResolver });
     this.timeoutMs = opts.timeoutMs ?? 5_000;
     this.maxAttempts = opts.maxAttempts ?? 5;
     this.batchSize = opts.batchSize ?? 100;
-    this.allowPrivateTargets = opts.allowPrivateTargets ?? false;
     this.maxConcurrent = opts.maxConcurrent ?? 8;
     this.perUserSlots = opts.perUserSlots ?? 2;
     this.drainBudgetMs = opts.drainBudgetMs ?? 10_000;
@@ -139,8 +164,8 @@ export class WebhookDispatcher {
     // Forget hooks that no longer exist or were deactivated so the maps
     // cannot accumulate orphaned entries (review P7).
     const activeIds = new Set(hooks.map((h) => h.id));
-    for (const key of this.attempts.keys()) {
-      if (!activeIds.has(key.slice(0, key.indexOf(":")))) this.attempts.delete(key);
+    for (const id of this.attempts.keys()) {
+      if (!activeIds.has(id)) this.attempts.delete(id);
     }
     for (const id of [...this.due, ...this.touched.keys()]) {
       if (!activeIds.has(id)) {
@@ -163,6 +188,14 @@ export class WebhookDispatcher {
       started.push(this.run(hook));
     }
     return started;
+  }
+
+  private attemptsFor(hook: Webhook): Map<string, number> {
+    const held = this.attempts.get(hook.id);
+    if (held && held.sealed === hook.authHeaderSealed) return held.counts;
+    const fresh = { sealed: hook.authHeaderSealed, counts: new Map<string, number>() };
+    this.attempts.set(hook.id, fresh);
+    return fresh.counts;
   }
 
   private slotsHeldBy(userId: string): number {
@@ -195,33 +228,39 @@ export class WebhookDispatcher {
       hook.cursor ?? null,
       this.batchSize,
     );
+    const attempts = this.attemptsFor(hook);
     for (const ev of events) {
       if (this.halt.signal.aborted) return;
       // Out of budget: the persisted cursor is where the next tick resumes.
       if (this.opts.clock().getTime() - startedAt >= this.drainBudgetMs) return;
       // Each advance also checks the hook is still as this drain read it; when
-      // it is not (paused, resumed, re-subscribed), stop and let the next tick
-      // start from the stored hook.
-      const advance = () => this.opts.webhooksStore.setCursor(hook, ev.createdAt, ev.id);
+      // it is not (paused, resumed, re-subscribed, its place filter changed,
+      // its auth header replaced or removed), stop, forget its attempts, and
+      // let the next tick start from the stored hook, so nothing more goes out
+      // with the old credential or selection.
+      const advance = async () => {
+        if (await this.opts.webhooksStore.setCursor(hook, ev.createdAt, ev.id)) return true;
+        this.attempts.delete(hook.id);
+        return false;
+      };
       if (!wants(hook, ev)) {
         if (!(await advance())) return;
         continue;
       }
-      const key = `${hook.id}:${ev.id}`;
       const result = await this.deliver(hook, ev);
       if (result.ok) {
-        this.attempts.delete(key);
+        attempts.delete(ev.id);
         if (!(await advance())) return;
         continue;
       }
       if (this.halt.signal.aborted) return;
       // Failed: count attempts; dead-letter + skip after maxAttempts (no HOL block).
-      const n = (this.attempts.get(key) ?? 0) + 1;
-      this.attempts.set(key, n);
+      const n = (attempts.get(ev.id) ?? 0) + 1;
+      attempts.set(ev.id, n);
       if (n >= this.maxAttempts) {
         log.warn("webhook event dead-lettered", { webhookId: hook.id, eventId: ev.id, attempts: n, error: result.error });
         await this.opts.webhooksStore.recordDeadLetter(hook.id, ev, result.error);
-        this.attempts.delete(key);
+        attempts.delete(ev.id);
         if (!(await advance())) return;
         continue;
       }
@@ -230,11 +269,31 @@ export class WebhookDispatcher {
     }
   }
 
+  /**
+   * A failed delivery's error is logged and kept as a dead letter. For a hook
+   * with an auth header it is a fixed category (failureCategory); the value is
+   * also cut out of whatever comes back, in case a category ever quotes it.
+   */
   private async deliver(
     hook: Webhook,
     ev: PresenceEvent,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
-    // Re-validate the target at delivery time (DNS-rebinding/TOCTOU defense).
+    const result = await this.send(hook, ev);
+    const value = hook.authHeader?.value;
+    if (result.ok || !value) return result;
+    return { ok: false, error: result.error.replaceAll(value, "[redacted]") };
+  }
+
+  private async send(
+    hook: Webhook,
+    ev: PresenceEvent,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    // A hook saved before the rule, or under WEBHOOK_ALLOW_PRIVATE_TARGETS.
+    if (hook.authHeader && authHeaderNeedsHttps(hook.url, this.allowPrivateTargets)) {
+      return { ok: false, error: "auth header needs an https URL" };
+    }
+    // Re-validate the target at delivery time. For a host name the transport
+    // checks again at connect time; for an IP literal this is the check.
     try {
       await assertSafeWebhookUrl(hook.url, this.allowPrivateTargets, this.opts.urlResolver);
     } catch (e) {
@@ -242,11 +301,12 @@ export class WebhookDispatcher {
     }
 
     const body = JSON.stringify(eventPayload(ev));
-    const headers: Record<string, string> = {
+    // Headers, not an object literal: no name can land on a prototype and vanish.
+    const headers = new Headers({
       "content-type": "application/json",
       [WEBHOOK_HEADERS.event]: ev.type,
       "user-agent": WEBHOOK_USER_AGENT,
-    };
+    });
     if (hook.secret) {
       // BREAKING CHANGE (v0.2): The signed payload is `${timestamp}.${body}`, NOT
       // just `${body}` as it was in v0.1. Consumers MUST update their verification
@@ -260,9 +320,10 @@ export class WebhookDispatcher {
       // and rejecting when |now - timestamp| exceeds a small tolerance (e.g. 5 min).
       const ts = Math.floor(this.opts.clock().getTime() / 1000).toString();
       const sig = createHmac("sha256", hook.secret).update(`${ts}.${body}`).digest("hex");
-      headers[WEBHOOK_HEADERS.timestamp] = ts;
-      headers[WEBHOOK_HEADERS.signature] = `sha256=${sig}`;
+      headers.set(WEBHOOK_HEADERS.timestamp, ts);
+      headers.set(WEBHOOK_HEADERS.signature, `sha256=${sig}`);
     }
+    if (hook.authHeader) headers.set(hook.authHeader.name, hook.authHeader.value);
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -271,10 +332,10 @@ export class WebhookDispatcher {
         headers,
         body,
         signal: AbortSignal.any([controller.signal, this.halt.signal]),
-        redirect: "manual", // a 3xx must not bounce into an internal address
       });
       return res.ok ? { ok: true } : { ok: false, error: `status ${res.status}` };
     } catch (e) {
+      if (hook.authHeader) return { ok: false, error: failureCategory(e) };
       return { ok: false, error: e instanceof Error ? e.message : "fetch failed" };
     } finally {
       clearTimeout(t);
