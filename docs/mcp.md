@@ -170,8 +170,8 @@ protected from it.
 | `create_location_reminder` | `place: string, message: string` | `{id, place, message}`; the place must exist; refused in hidden mode |
 | `create_place` | `name, type, lat, lon, radiusM?` or `name, type, address, pick?, radiusM?` | `{name, type, radiusM, address?}`; registers/replaces a geofence. An address is looked up with the user's maps provider, which needs the user's maps on, `manage_places` and a presence the agent may see; several matches come back numbered for `pick` |
 | `remember_current_place` | `name, type?, radiusM?` | `{name, type, radiusM}`; saves the **current** location as a place (coordinates are never returned) |
-| `get_eta` | `to, pick?, departAt?, avoid?, reason?` | `{destination, origin, precision:"approximate", durationMin, distanceKm, traffic, departAt, arriveAt, summary, provider, freshness, originAgeMin, …}`: roughly how long the user's drive takes from where they are now to a registered place, with live traffic. Never coordinates. Needs the user's `geoEnabled` and `etaToAgents`. It still tells the agent roughly how far away the user is |
-| `get_directions` | same | `get_eta` plus `steps` (the provider's turn instructions) when the agent may read the precise location, else `stepsWithheld`; and, for an address the agent named or a `manage_places` token, `deepLinks` (Kakao Map web, Naver Map app) |
+| `get_eta` | `to, mode?, pick?, departAt?, avoid?, reason?` | `{mode, destination, origin, precision:"approximate", durationMin, distanceKm, departAt, arriveAt, summary, provider, freshness, originAgeMin, …}`; by car also `traffic`; by transit also `walkMin`, and `transfers` only beside named lines. `mode` is `car` (default), `transit`, `walk` or `bike`. Roughly how long the trip takes from where the user is now to a registered place. Never coordinates. Needs the user's `geoEnabled` and `etaToAgents`. It still tells the agent roughly how far away the user is |
+| `get_directions` | same | `get_eta` plus `steps` (turn instructions, or a transit route's legs, which name stations; at most 30) when the agent may read the precise location, else `stepsWithheld`; and, for an address the agent named or a `manage_places` token, `deepLinks` (Kakao Map web, Naver Map app) |
 
 All tools apply the same privacy rules as the REST API: hidden mode withholds,
 precise is policy-gated, home coordinates are protected, and coarse tools never
@@ -227,22 +227,29 @@ route starts at the user's current location, rounded to about 100 m before
 it leaves the server.
 
 The answer is approximate on purpose, so it cannot be worked back to where
-the user is: `durationMin` in 5-minute steps (at least 5), `distanceKm` in
-whole kilometres, `arriveAt` to 5 minutes, no fares, and `summary` only the
-main roads at least 1.5 km from both ends, without side streets (…번길,
-…로12길). It still reveals roughly how far away the user is, which is why the
-user turns it on separately (`etaToAgents`).
+the user is: `departAt` floored to 5 minutes, `durationMin` in 5-minute
+steps (at least 5; on foot or by bicycle, 15-minute steps from 15 on),
+`arriveAt` exactly `departAt` plus `durationMin`, `distanceKm` in whole
+kilometres (at least 1), no fares, and `summary` only the main roads that
+run at least 1.5 km from the start, the destination and every registered
+place, without side streets (…번길, …로12길). The same credential asking
+the same thing within 5 minutes gets the same answer back, with no new
+provider call. It still reveals roughly how far away the user is, which is
+why the user turns it on separately (`etaToAgents`).
 
-By transit, `summary` lists the lines ridden (`"2호선"`, `"간선 472"`) whose
-ride runs farther than 1.5 km from both ends, with `transfers` and `walkMin`
-(minutes on foot, in 5-minute steps). The first and last stops would name
-where the user is and where they are going, so no stop name, fare or leg is
-ever given, and `get_directions` answers `stepsWithheld` for transit. With
-precise access every line is listed. On foot and by bicycle, `summary` is
-empty and the steps follow the same gate as a car's.
+By transit, `summary` names one line per ride (`"2호선"`, `"간선 472"`), in
+the order ridden, only when every ride runs farther than 1.5 km from the
+start, the destination and every registered place, and carries a citywide
+label (a 간선, 지선, 광역, 직행, 순환, 급행 or 공항 bus number, `N호선`, or a
+named rail line such as 신분당선). Otherwise `summary` is empty and
+`transfers` is left out. A village bus (`마을 서초09`) is never named.
+`walkMin` is the minutes on foot in 5-minute steps. No stop name, fare or
+leg is given. With precise access each ride's first line is named and
+`get_directions` gives the legs' steps, which name stations. On foot and by
+bicycle, `summary` is empty and the steps follow the same gate.
 
-Precise access opens two more things: the turn-by-turn `steps` of
-`get_directions` (they name the streets around the user) and an address or
+Precise access opens two more things: the `steps` of `get_directions`, at
+most 30 (they name the streets or stations around the user), and an address or
 place to search as `to`. It needs `read_precise_location`, the user's
 `allowPreciseLocation`, a `reason` when the user requires one, and the user
 not at home, the same gate as `get_precise_location`. Without it, an address
@@ -250,7 +257,9 @@ is refused and `stepsWithheld` says why the steps are missing. Several
 search matches return `{ambiguous:true, candidates:[{pick, label, address,
 …}]}`; call again with `pick`.
 
-A tool answers with an error text, never a guess, when maps or ETA for
+A provider failure reaches the agent as fixed words per kind (`no route
+found`), never the provider's own text. A tool answers with an error text,
+never a guess, when maps or ETA for
 agents are off, the user is at or near home (with `skipProviderNearHome`,
 the default), no maps key is set up, the user's maps budget is spent (30
 provider calls a minute, a route to an address being two), or the reading is
@@ -264,9 +273,12 @@ Provider support: by car, Kakao (Kakao Mobility Directions) times a future
 `departAt` on predicted traffic (`traffic:"predicted"`); Naver Directions 5
 always uses live traffic and refuses `departAt`. Transit, walking and
 cycling come from the Kakao Map API (added 2026-07-21) and time a departure
-now only: `departAt` and `avoid` are refused for them. Naver Cloud Maps has
-no transit, walking or cycling API, so on Naver those modes answer
-`unsupported_mode` with the modes it does route, and nothing is sent.
+now only: a later `departAt` or any `avoid` with them is refused as
+`unsupported_option` (REST `400`) before anything is sent. Naver Cloud Maps
+has no transit, walking or cycling API, so on Naver those modes answer
+`unsupported_mode` with `supported` (the modes it does route) and, when
+another provider with a key routes the mode, a `hint` to switch
+`geoProvider`; nothing is sent.
 Transit times are the provider's estimate, not a live timetable.
 
 ## Agent usage policy

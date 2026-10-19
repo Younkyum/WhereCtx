@@ -220,28 +220,46 @@ What leaves the server, and when:
   cell under a per-install key, so the table is not a list of coordinates;
   the region names are stored as they are, and the key sits in the same
   database. Turning maps off or removing a key drops all your rows.
-- **What an agent's ETA says.** Minutes in 5-minute steps (at least 5),
-  whole kilometres, an arrival time to 5 minutes, no fares (a taxi fare is
-  the distance), and main roads only: no road with any point within 1.5 km
-  of your position or of the registered place it routes to, no side street
-  (…번길, …로12길), and no road the provider gave no geometry for. The
-  destination must be one of your registered places. The turn-by-turn
-  steps, which name the streets you start on, and a destination given as an
-  address, need precise access: `read_precise_location`, your
-  `allowPreciseLocation`, a reason, and not at home. Every answer carries
-  `freshness` and `originAgeMin`.
+- **What an agent's ETA says.** The departure floored to 5 minutes, the
+  minutes in 5-minute steps (at least 5), the arrival as that departure plus
+  those minutes (never from the exact times, so the two together say no
+  more than a step), whole kilometres (at least 1), no fares (a taxi fare is
+  the distance), and main roads only: no road that passes, along any of its
+  segments, within 1.5 km of your position, the destination or any of your
+  registered places (to a circle's edge or a polygon's outline), no side
+  street (…번길, …로12길), and no road the provider gave no geometry for.
+  The destination must be one of your registered places. The steps, and a
+  destination given as an address, need precise access:
+  `read_precise_location`, your `allowPreciseLocation`, a reason, and not
+  at home. Every answer carries `freshness` and `originAgeMin`.
+- **Asked again, the same answer.** An agent's answer is kept for 5
+  minutes per credential and question (destination, mode and options).
+  Polling inside that window hears the same answer and sends nothing, so a
+  stream of answers cannot be read for how you move or how the clock turns.
 - **By transit.** The stop you board at and the stop you get off at are the
   stops nearest you and your destination, so an agent never hears a stop
-  name, the fare (it tracks the distance) or the legs. It hears the number
-  of transfers, the minutes on foot in 5-minute steps, and the lines ridden
-  (`2호선`, `간선 472`), but only a line whose ride runs, from boarding to
-  alighting, farther than 1.5 km from your position and from the registered
-  place it routes to, and has geometry. A village bus from beside your
-  home is never named. With precise access (the gate above) an agent hears
-  every line, still no stop.
-- **On foot and by bicycle.** An agent hears the coarse minutes and
-  kilometres and no street; the instructions, which name the streets you
-  start on, need precise access and `directions`.
+  name, the fare (it tracks the distance) or the legs. It hears the minutes
+  on foot in 5-minute steps and, all or nothing, one line per ride (the
+  first the provider lists): only when every ride runs farther than 1.5 km
+  from your position, the destination and all your registered places, has
+  geometry, and carries a citywide label (a 간선, 지선, 광역, 직행, 순환, 급행
+  or 공항 bus number, `N호선`, or a named rail line such as 신분당선). If any
+  ride fails, no line is named and the transfer count is left out, so the
+  missing ride cannot be read from the gap. A village bus (`마을 서초09`) or
+  a label that starts with a place name is never named. A ride of a kind
+  WhereCtx does not know is never named either.
+- **With precise access** (the gate above), an agent hears each ride's
+  first line, and with `directions` up to 30 steps by any mode, transit
+  included; a transit step names its stations, which precise access already
+  reveals. The access log marks the answer precise only when it carried
+  more than an agent without precise access would hear.
+- **On foot and by bicycle.** An agent hears the minutes in 15-minute steps
+  from 15 on (they are the distance), whole kilometres, and no street; the
+  instructions, which name the streets you start on, need precise access
+  and `directions`.
+- **Provider failures.** An agent hears fixed words per kind (`no route
+  found`). The provider's own status text, cleaned, cut to 40 characters
+  and with every key masked, is kept only for you and the access log.
 - **Only Kakao.** Transit, walking and cycling routes come from Kakao.
   Naver has none, and while Naver answers your routes an agent asking for
   them gets `unsupported_mode`; nothing is sent.
@@ -257,7 +275,10 @@ What leaves the server, and when:
 - **Logged.** Each provider call an agent causes, and each background area
   lookup (credential `system`), is an access log row: `geo.reverse`,
   `geo.geocode`, `geo.route` (by car), `geo.route.transit`,
-  `geo.route.walk`, `geo.route.bike`. No coordinates. A provider failure is
+  `geo.route.walk`, `geo.route.bike`. A kept answer (above) is not a
+  provider call and writes no `geo.route` row. A transit, walk or bike
+  request with a later `departAt` or with `avoid` is refused before any
+  call. No coordinates. A provider failure is
   `error`. Your own calls from the dashboard (the drive-time check, a
   search, a key test) are not logged, as your own reads are not.
 - **Limits.** Every provider call counts against you (30 a minute, whoever

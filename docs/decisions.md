@@ -803,3 +803,54 @@ on `dapi.kakao.com` with the same REST key.
   documented schema; a second transit fixture with two transfers is built
   per that schema to test the line filter at both ends. They were not
   recorded from a live key.
+
+## 2026-10-19: what an agent hears of a route, after a two-model review
+
+A two-model adversarial review of routes by mode found the agent answer
+still leaked more than its steps promised. Each fix below has a test that
+fails without it.
+
+- **No timing or distance oracle.** `arriveAt` was the exact departure
+  plus the exact duration, rounded once, so `arriveAt - departAt` and
+  successive answers a minute apart gave the duration and the start finer
+  than 5 minutes. The departure is now floored to 5 minutes and the arrival
+  is that plus the rounded minutes. Walking and cycling minutes are their
+  distance, so they go in 15-minute steps from 15 on. Each answer is kept
+  per (credential, request) for 5 minutes (`AnswerCache`), after the gates
+  and before the key, so polling hears the identical answer and spends no
+  budget. Rejected: a cache shared across credentials, which would let one
+  agent see another's question.
+- **Segments, not points.** `clearOf` measured each path point. A two-point
+  ride whose stops lie 2 km away can pass 300 m from the start. Distances
+  are now point-to-segment on a local equirectangular plane per keep-out
+  (`clearance.ts`), accurate well under a percent at route scales.
+- **Every place is a keep-out.** The avoid set was the origin and a
+  registered destination. A route to work that runs past home named the bus
+  that does. It is now the origin, the destination and every registered
+  place, measured to a circle's edge or a polygon's outline (the shapes
+  #6 added).
+- **All or nothing.** Dropping only the rides near an end let the dropped
+  ride be read from the gap, the transfer count and the alternatives listed
+  for a ride. Without precise access a transit answer names one line per
+  ride (the first) only when every ride is named; otherwise no line and no
+  `transfers`. Labels must be citywide: `(간선|지선|광역|직행|순환|급행|공항)
+  N`, `N호선`, or a short list of named rail lines. Village buses and
+  place-prefixed labels never are. Rejected: bucketing `transfers` to 0, 1,
+  2+, since with lines named the count is their number less one anyway.
+- **Refuse before sending.** A later `departAt` or `avoid` off driving
+  reached the adapter after a geocode and a budget spend and came back as a
+  502. It is `unsupported_option` (400) before any gate that reads state.
+- **Unknown shapes.** A step type or a vehicle in a shape the schema did
+  not know failed the whole route. Unknown step types are rides of kind
+  `other`, never named; a vehicle with a non-string type or no name is
+  dropped.
+- **Provider words.** An agent hears fixed text per error kind. The status
+  is cleaned, capped at 40 characters and key-masked for the owner and the
+  access log.
+- **Precise steps.** Precise access may read the exact location already,
+  so with `directions` it hears up to 30 steps by any mode, transit legs
+  (with stations) included. `usedPrecise` is true only when the answer
+  carried something the open answer would not.
+- **`unsupported_mode` says what would work.** It carries `supported` and,
+  when another provider with a key routes the mode, a hint to switch
+  `geoProvider`. Still no automatic fallback, for the reason above.
