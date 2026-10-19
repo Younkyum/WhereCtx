@@ -249,6 +249,19 @@ describe("polygon outline text", () => {
     expect(lib.parseOutline("1")).toEqual({ kind: "badLine", line: 1 });
   });
 
+  it("takes only plain decimals, so hex, exponents and Infinity are not points", () => {
+    expect(lib.parseOutline("0x10, 5")).toEqual({ kind: "badLine", line: 1 });
+    expect(lib.parseOutline("1, 2\n1e1, 5")).toEqual({ kind: "badLine", line: 2 });
+    expect(lib.parseOutline("Infinity, 5")).toEqual({ kind: "badLine", line: 1 });
+    expect(lib.parseOutline("1., 5")).toEqual({ kind: "badLine", line: 1 });
+    expect(lib.parseOutline("+1.5, -2\n1.5, -1\n2, -1").kind).toBe("ring");
+  });
+
+  it("names a point that repeats the one before it, skipping blank lines between", () => {
+    expect(lib.parseOutline("1, 2\n\n1, 2\n1, 3\n2, 3")).toEqual({ kind: "repeated", line: 3 });
+    expect(lib.parseOutline("1, 2\n1, 3\n2, 3\n2.0, 3")).toEqual({ kind: "repeated", line: 4 });
+  });
+
   it("needs three distinct corners", () => {
     expect(lib.parseOutline("")).toEqual({ kind: "tooFew" });
     expect(lib.parseOutline("1, 2\n1, 3\n1, 2")).toEqual({ kind: "tooFew" });

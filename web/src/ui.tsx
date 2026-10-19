@@ -337,29 +337,42 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** Set by a DialogForm while its submit runs, so its FormDialog ignores Escape until the request settles. */
+const SubmittingContext = createContext<{ current: boolean } | null>(null);
+
 /**
  * The lightbox a create or edit form opens in. Its body mounts only while
  * open, so Cancel, Escape and the close button all discard the draft.
  */
 export function FormDialog({ isOpen, onClose, children }: { isOpen: boolean; onClose: () => void; children: ReactNode }) {
+  const submitting = useRef(false);
   return (
     <Dialog
       isOpen={isOpen}
       onOpenChange={(open) => {
-        if (!open) onClose();
+        if (!open && !submitting.current) onClose();
       }}
       purpose="form"
       width={600}
     >
-      {isOpen ? children : null}
+      <SubmittingContext.Provider value={submitting}>{isOpen ? children : null}</SubmittingContext.Provider>
     </Dialog>
   );
+}
+
+/** A refused submit as a localized title over the server's own words, which are often English. */
+function failureText(e: unknown, t: Translate): { title: string; detail: string } {
+  if (e instanceof ApiError) {
+    const key = errorKey(e);
+    return { title: t(key ?? "err.generic"), detail: [...(key ? [] : [e.message]), ...e.detail].join("; ") };
+  }
+  return { title: t("err.generic"), detail: e instanceof Error ? e.message : "" };
 }
 
 /**
  * A FormDialog's content: title, fields, Cancel and submit. A submit that
  * succeeds closes the dialog; one that fails keeps it open with the server's
- * answer under the fields.
+ * answer under the fields. While it runs, nothing closes the dialog.
  */
 export function DialogForm({
   title,
@@ -380,7 +393,8 @@ export function DialogForm({
 }) {
   const { t } = useApp();
   const formId = useId();
-  const running = useRef(false);
+  const ownRunning = useRef(false);
+  const running = useContext(SubmittingContext) ?? ownRunning;
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
   const submit = async (e: FormEvent) => {
@@ -397,9 +411,13 @@ export function DialogForm({
       if (!isHandled(err)) setFailure(err);
       return;
     }
+    running.current = false;
     onClose();
   };
-  const detail = failure instanceof ApiError ? failure.detail.join("; ") : "";
+  const close = () => {
+    if (!running.current) onClose();
+  };
+  const shown = failure ? failureText(failure, t) : null;
   return (
     <Layout
       header={
@@ -407,7 +425,7 @@ export function DialogForm({
           title={title}
           subtitle={subtitle}
           onOpenChange={(open) => {
-            if (!open) onClose();
+            if (!open) close();
           }}
         />
       }
@@ -421,9 +439,9 @@ export function DialogForm({
       footer={
         <LayoutFooter hasDivider>
           <VStack gap={3}>
-            {failure ? <Banner status="error" title={describe(failure, t)} description={detail || undefined} /> : null}
+            {shown ? <Banner status="error" title={shown.title} description={shown.detail || undefined} /> : null}
             <HStack gap={2} hAlign="end" wrap="wrap">
-              <Button label={t("common.cancel")} onClick={onClose} />
+              <Button label={t("common.cancel")} onClick={close} isDisabled={busy} />
               <Button type="submit" form={formId} label={submitLabel} variant="primary" isLoading={busy} isDisabled={!canSubmit} />
             </HStack>
           </VStack>

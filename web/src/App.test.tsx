@@ -843,6 +843,103 @@ describe("place rules and webhook places", () => {
     expect(dialogButton("Save").disabled).toBe(false);
   });
 
+  it("titles a refused save in the page's language and shows the server's words below", async () => {
+    Object.defineProperty(navigator, "language", { configurable: true, value: "ko-KR" });
+    try {
+      route("GET /v1/places", () => ({ status: 200, body: { places: [GYM] } }));
+      route("POST /v1/places", () => ({ status: 409, body: { error: "place limit reached (100)" } }));
+      await open("#places");
+      await click(button("규칙 편집"));
+      await click(dialogButton("저장"));
+      expect(openDialog()!.textContent).toContain("문제가 생겼어요. 다시 시도해 주세요.");
+      expect(openDialog()!.textContent).toContain("place limit reached (100)");
+    } finally {
+      delete (navigator as { language?: string }).language;
+    }
+  });
+
+  const NYC = { name: "nyc", type: "custom", lat: 40.7, lon: -74.0, radiusM: 100 };
+
+  it("reads a typed outline's centre back and warns, without blocking, when it lands far from the place", async () => {
+    const posted = servePlaces([NYC]);
+    await open("#places");
+    await click(button("Edit rules"));
+    await click(dialogButton("Polygon"));
+    await fill(vertices(), "40.70, -74.00\n40.71, -74.00\n40.71, -74.01");
+    expect(openDialog()!.textContent).toContain("Centre ≈ lat 40.7067, lon -74.0033");
+    expect(openDialog()!.textContent).not.toContain("swap");
+
+    await fill(vertices(), "-74.00, 40.70\n-74.00, 40.71\n-74.01, 40.71");
+    expect(openDialog()!.textContent).toContain("Centre ≈ lat -74.0033, lon 40.7067");
+    expect(openDialog()!.textContent).toMatch(/about [\d,]+ km from where the place is now\. If you typed "lon, lat", swap/);
+    expect(dialogButton("Save").disabled).toBe(false);
+    await click(dialogButton("Save"));
+    expect(posted).toHaveLength(1);
+  });
+
+  it("says why Save is off: a repeated point names its line, an empty polygon asks for 3 points", async () => {
+    servePlaces([GYM]);
+    await open("#places");
+    await click(button("Edit rules"));
+    await click(dialogButton("Polygon"));
+    expect(vertices().value).toBe("");
+    expect(openDialog()!.textContent).toContain("Enter at least 3 points.");
+    expect(dialogButton("Save").disabled).toBe(true);
+
+    await fill(vertices(), "37.5, 127.0\n37.5, 127.0\n37.501, 127.001");
+    expect(openDialog()!.textContent).toContain("Line 2 repeats the point before it.");
+    expect(dialogButton("Save").disabled).toBe(true);
+  });
+
+  async function pressEscape() {
+    await act(async () => {
+      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    await settle();
+  }
+
+  it("discards the draft on Escape", async () => {
+    const posted = servePlaces([GYM]);
+    await open("#places");
+    await click(button("Edit rules"));
+    await fill(inputLabelled("Count an arrival after"), "5");
+    await pressEscape();
+    expect(openDialog()).toBeUndefined();
+    expect(posted).toEqual([]);
+
+    await click(button("Edit rules"));
+    expect(inputLabelled("Count an arrival after").value).toBe("0");
+  });
+
+  it("stays open while a save is in flight, whatever asks it to close, and closes once it lands", async () => {
+    let land!: () => void;
+    const posted: unknown[] = [];
+    route("GET /v1/places", () => ({ status: 200, body: { places: [GYM] } }));
+    route("POST /v1/places", (b) => {
+      posted.push(b);
+      return new Promise<Reply>((resolve) => (land = () => resolve({ status: 201, body: { place: b } })));
+    });
+    const reloads = () => calls.filter((c) => c === "GET /v1/places").length;
+    await open("#places");
+    await click(button("Edit rules"));
+    const before = reloads();
+    await click(dialogButton("Save"));
+    expect(posted).toHaveLength(1);
+
+    expect(dialogButton("Cancel").disabled).toBe(true);
+    await click(dialogButton("Cancel"));
+    await pressEscape();
+    await click(openDialog()!.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!);
+    expect(openDialog()!.textContent).toContain("Rules for gym");
+    expect(reloads()).toBe(before);
+
+    await act(async () => land());
+    await settle();
+    expect(openDialog()).toBeUndefined();
+    expect(reloads()).toBe(before + 1);
+    expect(posted).toHaveLength(1);
+  });
+
   const placeItem = (name: string) =>
     [...openDialog()!.querySelectorAll("li")].find((li) => li.textContent?.startsWith(name))!.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
 

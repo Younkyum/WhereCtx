@@ -454,7 +454,10 @@ export function bearerHeader(token: string): { name: typeof AUTH_HEADER; value: 
 export type OutlineParse =
   | { kind: "ring"; ring: Array<[lon: number, lat: number]> }
   | { kind: "badLine"; line: number }
+  | { kind: "repeated"; line: number }
   | { kind: "tooFew" };
+
+const DECIMAL = /^[+-]?\d+(\.\d+)?$/;
 
 /**
  * Reads one "lat, lon" point per line (the order maps copy them in) into the
@@ -468,8 +471,10 @@ export function parseOutline(text: string): OutlineParse {
     if (!line) continue;
     const parts = line.split(/\s*,\s*|\s+/);
     const [lat, lon] = parts.map(Number);
-    const ok = parts.length === 2 && !parts.includes("") && Math.abs(lat!) <= 90 && Math.abs(lon!) <= 180;
+    const ok = parts.length === 2 && parts.every((p) => DECIMAL.test(p)) && Math.abs(lat!) <= 90 && Math.abs(lon!) <= 180;
     if (!ok) return { kind: "badLine", line: i + 1 };
+    const prev = points[points.length - 1];
+    if (prev && prev[0] === lon && prev[1] === lat) return { kind: "repeated", line: i + 1 };
     points.push([lon!, lat!]);
   }
   const first = points[0];

@@ -19,6 +19,8 @@ import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { useState } from "react";
+import { haversineMeters } from "../../../src/geofence/distance";
+import { polygonCentroid } from "../../../src/geofence/polygon";
 import { DEFAULT_PLACE_RULES, PLACE_EVENT_TYPES, type PlaceEventType } from "../../../src/types";
 import { api } from "../api";
 import { useApp } from "../context";
@@ -29,6 +31,8 @@ import { DialogForm, Empty, FormDialog, Hint, Loaded, Panel, Row, Rows, useNotif
 const MAX_DWELL_MIN = 1440;
 const DEFAULT_APPROACH_M = 500;
 const MAX_RADIUS_M = 100_000;
+/** A new outline centred farther than this from the place probably has its numbers in "lon, lat" order. */
+const SWAP_SUSPECT_M = 100_000;
 const SHAPES = ["circle", "polygon"] as const;
 type Shape = (typeof SHAPES)[number];
 
@@ -111,9 +115,18 @@ function RulesForm({ place, onClose, onSaved }: { place: Place; onClose: () => v
   const outlineProblem =
     outline.kind === "badLine"
       ? t("placeRules.badLine", { n: outline.line })
-      : outline.kind === "tooFew" && vertices.trim() !== ""
-        ? t("placeRules.tooFew")
-        : null;
+      : outline.kind === "repeated"
+        ? t("placeRules.repeated", { n: outline.line })
+        : outline.kind === "tooFew"
+          ? t("placeRules.tooFew")
+          : null;
+  const centre = outline.kind === "ring" ? polygonCentroid(outline.ring) : null;
+  const awayM = centre ? haversineMeters(place.lat, place.lon, centre.lat, centre.lon) : 0;
+  const outlineStatus = outlineProblem
+    ? ({ type: "error", message: outlineProblem } as const)
+    : awayM > SWAP_SUSPECT_M
+      ? ({ type: "warning", message: t("placeRules.farAway", { km: Math.round(awayM / 1000) }) } as const)
+      : undefined;
   const minutesOk = (m: number | null) => m != null && m >= 0 && m <= MAX_DWELL_MIN;
   const rulesOk =
     minutesOk(enterMin) && minutesOk(exitMin) && (!watchApproach || (approachM != null && approachM >= 10 && approachM <= 50_000));
@@ -197,16 +210,19 @@ function RulesForm({ place, onClose, onSaved }: { place: Place; onClose: () => v
           <SegmentedControlItem value="polygon" label={t("placeRules.polygon")} />
         </SegmentedControl>
         {shape === "polygon" ? (
-          <TextArea
-            label={t("placeRules.vertices")}
-            description={t("placeRules.verticesDesc")}
-            value={vertices}
-            onChange={setVertices}
-            rows={6}
-            placeholder={"37.5665, 126.9780\n37.5670, 126.9790\n37.5660, 126.9795"}
-            hasSpellCheck={false}
-            status={outlineProblem ? { type: "error", message: outlineProblem } : undefined}
-          />
+          <VStack gap={1}>
+            <TextArea
+              label={t("placeRules.vertices")}
+              description={t("placeRules.verticesDesc")}
+              value={vertices}
+              onChange={setVertices}
+              rows={6}
+              placeholder={"37.5665, 126.9780\n37.5670, 126.9790\n37.5660, 126.9795"}
+              hasSpellCheck={false}
+              status={outlineStatus}
+            />
+            {centre ? <Hint>{t("placeRules.centre", { lat: centre.lat.toFixed(4), lon: centre.lon.toFixed(4) })}</Hint> : null}
+          </VStack>
         ) : (
           <Grid columns={{ minWidth: 150, max: 3 }} gap={3}>
             <NumberInput label={t("places.lat")} value={lat} onChange={setLat} min={-90} max={90} step={0.000001} isRequired />
