@@ -161,12 +161,12 @@ protected from it.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `get_presence` | – | coarse status/label/motion/age, `freshness`, `lastReportAgoSec` (`updatedAgoSec` is the same), `lastMovedAgoSec`, `stale` (no GPS); `area` when allowed. `{status:"hidden"}` in hidden mode |
+| `get_presence` | – | coarse status/label/motion/age, `freshness`, `lastReportAgoSec` (`updatedAgoSec` is the same), `lastMovedAgoSec`, `stale` (no GPS); `area` when allowed; `transition: {kind, placeType, forSec}` while an arrival or departure waits out its place's dwell time. `{status:"hidden"}` in hidden mode |
 | `get_precise_location` | `reason: string` | `{lat, lon, accuracyM?, mapUrl, updatedAgoSec}` or an error if denied by policy/home-protection |
-| `is_near_place` | `name: string` | `{name, inside, near, freshness, lastReportAgoSec}` as of the last report (no coordinates) |
-| `list_places` | – | `[{name, type}]` (admins also get coordinates) |
+| `is_near_place` | `name: string` | `{name, inside, near, confirmed, pending, freshness, lastReportAgoSec}` as of the last report (no coordinates) |
+| `list_places` | – | `[{name, type}]` (a `manage_places` token also gets coordinates, radius, a polygon's outline and the rules) |
 | `get_location_age` | – | `{updatedAgoSec, updatedAt, stale, freshness, lastReportAgoSec, lastMovedAgoSec}`; ages are from when the server heard the phone, `updatedAt` is the device's own time of the fix |
-| `list_recent_presence_events` | `limit?: number` | recent events (place names omitted for agents) |
+| `list_recent_presence_events` | `limit?: number` | recent events, `approaching_place` included (place names omitted for agents) |
 | `create_location_reminder` | `place: string, message: string` | `{id, place, message}`; the place must exist; refused in hidden mode |
 | `create_place` | `name, type, lat, lon, radiusM?` or `name, type, address, pick?, radiusM?` | `{name, type, radiusM, address?}`; registers/replaces a geofence. An address is looked up with the user's maps provider, which needs the user's maps on, `manage_places` and a presence the agent may see; several matches come back numbered for `pick` |
 | `remember_current_place` | `name, type?, radiusM?` | `{name, type, radiusM}`; saves the **current** location as a place (coordinates are never returned) |
@@ -177,6 +177,22 @@ All tools apply the same privacy rules as the REST API: hidden mode withholds,
 precise is policy-gated, home coordinates are protected, and coarse tools never
 return raw coordinates or geohash.
 
+### Confirmed and pending places
+
+A place may ask for a few minutes inside before an arrival counts, or
+outside before a departure counts. Presence follows the **confirmed**
+place: `status` stays `work` while a departure from work waits out its
+time, and does not say `work` while an arrival there waits. `is_near_place`
+separates the two. `inside` is where the last report is; `confirmed` is
+whether presence counts the user at the place; `pending` is `entering` or
+`leaving` while a wait is on, else `null`. Both are always given, so the
+reply does not reveal whether a place has a wait set. `get_presence` adds
+`transition: {kind: "entering" | "leaving", placeType, forSec}` while one
+is pending, without the place's name. Waits resolve within about a minute.
+`presence.approaching_place` fires once as the user heads toward a place
+that watches for it. Agents never see a place's shape, radius, coordinates
+or rules; polygon places answer the same tools as circles.
+
 ### Home place protection
 
 By default (`PROTECT_HOME_PLACE=true`, toggleable live from the dashboard's
@@ -185,6 +201,10 @@ Privacy panel), `create_place` and `remember_current_place` refuse to create a
 unless the credential carries the `manage_places` scope (an admin token). This stops an agent
 from moving the home geofence, which would mislead the home-coordinate privacy
 protections. Non-home places stay writable by agent tokens.
+
+Both tools write circles, so they refuse to overwrite a polygon place for any
+credential: it would silently lose its outline. A polygon place is changed
+over REST (`POST /v1/places`) or in the dashboard.
 
 Every `tools/call` request is recorded in the owner's access log (the token
 name, or the connected app's name for an OAuth client; tool; outcome; and the reason given for `get_precise_location`), one

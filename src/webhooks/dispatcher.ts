@@ -50,8 +50,15 @@ export interface DispatcherOptions {
   drainBudgetMs?: number;
 }
 
-function subscribed(hook: Webhook, type: string): boolean {
-  return hook.events.includes("*") || hook.events.includes(type);
+/**
+ * Whether a hook wants an event: the event type is selected, and with a
+ * place filter, an event that names a place (presence.updated inside one
+ * included) names one of the hook's places. An event naming no place passes
+ * the place filter.
+ */
+export function wants(hook: Pick<Webhook, "events" | "places">, ev: Pick<PresenceEvent, "type" | "placeName">): boolean {
+  if (!hook.events.includes("*") && !hook.events.includes(ev.type)) return false;
+  return !hook.places || ev.placeName === undefined || hook.places.includes(ev.placeName);
 }
 
 export class WebhookDispatcher {
@@ -196,7 +203,7 @@ export class WebhookDispatcher {
       // it is not (paused, resumed, re-subscribed), stop and let the next tick
       // start from the stored hook.
       const advance = () => this.opts.webhooksStore.setCursor(hook, ev.createdAt, ev.id);
-      if (!subscribed(hook, ev.type)) {
+      if (!wants(hook, ev)) {
         if (!(await advance())) return;
         continue;
       }

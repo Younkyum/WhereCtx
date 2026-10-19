@@ -24,7 +24,11 @@ The default agent-facing view (`GET /v1/presence`, MCP `get_presence`) is:
 ```
 
 No latitude, longitude, geohash, accuracy, or place coordinates. Place lists
-returned to agents contain only `name` + `type`.
+returned to agents contain only `name` + `type`: never a polygon's outline,
+a radius, a label, or a place's rules (dwell times, approach distance,
+recorded events, notify switches). While an arrival or departure waits out
+its dwell time, `get_presence` says `entering` or `leaving`, the place type
+and for how long, never the place's name.
 
 Each person has their own presence, places, and privacy settings. A token
 belongs to the person who made it and reads only that person's data. The
@@ -62,8 +66,13 @@ when **all** hold:
 When `hideHomeExactCoordinates` is on (default) and you are at or near a `home`
 place, precise location is **denied outright** — not rounded or blurred.
 Coordinate rounding is not home-address anonymization, so WhereCtx refuses
-instead. Disable `HIDE_HOME_EXACT_COORDINATES` if you want home coordinates
-exposed to authorized agents.
+instead. "At or near" is measured: your last point is inside a home place
+or within its near band, whatever your status says. A place with a dwell
+time can leave your status at a café for a few minutes after you are home;
+your coordinates are protected from the first reading at home all the same.
+The same check covers agents, REST, precise shares and the dashboard map.
+Disable `HIDE_HOME_EXACT_COORDINATES` if you want home coordinates exposed to
+authorized agents.
 
 ### Home *place* protection
 
@@ -370,6 +379,18 @@ new id; if that person has no passkey yet, `reset-access` gives them an access
 code (README, "Recover access").
 
 ## Webhooks & SSRF
+
+A place with `notifyWebhooks` off keeps its name and its own events away
+from every webhook: its events, and `presence.updated` while inside it, are
+stored with `webhook = 0` and the dispatcher reads only `webhook = 1` rows,
+in SQL. They still appear in the person's own history and to their agents.
+It does not hide your status: other events, such as
+`presence.became_stale` or `presence.privacy_changed` while you are there,
+still carry `status`, so a quiet `home` place still shows as `"home"` in
+them. A place
+that no longer exists counts as quiet: its rules went with it, so leaving a
+deleted place is recorded and never delivered. A hook's place filter
+narrows place events further.
 
 Webhook delivery is a server-side outbound request to an operator-supplied URL.
 WhereCtx blocks targets that resolve to private/reserved addresses (loopback,

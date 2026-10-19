@@ -31,7 +31,7 @@ import {
 } from "../model";
 import { routeScene } from "../mapScene";
 import { MapView, tileHost, useMapTiles } from "../MapView";
-import { FormDialog, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useFormat, useLoad, useNotify } from "../ui";
+import { DialogForm, FormDialog, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useFormat, useLoad, useNotify } from "../ui";
 
 /** Where each provider documents getting a key (checked 2026-10-19). */
 const KEY_DOCS: Record<GeoProviderName, string> = {
@@ -233,14 +233,13 @@ function KeyRow({
         {saved ? <Button label={t("common.delete")} size="sm" variant="destructive" clickAction={remove} /> : null}
       </Row>
       {refusal?.code ? <Refusal provider={provider} refusal={refusal} onDismiss={() => setRefusal(null)} /> : null}
-      {editing ? (
-        <FormDialog
-          isOpen
-          onOpenChange={edit}
+      <FormDialog isOpen={editing} onClose={() => edit(false)}>
+        <DialogForm
           title={t(saved ? "maps.replaceKeyTitle" : "maps.addKeyTitle", { provider: t(`maps.p.${provider}`) })}
           submitLabel={t("maps.saveKey")}
           canSubmit={complete}
           onSubmit={save}
+          onClose={() => edit(false)}
         >
           {fields.map((f) => (
             <TextInput
@@ -253,8 +252,8 @@ function KeyRow({
             />
           ))}
           <Hint>{t("maps.keyWriteOnly")}</Hint>
-        </FormDialog>
-      ) : null}
+        </DialogForm>
+      </FormDialog>
     </VStack>
   );
 }

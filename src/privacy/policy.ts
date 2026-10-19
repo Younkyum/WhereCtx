@@ -14,7 +14,8 @@
  *   - "coarse": agents see presence summary (no raw GPS); precise is gated.
  *   - "precise": same coarse summary; precise is gated by scope + policy + reason.
  *   - Home protection is a DENY, not a blur: when hideHomeExactCoordinates and
- *     the user is at/near a home place, precise location is refused outright.
+ *     the stored point is at/near a home place (`atOrNearHome`, measured, not
+ *     the status), precise location is refused outright.
  *   - The agent-facing coarse view never includes the geohash or raw coords.
  */
 
@@ -88,14 +89,9 @@ export function buildPreciseView(
   };
 }
 
-/** Whether the person is at or near a `home` place right now. */
-export function isAtOrNearHome(presence: PresenceContext): boolean {
-  return presence.status === "home" || presence.status === "near_home";
-}
-
 /** Whether home-coordinate protection applies to the current presence. */
 export function shouldHideExact(presence: PresenceContext, settings: PrivacySettings): boolean {
-  return settings.hideHomeExactCoordinates && isAtOrNearHome(presence);
+  return settings.hideHomeExactCoordinates && presence.atOrNearHome;
 }
 
 // ---- people (location sharing between members) ----
@@ -170,7 +166,7 @@ function preciseWithheld(
 ): PreciseWithheld | undefined {
   if (!share.hideHomeExact) return undefined;
   if (!owner.hasHomePlace) return "no_home_place";
-  if (presence && isAtOrNearHome(presence)) return "at_home";
+  if (presence?.atOrNearHome) return "at_home";
   return undefined;
 }
 

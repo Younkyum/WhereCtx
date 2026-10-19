@@ -31,7 +31,8 @@ import {
 } from "../model";
 import { placesScene, type LatLon } from "../mapScene";
 import { MapView, useMapTiles } from "../MapView";
-import { Empty, FormDialog, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
+import { DialogForm, Empty, FormDialog, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
+import { PlaceRules } from "./PlaceRules";
 
 function usePlaceTypes() {
   const { t } = useApp();
@@ -60,8 +61,7 @@ export function PlacesView() {
     }
     await reload();
   };
-  const close = (open: boolean) => {
-    if (open) return;
+  const close = () => {
     setAdding(null);
     setPicked(null);
   };
@@ -117,9 +117,16 @@ export function PlacesView() {
           setAdding("coords");
         }}
       />
-      {adding === "address" ? <AddByAddress onOpenChange={close} onAdded={added} /> : null}
-      {adding === "here" ? <AddHere onOpenChange={close} onAdded={added} /> : null}
-      {adding === "coords" ? <AddByCoordinates picked={picked} onOpenChange={close} onAdded={added} /> : null}
+      <PlaceRules state={places} onSaved={reload} />
+      <FormDialog isOpen={adding !== null} onClose={close}>
+        {adding === "address" ? (
+          <AddByAddress onClose={close} onAdded={added} />
+        ) : adding === "here" ? (
+          <AddHere onClose={close} onAdded={added} />
+        ) : adding === "coords" ? (
+          <AddByCoordinates picked={picked} onClose={close} onAdded={added} />
+        ) : null}
+      </FormDialog>
     </Page>
   );
 }
@@ -128,11 +135,11 @@ export function PlacesView() {
 const mapLink = (c: GeoCandidate) => `https://map.kakao.com/link/map/${encodeURIComponent(c.label)},${c.lat},${c.lon}`;
 
 interface AddProps {
-  onOpenChange: (open: boolean) => void;
+  onClose: () => void;
   onAdded: () => Promise<void>;
 }
 
-function AddByAddress({ onOpenChange, onAdded }: AddProps) {
+function AddByAddress({ onClose, onAdded }: AddProps) {
   const { t } = useApp();
   const types = usePlaceTypes();
   const [query, setQuery] = useState("");
@@ -165,13 +172,12 @@ function AddByAddress({ onOpenChange, onAdded }: AddProps) {
     await onAdded();
   };
   return (
-    <FormDialog
-      isOpen
-      onOpenChange={onOpenChange}
+    <DialogForm
       title={t("places.byAddress")}
       submitLabel={t("places.save")}
       canSubmit={chosen !== null && name.trim() !== ""}
       onSubmit={save}
+      onClose={onClose}
     >
       <HStack gap={2} wrap="wrap" vAlign="end">
         <TextInput label={t("places.byAddressQuery")} value={query} onChange={setQuery} width={320} />
@@ -209,11 +215,11 @@ function AddByAddress({ onOpenChange, onAdded }: AddProps) {
           </HStack>
         </VStack>
       ) : null}
-    </FormDialog>
+    </DialogForm>
   );
 }
 
-function AddHere({ onOpenChange, onAdded }: AddProps) {
+function AddHere({ onClose, onAdded }: AddProps) {
   const { t } = useApp();
   const types = usePlaceTypes();
   const [name, setName] = useState("");
@@ -223,18 +229,18 @@ function AddHere({ onOpenChange, onAdded }: AddProps) {
     await onAdded();
   };
   return (
-    <FormDialog isOpen onOpenChange={onOpenChange} title={t("places.addHere")} submitLabel={t("places.addHereButton")} canSubmit={name.trim() !== ""} onSubmit={add}>
+    <DialogForm title={t("places.addHere")} submitLabel={t("places.addHereButton")} canSubmit={name.trim() !== ""} onSubmit={add} onClose={onClose}>
       <HStack gap={2} wrap="wrap" vAlign="end">
         <TextInput label={t("places.name")} value={name} onChange={setName} isRequired width={240} />
         <Selector label={t("places.type")} value={type} options={types} onChange={(v) => oneOf(PLACE_TYPES, v) && setType(v)} width={160} />
       </HStack>
       <Hint>{t("places.addHereHint")}</Hint>
-    </FormDialog>
+    </DialogForm>
   );
 }
 
 /** `picked`: a point clicked on the map, which fills in the coordinates. */
-function AddByCoordinates({ picked, onOpenChange, onAdded }: AddProps & { picked: LatLon | null }) {
+function AddByCoordinates({ picked, onClose, onAdded }: AddProps & { picked: LatLon | null }) {
   const { t } = useApp();
   const types = usePlaceTypes();
   const [name, setName] = useState("");
@@ -257,7 +263,7 @@ function AddByCoordinates({ picked, onOpenChange, onAdded }: AddProps & { picked
     await onAdded();
   };
   return (
-    <FormDialog isOpen onOpenChange={onOpenChange} title={t("places.byCoords")} submitLabel={t("places.save")} canSubmit={valid} onSubmit={save}>
+    <DialogForm title={t("places.byCoords")} submitLabel={t("places.save")} canSubmit={valid} onSubmit={save} onClose={onClose}>
       <Grid columns={{ minWidth: 180, max: 2 }} gap={3}>
         <TextInput label={t("places.name")} value={name} onChange={setName} isRequired />
         <Selector label={t("places.type")} value={type} options={types} onChange={(v) => oneOf(PLACE_TYPES, v) && setType(v)} />
@@ -266,7 +272,7 @@ function AddByCoordinates({ picked, onOpenChange, onAdded }: AddProps & { picked
         <NumberInput label={t("places.radius")} value={radius} onChange={setRadius} min={1} step={10} isRequired />
       </Grid>
       <Hint>{t("places.byCoordsHint")}</Hint>
-    </FormDialog>
+    </DialogForm>
   );
 }
 

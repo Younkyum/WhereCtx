@@ -1,31 +1,41 @@
 /**
  * Presence service — the framework-agnostic core domain logic.
  *
- * Takes a normalized reading and: computes geofence status, applies motion
- * refinement, derives coarse (geohash) location, persists the new presence,
- * diffs against the previous state to emit events (updated / entered_place /
- * left_place / privacy_changed), optionally records raw history, and fires
- * matching location reminders.
+ * Takes a normalized reading and: finds the place it is inside (the raw
+ * geofence verdict), steps the dwell rules to the confirmed place
+ * (geofence/dwell.ts), takes the status from the confirmed place, applies
+ * motion refinement, derives coarse (geohash) location, checks approach
+ * rings, persists the new presence, emits events (updated / entered_place /
+ * left_place / approaching_place / privacy_changed) as each place's rules
+ * allow, optionally records raw history, and fires matching location
+ * reminders. A pending enter or leave is confirmed later by `sweepDwell`.
  *
  * Webhook delivery is NOT done here — the service returns the events so the
  * transport layer (Phase 4) can dispatch them. This keeps the core testable.
  */
 
 import type { WhereCtxConfig } from "../config.js";
-import { computeGeofence, labelForStatus } from "../geofence/engine.js";
+import { computeGeofence, labelForStatus, statusFor } from "../geofence/engine.js";
 import { encodeGeohash, haversineMeters } from "../geofence/distance.js";
+import { approach } from "../geofence/approach.js";
+import { insidePlace, nearHomePlace } from "../geofence/shape.js";
+import { step, type DwellState, type DwellTransition } from "../geofence/dwell.js";
 import { AREA_REFRESH_MOVE_M, type AreaUpdate } from "../geo/area.js";
 import type { NormalizedReading } from "../normalizer/types.js";
-import type {
-  CoarsePlaceType,
-  Place,
-  PresenceContext,
-  PresenceEvent,
-  PresenceStatus,
-  PrivacySettings,
-  UserId,
+import {
+  DEFAULT_PLACE_RULES,
+  type CoarsePlaceType,
+  type Motion,
+  type Place,
+  type PlaceEventType,
+  type PlaceRules,
+  type PresenceContext,
+  type PresenceEvent,
+  type PresenceStatus,
+  type PrivacySettings,
+  type UserId,
 } from "../types.js";
-import { nowIso, type Clock, systemClock } from "../util/time.js";
+import { type Clock, systemClock } from "../util/time.js";
 import { KeyedMutex } from "../util/mutex.js";
 import { arrivalFor, isPastWindow, offlineAfterSec } from "./freshness.js";
 import type { EventsStore, NewPresenceEvent } from "../store/eventsStore.js";
@@ -34,6 +44,8 @@ import type { PlacesStore } from "../store/placesStore.js";
 import {
   type PresenceStore,
   type StoredPresence,
+  dwellFields,
+  dwellOf,
   toPresenceContext,
 } from "../store/presenceStore.js";
 import type { Reminder, RemindersStore } from "../store/remindersStore.js";
@@ -69,6 +81,38 @@ function coarsePlaceTypeFor(place: Place | undefined): CoarsePlaceType | undefin
   if (place.type === "work") return "work";
   return "unknown";
 }
+
+/** No enter with a delay is confirmed while the latest reading looks like driving past. */
+const DRIVE_BY_SPEED_MPS = 3;
+
+function drivingBy(motion: Motion | undefined, speedMps: number | undefined): boolean {
+  return motion === "driving" || motion === "transit" || (speedMps ?? 0) > DRIVE_BY_SPEED_MPS;
+}
+
+/**
+ * A place that no longer exists is quiet: its rules are gone, and it may
+ * have been quiet, so its leave is recorded but never reaches a webhook.
+ */
+const GONE_PLACE_RULES: PlaceRules = { ...DEFAULT_PLACE_RULES, notifyWebhooks: false };
+
+/** The rules of a place by name; a deleted place is quiet. */
+function rulesIn(places: readonly Place[]): (name: string) => PlaceRules {
+  const byName = new Map(places.map((p) => [p.name, p]));
+  return (name) => byName.get(name) ?? GONE_PLACE_RULES;
+}
+
+/** Where a position stands after a dwell step: the confirmed place's status, refined by motion. */
+interface Verdict {
+  dwell: DwellState;
+  transitions: DwellTransition[];
+  confirmed: Place | undefined;
+  status: PresenceStatus;
+  label: string;
+}
+
+/** The pending enter, pending leave, approached places and home flag, compared to skip writes that change nothing. */
+const bookkeeping = (p: StoredPresence): string =>
+  JSON.stringify([p.pendingExitSince ?? null, p.pendingPlace ?? null, p.approachedPlaces ?? [], p.atOrNearHome]);
 
 export class PresenceService {
   private readonly clock: Clock;
@@ -119,22 +163,20 @@ export class PresenceService {
       this.deps.presenceStore.getCurrent(userId),
     ]);
 
-    const geo = computeGeofence(
-      reading.precise.lat,
-      reading.precise.lon,
+    const now = this.clock();
+    const verdict = this.judge({ point: reading.precise, motion: reading.motion, places, dwell: dwellOf(prev), now });
+    const { status, label } = verdict;
+    const approached = approach({
       places,
-      config.geofence.nearRadiusMultiplier,
-    );
+      approached: prev?.approachedPlaces ?? [],
+      prev: prev?.precise && { ...prev.precise, receivedAt: prev.receivedAt },
+      now: { ...reading.precise, motion: reading.motion },
+      at: now,
+      confirmed: verdict.dwell.current,
+      candidate: verdict.dwell.candidate?.name ?? null,
+    });
 
-    // Motion refinement: someone who is "away" but clearly moving is in transit.
-    let status: PresenceStatus = geo.status;
-    let label = geo.label;
-    if (status === "away" && (reading.motion === "driving" || reading.motion === "transit")) {
-      status = "transit";
-      label = labelForStatus("transit");
-    }
-
-    const receivedAt = nowIso(this.clock);
+    const receivedAt = now.toISOString();
     const areaFor = prev?.areaFor;
     const areaStillHolds =
       prev !== null &&
@@ -147,7 +189,7 @@ export class PresenceService {
       precise: reading.precise,
       coarse: {
         geohash: encodeGeohash(reading.precise.lat, reading.precise.lon),
-        placeType: coarsePlaceTypeFor(geo.matchedPlace),
+        placeType: coarsePlaceTypeFor(verdict.confirmed),
         // Kept while the reading is near the point it was looked up for; the
         // background lookup (afterReading) confirms or replaces it.
         ...(areaStillHolds ? { city: prev.coarse?.city, area: prev.coarse?.area } : {}),
@@ -163,14 +205,16 @@ export class PresenceService {
       updatedAt: reading.updatedAt,
       receivedAt,
       ...arrivalFor(prev, reading.precise, receivedAt),
+      atOrNearHome: this.atOrNearHome(reading.precise, places),
       staleAfterSec: offlineAfterSec(reading.source, config.privacy),
-      currentPlaceName: geo.matchedPlace?.name,
+      ...dwellFields(verdict.dwell),
+      approachedPlaces: approached.approached,
       staleEventFired: false,
     };
 
     await this.deps.presenceStore.upsert(next);
 
-    const events = await this.emitTransitionEvents(userId, prev, next);
+    const events = await this.emitEvents(userId, prev, next, places, verdict.transitions, approached.fired);
 
     // Raw history (opt-in). Pruning runs either way, so points kept before
     // history was turned off still age out.
@@ -186,7 +230,7 @@ export class PresenceService {
     await this.deps.historyStore.prune(userId, settings.retentionHours);
 
     // Fire reminders attached to a newly-entered place.
-    const triggeredReminders = await this.fireReminders(userId, prev, next);
+    const triggeredReminders = await this.fireReminders(userId, places, verdict.transitions);
 
     return {
       presence: toPresenceContext(next),
@@ -195,47 +239,97 @@ export class PresenceService {
     };
   }
 
-  private async emitTransitionEvents(
+  /**
+   * Step the dwell rules for the latest point (a new reading's, or the
+   * stored one on a sweep or a place change) against the places as they are
+   * now, and take the status from the confirmed place.
+   */
+  private judge(args: {
+    point: { lat: number; lon: number; speedMps?: number };
+    motion: Motion | undefined;
+    places: Place[];
+    dwell: DwellState;
+    now: Date;
+  }): Verdict {
+    const geo = computeGeofence(args.point.lat, args.point.lon, args.places, this.deps.config.geofence.nearRadiusMultiplier);
+    const byName = new Map(args.places.map((p) => [p.name, p]));
+    const current = args.dwell.current === null ? undefined : byName.get(args.dwell.current);
+    const stepped = step(
+      args.dwell,
+      {
+        raw: geo.matchedPlace?.name ?? null,
+        insideCurrent: current !== undefined && insidePlace(current, args.point.lat, args.point.lon),
+        drivingBy: drivingBy(args.motion, args.point.speedMps),
+      },
+      args.now,
+      (name) => byName.get(name),
+    );
+    const confirmed = stepped.state.current === null ? undefined : byName.get(stepped.state.current);
+    let { status, label } = statusFor(confirmed, geo.outside);
+    // Motion refinement: someone who is "away" but clearly moving is in transit.
+    if (status === "away" && (args.motion === "driving" || args.motion === "transit")) {
+      status = "transit";
+      label = labelForStatus("transit");
+    }
+    return { dwell: stepped.state, transitions: stepped.transitions, confirmed, status, label };
+  }
+
+  private atOrNearHome(point: { lat: number; lon: number }, places: readonly Place[]): boolean {
+    return nearHomePlace(point, places, this.deps.config.geofence.nearRadiusMultiplier) !== null;
+  }
+
+  /**
+   * Record this step's events. Each place event is recorded only when its
+   * place emits that type, and is kept from webhooks when the place has
+   * notifyWebhooks off; so is `presence.updated` while inside such a place,
+   * since it names the place too. A deleted place is quiet.
+   */
+  private async emitEvents(
     userId: UserId,
     prev: StoredPresence | null,
     next: StoredPresence,
+    places: readonly Place[],
+    transitions: readonly DwellTransition[],
+    approached: readonly Place[],
   ): Promise<PresenceEvent[]> {
+    const rules = rulesIn(places);
+    const common = { status: next.status, source: next.source };
     const pending: NewPresenceEvent[] = [];
 
+    const here = next.currentPlaceName;
     pending.push({
       type: "presence.updated",
-      status: next.status,
-      source: next.source,
-      placeName: next.currentPlaceName,
+      ...common,
+      placeName: here,
+      ...(here && !rules(here).notifyWebhooks ? { webhook: false } : {}),
     });
 
-    const prevPlace = prev?.currentPlaceName;
-    const nextPlace = next.currentPlaceName;
-    if (prevPlace !== nextPlace) {
-      if (prevPlace) {
-        pending.push({ type: "presence.left_place", placeName: prevPlace, status: next.status, source: next.source });
-      }
-      if (nextPlace) {
-        pending.push({ type: "presence.entered_place", placeName: nextPlace, status: next.status, source: next.source });
-      }
-    }
+    const placeEvent = (type: PlaceEventType, name: string): void => {
+      const r = rules(name);
+      if (!r.emits.includes(type)) return;
+      pending.push({ type, placeName: name, ...common, ...(r.notifyWebhooks ? {} : { webhook: false }) });
+    };
+    for (const t of transitions) placeEvent(t.kind === "left" ? "presence.left_place" : "presence.entered_place", t.name);
+    for (const place of approached) placeEvent("presence.approaching_place", place.name);
 
     if (prev && prev.privacy.mode !== next.privacy.mode) {
       pending.push({ type: "presence.privacy_changed", status: next.status });
     }
 
-    // Single batched INSERT — up to 3 events per reading, inside the mutex (P1).
+    // Single batched INSERT, inside the mutex (P1).
     return this.deps.eventsStore.appendMany(userId, pending);
   }
 
+  /** Fire the reminders of a place this step confirmed entering, unless it has notifyReminders off. */
   private async fireReminders(
     userId: UserId,
-    prev: StoredPresence | null,
-    next: StoredPresence,
+    places: readonly Place[],
+    transitions: readonly DwellTransition[],
   ): Promise<Reminder[]> {
-    const nextPlace = next.currentPlaceName;
-    if (!nextPlace || prev?.currentPlaceName === nextPlace) return [];
-    const reminders = await this.deps.remindersStore.listActiveForPlace(userId, nextPlace);
+    const rules = rulesIn(places);
+    const entered = transitions.find((t) => t.kind === "entered");
+    if (!entered || !rules(entered.name).notifyReminders) return [];
+    const reminders = await this.deps.remindersStore.listActiveForPlace(userId, entered.name);
     await this.deps.remindersStore.markTriggeredBatch(
       userId,
       reminders.map((r) => r.id),
@@ -285,6 +379,27 @@ export class PresenceService {
   }
 
   /**
+   * Periodic dwell sweep across every user (system handle only): one query
+   * for presence rows with an enter or a leave pending, then a dwell step at
+   * now per user, under the user's lock, with no new reading. Returns the
+   * emitted events so the caller can nudge delivery. Dwell resolves to the
+   * sweep interval.
+   */
+  async sweepDwell(): Promise<PresenceEvent[]> {
+    const users = await this.deps.presenceStore.listPendingDwell();
+    const results = await Promise.allSettled(users.map((userId) => this.rejudge(userId)));
+    const events: PresenceEvent[] = [];
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") {
+        if (r.value) events.push(...r.value.events);
+      } else {
+        log.error("dwell sweep failed for a user", r.reason, { userId: users[i]! });
+      }
+    });
+    return events;
+  }
+
+  /**
    * Re-evaluate the current presence against the latest set of places, reusing
    * the last known coordinate. Status is computed at ingest time and then frozen
    * on the stored row, so adding/moving/removing a place does NOT change the
@@ -295,53 +410,47 @@ export class PresenceService {
    * per user so it cannot race a concurrent ingest.
    */
   async reevaluateCurrent(userId: UserId): Promise<ProcessResult | null> {
-    const result = await this.reevaluateLocked(userId);
+    const result = await this.rejudge(userId);
     // A new or moved place can put the person at or near home: bring the area up to date too.
     if (result) this.deps.afterReading?.(userId);
     return result;
   }
 
-  private reevaluateLocked(userId: UserId): Promise<ProcessResult | null> {
+  /**
+   * A dwell step at now for the stored position against the current places,
+   * under the user's lock: after a place change or on a sweep. Never checks
+   * approach rings; drops deleted places from the approached set. Persists
+   * the pending fields even when the status and the confirmed place stay.
+   */
+  private rejudge(userId: UserId): Promise<ProcessResult | null> {
     return this.mutex.run(userId, async () => {
       const prev = await this.deps.presenceStore.getCurrent(userId);
       if (!prev?.precise) return null;
 
       const places = await this.deps.placesStore.list(userId);
-      const geo = computeGeofence(
-        prev.precise.lat,
-        prev.precise.lon,
-        places,
-        this.deps.config.geofence.nearRadiusMultiplier,
-      );
-
-      // Same motion refinement as processReadingLocked.
-      let status: PresenceStatus = geo.status;
-      let label = geo.label;
-      if (status === "away" && (prev.motion === "driving" || prev.motion === "transit")) {
-        status = "transit";
-        label = labelForStatus("transit");
-      }
-
-      const nextPlaceName = geo.matchedPlace?.name;
-      // No change → nothing to persist or emit.
-      if (status === prev.status && nextPlaceName === prev.currentPlaceName) {
-        return { presence: toPresenceContext(prev), events: [], triggeredReminders: [] };
-      }
-
+      const verdict = this.judge({ point: prev.precise, motion: prev.motion, places, dwell: dwellOf(prev), now: this.clock() });
+      const names = new Set(places.map((p) => p.name));
       const next: StoredPresence = {
         ...prev,
-        status,
-        label,
+        status: verdict.status,
+        label: verdict.label,
         coarse: {
           ...prev.coarse,
-          placeType: coarsePlaceTypeFor(geo.matchedPlace),
+          placeType: coarsePlaceTypeFor(verdict.confirmed),
         },
-        currentPlaceName: nextPlaceName,
+        ...dwellFields(verdict.dwell),
+        approachedPlaces: (prev.approachedPlaces ?? []).filter((n) => names.has(n)),
+        atOrNearHome: this.atOrNearHome(prev.precise, places),
       };
 
+      if (next.status === prev.status && next.currentPlaceName === prev.currentPlaceName) {
+        if (bookkeeping(next) !== bookkeeping(prev)) await this.deps.presenceStore.upsert(next);
+        return { presence: toPresenceContext(next), events: [], triggeredReminders: [] };
+      }
+
       await this.deps.presenceStore.upsert(next);
-      const events = await this.emitTransitionEvents(userId, prev, next);
-      const triggeredReminders = await this.fireReminders(userId, prev, next);
+      const events = await this.emitEvents(userId, prev, next, places, verdict.transitions, []);
+      const triggeredReminders = await this.fireReminders(userId, places, verdict.transitions);
       return { presence: toPresenceContext(next), events, triggeredReminders };
     });
   }

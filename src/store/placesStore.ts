@@ -7,30 +7,27 @@ import { randomBytes } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { places } from "../db/schema.js";
-import type { Place, PlaceType, UserId } from "../types.js";
+import { DEFAULT_PLACE_RULES, type Place, type PlaceRules, type PlaceType, type Ring, type UserId } from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
-export interface PlaceInput {
+/**
+ * A place to write. `lat`, `lon` and `radiusM` are the anchor circle; with a
+ * `polygon` they must be its centroid and circumradius (validatePolygon gives
+ * them), and without one the place is that circle. Rules left out keep what
+ * the place has (defaults for a new place); the geometry and label are
+ * always replaced.
+ */
+export interface PlaceInput extends Partial<PlaceRules> {
   name: string;
   label?: string;
   lat: number;
   lon: number;
   radiusM: number;
+  polygon?: Ring;
   type: PlaceType;
 }
 
-interface PlaceRow {
-  id: string;
-  userId: string;
-  name: string;
-  label: string | null;
-  lat: number;
-  lon: number;
-  radiusM: number;
-  type: PlaceType;
-  createdAt: string;
-  updatedAt: string;
-}
+type PlaceRow = typeof places.$inferSelect;
 
 function rowToPlace(row: PlaceRow): Place {
   return {
@@ -40,9 +37,28 @@ function rowToPlace(row: PlaceRow): Place {
     lat: row.lat,
     lon: row.lon,
     radiusM: row.radiusM,
+    ...(row.polygon ? { polygon: row.polygon } : {}),
     type: row.type,
+    enterAfterSec: row.enterAfterSec,
+    exitAfterSec: row.exitAfterSec,
+    approachM: row.approachM,
+    emits: row.emits ?? [...DEFAULT_PLACE_RULES.emits],
+    notifyWebhooks: row.notifyWebhooks,
+    notifyReminders: row.notifyReminders,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+/** The rule columns `input` sets; a rule it leaves out is not written. */
+function ruleColumns(input: Partial<PlaceRules>): Partial<PlaceRow> {
+  return {
+    ...(input.enterAfterSec === undefined ? {} : { enterAfterSec: input.enterAfterSec }),
+    ...(input.exitAfterSec === undefined ? {} : { exitAfterSec: input.exitAfterSec }),
+    ...(input.approachM === undefined ? {} : { approachM: input.approachM }),
+    ...(input.emits === undefined ? {} : { emits: [...new Set(input.emits)] }),
+    ...(input.notifyWebhooks === undefined ? {} : { notifyWebhooks: input.notifyWebhooks }),
+    ...(input.notifyReminders === undefined ? {} : { notifyReminders: input.notifyReminders }),
   };
 }
 
@@ -53,10 +69,7 @@ export class PlacesStore {
   ) {}
 
   async list(userId: UserId): Promise<Place[]> {
-    const rows = (await this.db
-      .select()
-      .from(places)
-      .where(eq(places.userId, userId))) as PlaceRow[];
+    const rows = await this.db.select().from(places).where(eq(places.userId, userId));
     return rows.map(rowToPlace);
   }
 
@@ -69,47 +82,40 @@ export class PlacesStore {
   }
 
   async get(userId: UserId, name: string): Promise<Place | null> {
-    const rows = (await this.db
+    const rows = await this.db
       .select()
       .from(places)
       .where(and(eq(places.userId, userId), eq(places.name, name)))
-      .limit(1)) as PlaceRow[];
+      .limit(1);
     return rows[0] ? rowToPlace(rows[0]) : null;
   }
 
   /** Create or replace a place by name (upsert on the (userId,name) unique key). */
   async upsert(userId: UserId, input: PlaceInput): Promise<Place> {
-    const existing = await this.get(userId, input.name);
     const ts = nowIso(this.clock);
-    if (existing) {
-      const row: Partial<PlaceRow> = {
-        label: input.label ?? null,
-        lat: input.lat,
-        lon: input.lon,
-        radiusM: input.radiusM,
-        type: input.type,
-        updatedAt: ts,
-      };
-      await this.db
-        .update(places)
-        .set(row)
-        .where(and(eq(places.userId, userId), eq(places.name, input.name)));
-      return { ...existing, ...input, updatedAt: ts };
-    }
-    const record: PlaceRow = {
-      id: randomBytes(16).toString("hex"),
-      userId,
-      name: input.name,
+    const replaced = {
       label: input.label ?? null,
       lat: input.lat,
       lon: input.lon,
       radiusM: input.radiusM,
+      polygon: input.polygon ?? null,
       type: input.type,
-      createdAt: ts,
+      ...ruleColumns(input),
       updatedAt: ts,
     };
-    await this.db.insert(places).values(record);
-    return rowToPlace(record);
+    const owned = and(eq(places.userId, userId), eq(places.name, input.name));
+    const updated = await this.db.update(places).set(replaced).where(owned);
+    if ((updated.rowsAffected ?? 0) === 0) {
+      await this.db.insert(places).values({
+        id: randomBytes(16).toString("hex"),
+        userId,
+        name: input.name,
+        ...replaced,
+        createdAt: ts,
+      });
+    }
+    const [row] = await this.db.select().from(places).where(owned).limit(1);
+    return rowToPlace(row!);
   }
 
   async deleteByName(userId: UserId, name: string): Promise<boolean> {

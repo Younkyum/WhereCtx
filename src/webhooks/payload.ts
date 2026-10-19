@@ -31,6 +31,7 @@ const EXAMPLE_EVENTS: Record<PresenceEventType, Omit<PresenceEvent, "id" | "type
   "presence.updated": { status: "away", source: "owntracks" },
   "presence.entered_place": { placeName: "home", status: "home", source: "owntracks" },
   "presence.left_place": { placeName: "home", status: "away", source: "owntracks" },
+  "presence.approaching_place": { placeName: "home", status: "away", source: "owntracks" },
   "presence.became_stale": { status: "home", source: "owntracks" },
   "presence.privacy_changed": { status: "home" },
 };

@@ -19,7 +19,7 @@ import type { RouteContext } from "../app/context.js";
 import { authorizePrecise, buildPreciseView } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
 import { haversineMeters } from "../geofence/distance.js";
-import { nearHomePlace } from "../geo/eta.js";
+import { insidePlace, nearHomePlace } from "../geofence/shape.js";
 import type { Place } from "../types.js";
 import { decide, refuse } from "./accessAudit.js";
 import { noStore, requireScope } from "./middleware.js";
@@ -38,12 +38,13 @@ const HistoryRange = z.object({
   to: z.iso.datetime({ offset: true }).optional(),
 });
 
-/** The name of the nearest place whose geofence holds the point, if any. */
+/** The name of the place holding the point whose anchor is nearest, if any. */
 export function placeContaining(point: { lat: number; lon: number }, places: readonly Place[]): string | undefined {
   let best: { name: string; d: number } | undefined;
   for (const place of places) {
+    if (!insidePlace(place, point.lat, point.lon)) continue;
     const d = haversineMeters(point.lat, point.lon, place.lat, place.lon);
-    if (d <= place.radiusM && (!best || d < best.d)) best = { name: place.name, d };
+    if (!best || d < best.d) best = { name: place.name, d };
   }
   return best?.name;
 }
