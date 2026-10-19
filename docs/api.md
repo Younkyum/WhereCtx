@@ -63,6 +63,11 @@ Authorization: Bearer AGENT_TOKEN
   "freshness":"stationary", "privacy":"coarse", "area":"성남시 분당구 삼평동" }
 ```
 `403` with `{ "privacy":"hidden" }` in hidden mode; `404` before any reading.
+The signed-in owner (a session) reads their own coarse and precise presence
+whatever the agent policy says; hidden mode and the precise gate are about
+agents. The owner's precise answer adds `nearHome` (`{ name, lat, lon,
+radiusM }` of the home place) while `skipProviderNearHome` is on and they
+are near it, so the dashboard map shows that place instead of the point.
 
 - Every age is from when the server received the report, not the device's
   timestamp. `updatedAgoSec` is the same as `lastReportAgoSec`, kept for
@@ -91,12 +96,12 @@ what leaves the server. The switches are privacy settings (`geoEnabled`,
 
 ```
 GET    /v1/geo                               # session only: provider in use, my keys' hints, operator fallbacks
-GET    /v1/geo/map-config                    # session only, no-store: the map script and key my dashboard loads
+GET    /v1/geo/map-config                    # session only, no-store: the map script (key in its URL) my dashboard loads
 PUT    /v1/geo/credentials/kakao             # session, step-up: { "restKey":"…" }
 PUT    /v1/geo/credentials/naver             # session, step-up: { "clientId":"…", "clientSecret":"…" }
-DELETE /v1/geo/credentials/:provider         # session, step-up: every key for the provider, the map key included
+DELETE /v1/geo/credentials/:provider         # session, step-up: the REST keys; the map key stays
 PUT    /v1/geo/credentials/:provider/map     # session, step-up: { "key":"…" } the map key
-DELETE /v1/geo/credentials/:provider/map     # session: the map key only
+DELETE /v1/geo/credentials/:provider/map     # session: the map key only; none saved changes nothing
 POST   /v1/geo/credentials/:provider/test    # session: looks up Seoul City Hall with the saved key
 GET    /v1/geo/search?q=                     # manage_places, maps on: address or place search, with coordinates
 GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
@@ -108,25 +113,30 @@ GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
 ```json
 { "active": { "provider":"kakao", "source":"own" },
   "map": { "provider":"kakao", "source":"own" },
-  "credentials": [{ "provider":"kakao", "status":"ok", "kinds":{ "restKey":"cdef", "jsKey":"9a1b" },
+  "credentials": [{ "provider":"kakao", "status":"ok", "rest":true, "map":true, "kinds":{ "restKey":"cdef", "jsKey":"9a1b" },
     "createdAt":"…", "updatedAt":"…", "lastUsedAt":"…", "lastError":null }],
   "operator": [], "operatorMap": [] }
 ```
 
 A key is never returned here; `kinds` names each key kind held with its last
-four characters. Saving the REST keys replaces them and keeps the map key;
-saving the map key keeps the REST keys.
+four characters, and `rest` and `map` say whether the REST keys and the map
+key are saved. Saving the REST keys replaces them and keeps the map key;
+saving or removing the map key keeps the REST keys and how they last fared
+(`lastUsedAt`, `lastError`). Removing the REST keys keeps the map key, and
+answers `404` when there are none. Changes to one provider's keys run one at
+a time.
 
 The map key draws the interactive maps in the dashboard: a Kakao JavaScript
 key (`jsKey`) or a Naver Maps Client ID (`mapKeyId`, the `ncpKeyId` the v3
 script takes). It is 8 to 128 letters, digits, `-` or `_`. The map is the
-chosen `geoProvider`'s, else the first provider with a map key, the person's
-own before the operator's (`KAKAO_JS_KEY`, `NAVER_MAPS_KEY_ID`, for
-`USER_ID` only unless `GEO_OPERATOR_KEY_FOR_ALL`). `GET /v1/geo/map-config`
-answers it while maps are on:
+chosen `geoProvider`'s, else the first provider with a map key; the
+person's own map key for any provider comes before an operator's
+(`KAKAO_JS_KEY`, `NAVER_MAPS_KEY_ID`, for `USER_ID` only unless
+`GEO_OPERATOR_MAP_KEY_FOR_ALL`). REST keys resolve the same way, own before
+operator. `GET /v1/geo/map-config` answers it while maps are on:
 
 ```json
-{ "provider":"kakao", "sdkUrl":"https://dapi.kakao.com/v2/maps/sdk.js?appkey=…&autoload=false", "key":"…" }
+{ "provider":"kakao", "sdkUrl":"https://dapi.kakao.com/v2/maps/sdk.js?appkey=…&autoload=false" }
 ```
 
 and `{ "provider": null }` otherwise. It is the one answer that holds a key:
@@ -148,7 +158,7 @@ offset for a future departure (Kakao only; Naver answers `502`
 turn-by-turn steps. `reason` is why an agent needs the precise route.
 
 The owner (a session) gets the provider's answer as it is, with `path`, the
-route's geometry for drawing it:
+whole route as the provider drew it, start to end:
 
 ```json
 { "eta": { "destination": { "label":"office", "kind":"place" }, "origin":"current_location",

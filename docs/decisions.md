@@ -507,21 +507,49 @@ The owner asked to see things on a map. Agents still get none.
   change. Naver's map key is named `mapKeyId` after the v3 script's current
   `ncpKeyId` parameter (the old `ncpClientId` is retired); it is usually the
   same Client ID as the REST calls.
-- **CSP per response, from the session cookie.** The page is served before
-  the app asks who is signed in, but a navigation carries the session
-  cookie, so the page's CSP is decided then: exactly the provider's hosts
-  for a person whose map resolves, the strict policy for everyone else.
-  Hosts were read from the scripts themselves (Kakao loader 4.5.29, Naver
-  3.10.4), not guessed, and live in one table (`src/geo/mapSdk.ts`). Kakao
-  recommends allowing `*.kakaocdn.net` because it may move resources between
-  hosts; we list exact hosts instead, so a move shows the fallback (and a
-  note) rather than widening the policy. Neither script needs
-  `'unsafe-eval'`. A key saved mid-session takes effect on reload, when the
-  CSP is decided again.
-- **Origin-only referrer for that page.** Kakao checks the key's registered
+- **A same-origin map frame with its own CSP, not a per-user page CSP.**
+  The first version built the dashboard page's CSP per request from the
+  session cookie. That made a shared, cacheable page depend on who asked
+  (`no-cache` without `private`, and Cloudflare ignores `Vary: Cookie`),
+  left a signed-in tab with the policy of whoever loaded it (sign-in,
+  sign-out and a new key need a reload, and after sign-out the previous
+  person's script and key stayed in the page), and needed a second CSP
+  writer and a session lookup on a static file. Now the page is one strict
+  response for everyone, and each map is an iframe of the static
+  `/dashboard/map.html`, whose CSP allows both providers' exact hosts and
+  `frame-ancestors 'self'`. The dashboard and the frame talk only by
+  `postMessage`, checking source window and origin and parsing every
+  message; the frame loads a script only from its provider's https origin.
+  The provider's script dies with the frame.
+- **Why the frame is not sandboxed.** An opaque sandbox (`sandbox=
+  "allow-scripts"`, no `allow-same-origin`) would have cut the provider's
+  script off from the dashboard and its cookie. It was tried first, in
+  headless Chrome with both real loaders and a dummy key: Naver's script
+  ran and drew (its storage probe is guarded), but the frame sent no
+  Referer at all, under `strict-origin` and even `unsafe-url`, while the
+  same frame unsandboxed sent the origin. Kakao checks a JavaScript key's
+  registered domain by the Referer, so Kakao maps cannot work there. The
+  frame is same-origin; what that leaves open is in privacy.md (JSONP
+  endpoints and a general CDN in the frame's `script-src`).
+- **Exact hosts.** Hosts were read from the scripts themselves (Kakao
+  loader 4.5.29, Naver 3.10.4), not guessed, and live in one table
+  (`src/geo/mapSdk.ts`). Kakao recommends allowing `*.kakaocdn.net` because
+  it may move resources between hosts; we list exact hosts instead, so a
+  move shows the fallback with a "blocked" note rather than widening the
+  policy. Neither script needs `'unsafe-eval'` (Kakao's one eval is an
+  old-IE probe inside a try, which the frame does not count as a failure).
+- **Origin-only referrer for the frame.** Kakao checks the key's registered
   domain against the request's referrer, which `no-referrer` would remove.
-  The page with a map sends `strict-origin`; the injected script also sets
-  `referrerpolicy="strict-origin"`.
+  The frame sends `strict-origin`, and its injected script sets
+  `referrerpolicy="strict-origin"` too.
+- **Failures say why.** The frame reports `refused` (Naver's key check),
+  `blocked` (a script the CSP blocked, or a script URL from elsewhere) or
+  `load` (the script failed or did not answer within 15 s; Kakao's loader
+  answers a refused key with 401, so it lands here). A Naver refusal is
+  remembered for the page, so later maps fall back without a frame.
+- **The operator's map key has its own opt-in.** `GEO_OPERATOR_MAP_KEY_FOR_ALL`,
+  apart from `GEO_OPERATOR_KEY_FOR_ALL`: REST calls go through the server
+  and count against `GEO_OPERATOR_DAILY_CAP`, map loads do not and cannot.
 - **Fallback, not failure.** No map key, maps off, the config request
   failing, the script failing or timing out, or Naver refusing the key all
   show what was there before (History's SVG track, the lists), so a page
@@ -533,4 +561,11 @@ The owner asked to see things on a map. Agents still get none.
   agents.
 - **Route geometry for the owner only.** The owner's ETA answer carries
   `path` for drawing; an agent's approximate answer never does, since the
-  geometry would give back the origin the approximation hides.
+  geometry would give back the origin the approximation hides. The two
+  answers are separate types (`OwnerEtaAnswer`, `AgentEtaAnswer` with
+  `path?: never`) from separate methods, so an agent surface cannot return
+  it. `path` is each provider's whole route (Naver's `route.path`, every
+  Kakao road's vertexes), not a join of the named roads, which left gaps.
+- **The owner reads themself whatever the agent policy.** Coarse and
+  precise alike; hidden mode used to refuse the owner's coarse read while
+  the map placed them exactly.
