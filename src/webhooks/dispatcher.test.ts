@@ -6,6 +6,7 @@ import { EventsStore } from "../store/eventsStore.js";
 import { WebhooksStore } from "../store/webhooksStore.js";
 import { WebhookDispatcher, type DispatcherOptions } from "./dispatcher.js";
 import { exampleDelivery } from "./payload.js";
+import { SecretBox } from "./secretBox.js";
 
 let nowMs = Date.parse("2026-06-05T00:00:00.000Z");
 const clock = () => new Date(nowMs);
@@ -37,6 +38,13 @@ beforeEach(async () => {
   events = new EventsStore(handle.db, clock);
   webhooks = new WebhooksStore(handle.db, clock);
 });
+
+/** Auth headers exist only sealed, so tests that use one need a keyed store. */
+function useKeyedStore(): void {
+  beforeEach(() => {
+    webhooks = new WebhooksStore(handle.db, clock, new SecretBox("dispatcher-test-key"));
+  });
+}
 
 describe("WebhookDispatcher", () => {
   it("delivers events created after the cursor and advances it", async () => {
@@ -401,6 +409,7 @@ describe("WebhookDispatcher cursor", () => {
 });
 
 describe("the dashboard's example delivery", () => {
+  useKeyedStore();
   it("has the headers and body fields a real signed delivery has", async () => {
     await webhooks.create(USER, {
       url: "https://example.test/hook",
@@ -428,6 +437,7 @@ describe("the dashboard's example delivery", () => {
 });
 
 describe("WebhookDispatcher auth header", () => {
+  useKeyedStore();
   const VALUE = "Bearer n8n-header-credential-9f3k";
   const authHeader = { name: "Authorization", value: VALUE };
 

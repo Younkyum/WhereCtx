@@ -162,3 +162,76 @@ describe("a webhook's auth header over the API", () => {
     expect(await listed(mina)).toBeUndefined();
   });
 });
+
+describe("a hook whose credentials do not open", () => {
+  const VALUE = "Bearer n8n-header-credential-9f3k";
+
+  async function breakAuthHeader(id: string): Promise<void> {
+    await ctx.handle.client.execute({ sql: "UPDATE webhooks SET auth_header = 'enc:v1:AAAA' WHERE id = ?", args: [id] });
+  }
+
+  it("is listed to its owner as unreadable, without credentials, and can be changed, replaced and deleted", async () => {
+    const id = (await owner.browser.json("/v1/webhooks", { body: { url: "http://127.0.0.1:9/auth", authHeader: { value: VALUE } } })).webhook.id;
+    await breakAuthHeader(id);
+
+    const listedText = await (await owner.browser.send("/v1/webhooks")).text();
+    const hook = JSON.parse(listedText).webhooks.find((w: any) => w.id === id);
+    expect(hook).toMatchObject({ id, credentialsUnreadable: true });
+    expect(hook).not.toHaveProperty("authHeader");
+    expect(listedText).not.toContain("enc:v1");
+    expect((await ctx.system.webhooks.listActive()).map((h) => h.id)).not.toContain(id);
+
+    const paused = await patch(owner.browser, id, { active: false });
+    expect(paused.status).toBe(200);
+    expect(((await paused.json()) as any).webhook).toMatchObject({ id, active: false, credentialsUnreadable: true });
+
+    const replaced = await patch(owner.browser, id, { active: true, authHeader: { value: "Bearer replacement-credential-0042" } });
+    expect(replaced.status).toBe(200);
+    const body = (await replaced.json()) as any;
+    expect(body.webhook).not.toHaveProperty("credentialsUnreadable");
+    expect(body.webhook.authHeader).toEqual({ name: "Authorization", hint: "…0042" });
+    expect((await ctx.system.webhooks.listActive()).map((h) => h.id)).toContain(id);
+
+    await breakAuthHeader(id);
+    expect((await owner.browser.send(`/v1/webhooks/${id}`, { method: "DELETE" })).status).toBe(200);
+    expect((await owner.browser.json("/v1/webhooks")).webhooks.map((w: any) => w.id)).toEqual([hookId]);
+  });
+
+  it("counts toward the limit like any other hook", async () => {
+    for (let i = 0; i < 19; i++) {
+      const created = await owner.browser.json("/v1/webhooks", { body: { url: `http://127.0.0.1:9/h${i}`, authHeader: { value: VALUE } } });
+      await breakAuthHeader(created.webhook.id);
+    }
+    expect((await owner.browser.json("/v1/webhooks")).webhooks).toHaveLength(20);
+    expect((await owner.browser.send("/v1/webhooks", { body: { url: "http://127.0.0.1:9/h20" } })).status).toBe(409);
+  });
+});
+
+describe("auth headers on a server without WEBHOOK_ENCRYPTION_KEY", () => {
+  let plain: Enrolled;
+  let plainHook: string;
+
+  beforeEach(async () => {
+    const booted = await bootApp(new TestClock(), { webhooks: { allowPrivateTargets: true } });
+    plain = await setupOwner(booted.app, booted.setupCode);
+    plainHook = (await plain.browser.json("/v1/webhooks", { body: { url: "http://127.0.0.1:9/hook" } })).webhook.id;
+  });
+
+  it("are reported as unavailable", async () => {
+    expect((await plain.browser.json("/v1/webhooks")).capabilities).toEqual({ authHeader: false });
+    expect((await owner.browser.json("/v1/webhooks")).capabilities).toEqual({ authHeader: true });
+  });
+
+  it("are refused on create and on change, saying which setting is missing, and nothing is stored", async () => {
+    const created = await plain.browser.send("/v1/webhooks", {
+      body: { url: "http://127.0.0.1:9/auth", authHeader: { value: "Bearer n8n-header-credential-9f3k" } },
+    });
+    expect(created.status).toBe(400);
+    expect(((await created.json()) as any).error).toContain("WEBHOOK_ENCRYPTION_KEY");
+    const changed = await patch(plain.browser, plainHook, { authHeader: { value: "Bearer n8n-header-credential-9f3k" } });
+    expect(changed.status).toBe(400);
+    expect(((await changed.json()) as any).error).toContain("WEBHOOK_ENCRYPTION_KEY");
+    expect((await plain.browser.json("/v1/webhooks")).webhooks).toEqual([expect.not.objectContaining({ authHeader: expect.anything() })]);
+    expect((await patch(plain.browser, plainHook, { authHeader: null })).status).toBe(200);
+  });
+});

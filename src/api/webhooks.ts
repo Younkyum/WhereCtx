@@ -1,19 +1,20 @@
 /**
  * Webhook subscription management API (plan section 9.7/9.8).
- *   GET    /v1/webhooks      -> list (manage_privacy)
+ *   GET    /v1/webhooks      -> list, with what this server can do (manage_privacy)
  *   POST   /v1/webhooks      -> create (manage_privacy)
  *   PATCH  /v1/webhooks/:id  -> change {events?, active?, authHeader?} (manage_privacy)
  *   DELETE /v1/webhooks/:id  -> delete with its dead letters (manage_privacy)
  *
  * Delivery itself is handled by the dispatcher in Phase 4. A response never
  * carries a hook's credentials: no signing secret, and of the auth header only
- * its name and hint.
+ * its name and hint. An auth header is taken only when the server has
+ * WEBHOOK_ENCRYPTION_KEY, since it is never stored in the clear.
  */
 
 import { Hono } from "hono";
 import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
-import type { Webhook } from "../store/webhooksStore.js";
+import type { WebhookListing } from "../store/webhooksStore.js";
 import { PRESENCE_EVENT_TYPES } from "../types.js";
 import { AUTH_HEADER_NAME_RULE, authHeaderProblem, DEFAULT_AUTH_HEADER_NAME, viewAuthHeader, type AuthHeaderProblem } from "../webhooks/authHeader.js";
 import { assertSafeWebhookUrl, SsrfError } from "../webhooks/ssrf.js";
@@ -44,9 +45,21 @@ const AuthHeaderSchema = z
     if (problem) ctx.addIssue({ code: "custom", message: AUTH_HEADER_MESSAGES[problem] });
   });
 
-/** What a client sees of a hook. */
-function publicWebhook({ secret: _secret, authHeader, ...rest }: Webhook) {
-  return { ...rest, ...(authHeader ? { authHeader: viewAuthHeader(authHeader) } : {}) };
+const NO_KEY = "set WEBHOOK_ENCRYPTION_KEY to use auth headers: they are only stored encrypted";
+
+/** What a client sees of a hook: never a credential, and of an auth header only its name and hint. */
+function publicWebhook(hook: WebhookListing) {
+  const base = {
+    id: hook.id,
+    userId: hook.userId,
+    url: hook.url,
+    events: hook.events,
+    active: hook.active,
+    cursor: hook.cursor,
+    createdAt: hook.createdAt,
+  };
+  if ("credentialsUnreadable" in hook) return { ...base, credentialsUnreadable: true as const };
+  return { ...base, ...(hook.authHeader ? { authHeader: viewAuthHeader(hook.authHeader) } : {}) };
 }
 
 const WebhookSchema = z.object({
@@ -75,10 +88,12 @@ const PatchSchema = z
 export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   app.use("*", requireScope("manage_privacy"));
+  /** The store seals auth headers with the box built from this same key. */
+  const sealsAuthHeaders = Boolean(ctx.config.webhooks.encryptionKey);
 
   app.get("/", async (c) => {
     const hooks = await c.get("scope").webhooks.list();
-    return c.json({ webhooks: hooks.map(publicWebhook) });
+    return c.json({ webhooks: hooks.map(publicWebhook), capabilities: { authHeader: sealsAuthHeaders } });
   });
 
   app.post("/", async (c) => {
@@ -92,6 +107,7 @@ export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
     if (!parsed.success) {
       return c.json({ error: "invalid webhook", detail: zodMessages(parsed.error) }, 400);
     }
+    if (parsed.data.authHeader && !sealsAuthHeaders) return c.json({ error: NO_KEY }, 400);
     // SSRF guard: reject URLs that resolve to private/reserved addresses.
     try {
       await assertSafeWebhookUrl(
@@ -125,6 +141,7 @@ export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
   app.patch("/:id", async (c) => {
     const body = await parseBody(c, PatchSchema);
     if (body instanceof Response) return body;
+    if (body.authHeader && !sealsAuthHeaders) return c.json({ error: NO_KEY }, 400);
     const updated = await c.get("scope").webhooks.update(c.req.param("id"), body);
     if (!updated) return c.json({ error: "webhook not found" }, 404);
     return c.json({ webhook: publicWebhook(updated) });

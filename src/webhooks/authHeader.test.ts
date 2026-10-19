@@ -117,25 +117,81 @@ describe("a webhook's auth header at rest", () => {
     expect((await store.list(USER))[0]!.authHeader).toEqual(header);
   });
 
-  it("fails closed under another key: the hook is not listed for delivery", async () => {
+  it("fails closed under another key, or with none: the hook is not delivered but is listed as unreadable", async () => {
     await new WebhooksStore(handle.db, clock, new SecretBox("key-A")).create(USER, {
       url: "https://example.test/hook",
       events: ["*"],
       authHeader: header,
     });
-    expect(await new WebhooksStore(handle.db, clock, new SecretBox("key-B")).listActive()).toEqual([]);
-    expect(await new WebhooksStore(handle.db, clock).listActive()).toEqual([]);
+    for (const store of [new WebhooksStore(handle.db, clock, new SecretBox("key-B")), new WebhooksStore(handle.db, clock)]) {
+      expect(await store.listActive()).toEqual([]);
+      const listed = await store.list(USER);
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({ credentialsUnreadable: true });
+      expect(listed[0]).not.toHaveProperty("authHeader");
+      expect(await store.count(USER)).toBe(1);
+    }
+  });
+
+  async function copyAuthHeader(from: string, to: string): Promise<void> {
+    await handle.client.execute({
+      sql: "UPDATE webhooks SET auth_header = (SELECT auth_header FROM webhooks WHERE id = ?) WHERE id = ?",
+      args: [from, to],
+    });
+  }
+
+  it("does not open when copied onto another of the same person's hooks", async () => {
+    const store = new WebhooksStore(handle.db, clock, new SecretBox("install-key"));
+    const mine = await store.create(USER, { url: "https://example.test/mine", events: ["*"], authHeader: header });
+    const other = await store.create(USER, { url: "https://example.test/other", events: ["*"] });
+    await copyAuthHeader(mine.id, other.id);
+    expect((await store.listActive()).map((h) => h.id)).toEqual([mine.id]);
   });
 
   it("does not open when copied onto another person's hook", async () => {
     const store = new WebhooksStore(handle.db, clock, new SecretBox("install-key"));
     const mine = await store.create(USER, { url: "https://example.test/mine", events: ["*"], authHeader: header });
     const theirs = await store.create(OTHER, { url: "https://example.test/theirs", events: ["*"] });
-    await handle.client.execute({
-      sql: "UPDATE webhooks SET auth_header = (SELECT auth_header FROM webhooks WHERE id = ?) WHERE id = ?",
-      args: [mine.id, theirs.id],
-    });
+    await copyAuthHeader(mine.id, theirs.id);
     expect((await store.listActive()).map((h) => h.id)).toEqual([mine.id]);
+  });
+
+  it("does not open when its row is moved to another person with the same hook id", async () => {
+    const store = new WebhooksStore(handle.db, clock, new SecretBox("install-key"));
+    const mine = await store.create(USER, { url: "https://example.test/mine", events: ["*"], authHeader: header });
+    await handle.client.execute({ sql: "UPDATE webhooks SET user_id = ? WHERE id = ?", args: [OTHER, mine.id] });
+    expect(await store.listActive()).toEqual([]);
+    expect((await store.list(OTHER))[0]).toMatchObject({ id: mine.id, credentialsUnreadable: true });
+  });
+
+  it("keeps every other hook deliverable when one row is corrupt, and logs the corrupt one once", async () => {
+    const { clearLogs, recentLogs } = await import("../util/log.js");
+    const store = new WebhooksStore(handle.db, clock, new SecretBox("install-key"));
+    const broken = await store.create(USER, { url: "https://example.test/broken", events: ["*"], authHeader: header });
+    const fine = await store.create(USER, { url: "https://example.test/fine", events: ["*"], authHeader: { name: "X-Api-Key", value: "fine-key-0123456789abcd" } });
+    const plain = await store.create(OTHER, { url: "https://example.test/plain", events: ["*"] });
+    await handle.client.execute({ sql: "UPDATE webhooks SET auth_header = 'enc:v1:AAAA' WHERE id = ?", args: [broken.id] });
+    clearLogs();
+    for (let i = 0; i < 3; i++) {
+      expect((await store.listActive()).map((h) => h.id).sort()).toEqual([fine.id, plain.id].sort());
+    }
+    const mentions = recentLogs().filter((l) => JSON.stringify(l).includes(broken.id));
+    expect(mentions).toHaveLength(1);
+  });
+
+  it.each([
+    ["a reserved name", { name: "Host", value: "x" }],
+    ["__proto__ as the name", { name: "__proto__", value: "x" }],
+    ["a value with a line break", { name: "Authorization", value: "a\r\nb" }],
+    ["a missing value", { name: "Authorization" }],
+  ])("fails closed when the opened header has %s", async (_case, opened) => {
+    const box = new SecretBox("install-key");
+    const store = new WebhooksStore(handle.db, clock, box);
+    const hook = await store.create(USER, { url: "https://example.test/hook", events: ["*"], authHeader: header });
+    const sealed = box.encrypt(JSON.stringify(opened), `webhook-auth|${USER}|${hook.id}`);
+    await handle.client.execute({ sql: "UPDATE webhooks SET auth_header = ? WHERE id = ?", args: [sealed, hook.id] });
+    expect(await store.listActive()).toEqual([]);
+    expect((await store.list(USER))[0]).toMatchObject({ credentialsUnreadable: true });
   });
 
   it("is replaced and removed by update, only on the owner's hook", async () => {
@@ -143,24 +199,36 @@ describe("a webhook's auth header at rest", () => {
     const hook = await store.create(USER, { url: "https://example.test/hook", events: ["*"], authHeader: header });
     const replaced = { name: "X-Api-Key", value: "replacement-credential-0042" };
     expect(await store.update(OTHER, hook.id, { authHeader: null })).toBeNull();
-    expect((await store.list(USER))[0]!.authHeader).toEqual(header);
-    expect((await store.update(USER, hook.id, { authHeader: replaced }))!.authHeader).toEqual(replaced);
-    expect((await store.list(USER))[0]!.authHeader).toEqual(replaced);
-    expect((await store.update(USER, hook.id, { authHeader: null }))!.authHeader).toBeUndefined();
+    expect((await store.list(USER))[0]).toMatchObject({ authHeader: header });
+    expect(await store.update(USER, hook.id, { authHeader: replaced })).toMatchObject({ authHeader: replaced });
+    expect((await store.list(USER))[0]).toMatchObject({ authHeader: replaced });
+    expect(await store.update(USER, hook.id, { authHeader: null })).not.toHaveProperty("authHeader");
     expect(await rawAuthHeaders()).toEqual(["null"]);
   });
 
-  it("is stored in the clear without a key, warned about, and sealed once a key is set", async () => {
-    await new WebhooksStore(handle.db, clock).create(USER, { url: "https://example.test/hook", events: ["*"], authHeader: header });
+  it("is never stored in the clear: a store without a key refuses one", async () => {
     const plain = new WebhooksStore(handle.db, clock);
-    expect(await plain.hasPlaintextSecrets()).toBe(true);
+    expect(plain.sealsAuthHeaders).toBe(false);
+    await expect(plain.create(USER, { url: "https://example.test/hook", events: ["*"], authHeader: header })).rejects.toThrow(
+      "WEBHOOK_ENCRYPTION_KEY",
+    );
+    const hook = await plain.create(USER, { url: "https://example.test/hook", events: ["*"] });
+    await expect(plain.update(USER, hook.id, { authHeader: header })).rejects.toThrow("WEBHOOK_ENCRYPTION_KEY");
+    expect(await rawAuthHeaders()).toEqual(["null"]);
+  });
 
+  it("is not delivered when found unencrypted, is counted for the boot warning, and is not sealed in place", async () => {
     const keyed = new WebhooksStore(handle.db, clock, new SecretBox("install-key"));
-    expect(await keyed.encryptLegacySecrets()).toBe(1);
+    const hook = await keyed.create(USER, { url: "https://example.test/hook", events: ["*"] });
+    await handle.client.execute({ sql: "UPDATE webhooks SET auth_header = ? WHERE id = ?", args: [JSON.stringify(header), hook.id] });
+    expect(await keyed.undeliverableAuthHeaders()).toBe(1);
     expect(await keyed.encryptLegacySecrets()).toBe(0);
-    expect(await plain.hasPlaintextSecrets()).toBe(false);
-    const [raw] = await rawAuthHeaders();
-    expect(raw).not.toContain(VALUE);
-    expect((await keyed.list(USER))[0]!.authHeader).toEqual(header);
+    expect(await rawAuthHeaders()).toEqual([JSON.stringify(header)]);
+    expect(await keyed.listActive()).toEqual([]);
+    expect((await keyed.list(USER))[0]).toMatchObject({ credentialsUnreadable: true });
+
+    expect(await keyed.update(USER, hook.id, { authHeader: header })).toMatchObject({ authHeader: header });
+    expect(await keyed.undeliverableAuthHeaders()).toBe(0);
+    expect((await keyed.listActive()).map((h) => h.id)).toEqual([hook.id]);
   });
 });
