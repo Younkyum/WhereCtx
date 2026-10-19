@@ -535,7 +535,7 @@ describe("the map key and map-config", () => {
     expect((await mapConfig()).provider).toBe("kakao");
   });
 
-  it("falls back to the operator's map key for USER_ID only, unless every person may use operator keys", async () => {
+  it("falls back to the operator's map key for USER_ID only, unless every person may use the operator's map keys", async () => {
     await boot({ operatorMapKeys: { kakao: OPERATOR_JS } });
     await settings({ geoEnabled: true });
     expect(await mapConfig()).toMatchObject({ provider: "kakao", sdkUrl: expect.stringContaining(`appkey=${OPERATOR_JS}&`) });
@@ -546,11 +546,34 @@ describe("the map key and map-config", () => {
     await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
     expect(await mapConfig()).toMatchObject({ sdkUrl: expect.stringContaining(`appkey=${JS_KEY}&`) });
 
+    // Everyone may use the operator's REST keys; that alone does not hand out its map key.
     await boot({ operatorMapKeys: { kakao: OPERATOR_JS }, operatorKeyForAll: true });
     const ana = await invite("Ana");
     await ana.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
-    expect(await mapConfig(ana)).toMatchObject({ provider: "kakao", sdkUrl: expect.stringContaining(`appkey=${OPERATOR_JS}&`) });
+    expect(await mapConfig(ana)).toEqual({ provider: null });
+    expect((await ana.browser.json("/v1/geo")).operatorMap).toEqual([]);
+
+    await boot({ operatorMapKeys: { kakao: OPERATOR_JS }, operatorMapKeyForAll: true });
+    const bo = await invite("Bo");
+    await bo.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
+    expect(await mapConfig(bo)).toMatchObject({ provider: "kakao", sdkUrl: expect.stringContaining(`appkey=${OPERATOR_JS}&`) });
+    expect((await bo.browser.json("/v1/geo")).active).toBeNull();
   });
+
+  it("uses the person's own key for any provider before the operator's key for the first provider", async () => {
+    await boot({ operatorMapKeys: { kakao: OPERATOR_JS } });
+    await settings({ geoEnabled: true, geoProvider: null });
+    await owner.browser.json("/v1/geo/credentials/naver/map", { method: "PUT", body: { key: "naverkeyid01" } });
+    expect(await mapConfig()).toMatchObject({ provider: "naver", sdkUrl: expect.stringContaining("ncpKeyId=naverkeyid01") });
+    expect((await owner.browser.json("/v1/geo")).map).toEqual({ provider: "naver", source: "own" });
+    await owner.browser.json("/v1/geo/credentials/naver", { method: "PUT", body: { clientId: "naver-client-id-0001", clientSecret: "naver-client-secret-01" } });
+    expect((await owner.browser.json("/v1/geo")).active).toEqual({ provider: "naver", source: "own" });
+    // A chosen provider is still the only one tried.
+    await settings({ geoProvider: "kakao" });
+    expect(await mapConfig()).toMatchObject({ provider: "kakao", sdkUrl: expect.stringContaining(`appkey=${OPERATOR_JS}&`) });
+    expect((await owner.browser.json("/v1/geo")).active).toEqual({ provider: "kakao", source: "operator" });
+  });
+
 });
 
 describe("the owner's own location, for the Home map", () => {

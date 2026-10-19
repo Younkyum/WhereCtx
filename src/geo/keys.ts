@@ -2,8 +2,9 @@
  * Which maps key a person's calls use, and the one place a provider is
  * called.
  *
- * - The key: the person's own (BYOK) first, then the operator's, which only
- *   USER_ID may use unless GEO_OPERATOR_KEY_FOR_ALL.
+ * - The key: the person's own (BYOK) for any provider first, then the
+ *   operator's, which only USER_ID may use unless GEO_OPERATOR_KEY_FOR_ALL
+ *   (REST keys) or GEO_OPERATOR_MAP_KEY_FOR_ALL (map keys).
  * - The budget: every provider call counts against the person (a geocode and
  *   a route are two), against the key, and, for anyone but USER_ID on an
  *   operator key, against a daily cap (GEO_OPERATOR_DAILY_CAP). Counters are
@@ -131,17 +132,13 @@ export class GeoKeys {
     return userId === this.deps.config.defaultUserId;
   }
 
-  private mayUseOperatorKeys(userId: UserId): boolean {
-    return this.deps.config.geo.operatorKeyForAll || this.isOperator(userId);
-  }
-
   private operatorProviders(userId: UserId): GeoProviderName[] {
-    if (!this.mayUseOperatorKeys(userId)) return [];
+    if (!this.deps.config.geo.operatorKeyForAll && !this.isOperator(userId)) return [];
     return GEO_PROVIDERS.filter((p) => this.deps.config.geo.operatorKeys[p] !== undefined);
   }
 
   private operatorMapProviders(userId: UserId): GeoProviderName[] {
-    if (!this.mayUseOperatorKeys(userId)) return [];
+    if (!this.deps.config.geo.operatorMapKeyForAll && !this.isOperator(userId)) return [];
     return GEO_PROVIDERS.filter((p) => this.deps.config.geo.operatorMapKeys[p] !== undefined);
   }
 
@@ -156,38 +153,36 @@ export class GeoKeys {
     );
   }
 
-  /** The provider to call for this person: their choice, else the first with a key; their own key before the operator's. */
+  /** The chosen provider, else every provider in order. */
+  private static order(settings: PrivacySettings): readonly GeoProviderName[] {
+    return settings.geoProvider ? [settings.geoProvider] : GEO_PROVIDERS;
+  }
+
+  /** The provider to call for this person: their choice, else the first with a key; their own key, for any provider, before the operator's. */
   async resolve(userId: UserId, settings: PrivacySettings): Promise<ResolvedKey | null> {
-    const own = new Set((await this.deps.credentials.list(userId)).filter((c) => c.status === "ok").map((c) => c.provider));
-    const operator = new Set(this.operatorProviders(userId));
-    const order = settings.geoProvider ? [settings.geoProvider] : GEO_PROVIDERS;
-    for (const name of order) {
-      if (own.has(name)) {
-        const keys = await this.deps.credentials.open(userId, name);
-        const credentials = keys && restCredentials(name, keys);
-        if (credentials) return { provider: this.adapter(credentials), name, source: "own" };
-      }
-      if (operator.has(name)) {
-        return { provider: this.adapter(this.deps.config.geo.operatorKeys[name]!), name, source: "operator" };
-      }
+    for (const name of GeoKeys.order(settings)) {
+      const keys = await this.deps.credentials.open(userId, name);
+      const credentials = keys && restCredentials(name, keys);
+      if (credentials) return { provider: this.adapter(credentials), name, source: "own" };
     }
-    return null;
+    const operator = this.operatorProviders(userId);
+    const name = GeoKeys.order(settings).find((p) => operator.includes(p));
+    return name ? { provider: this.adapter(this.deps.config.geo.operatorKeys[name]!), name, source: "operator" } : null;
   }
 
   /**
    * The map key for this person's dashboard: the chosen provider, else the
-   * first with a map key; their own before the operator's. Nothing here
-   * checks the maps switch; GeoService does.
+   * first with a map key; their own, for any provider, before the
+   * operator's. Nothing here checks the maps switch; GeoService does.
    */
   async resolveMap(userId: UserId, settings: PrivacySettings): Promise<ResolvedMapKey | null> {
-    const operator = new Set(this.operatorMapProviders(userId));
-    for (const provider of settings.geoProvider ? [settings.geoProvider] : GEO_PROVIDERS) {
+    for (const provider of GeoKeys.order(settings)) {
       const own = (await this.deps.credentials.open(userId, provider))?.[MAP_SDKS[provider].keyKind];
       if (own) return { provider, key: own, source: "own" };
-      const fallback = operator.has(provider) ? this.deps.config.geo.operatorMapKeys[provider] : undefined;
-      if (fallback) return { provider, key: fallback, source: "operator" };
     }
-    return null;
+    const operator = this.operatorMapProviders(userId);
+    const provider = GeoKeys.order(settings).find((p) => operator.includes(p));
+    return provider ? { provider, key: this.deps.config.geo.operatorMapKeys[provider]!, source: "operator" } : null;
   }
 
   async status(userId: UserId, settings: PrivacySettings): Promise<GeoStatus> {
