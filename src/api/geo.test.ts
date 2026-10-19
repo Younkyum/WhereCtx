@@ -83,6 +83,22 @@ describe("maps keys", () => {
     expect((await owner.browser.json("/v1/geo")).credentials).toEqual([]);
   });
 
+  it("a corrupted key row is reported unusable, skipped for calls, and can be replaced or removed", async () => {
+    await owner.browser.json("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: KAKAO_KEY } });
+    await ctx.handle.client.execute("UPDATE geo_credentials SET secret = 'enc:v1:Zm9vYmFyYmF6cXV4cXV1eHF1dXhxdXV4cXV1eA=='");
+    const status = await owner.browser.send("/v1/geo");
+    expect(status.status).toBe(200);
+    const body = (await status.json()) as any;
+    expect(body.credentials[0]).toMatchObject({ provider: "kakao", status: "unusable" });
+    expect(body.active).toEqual({ provider: "kakao", source: "operator" });
+    const { test } = await owner.browser.json("/v1/geo/credentials/kakao/test", { method: "POST" });
+    expect(test).toMatchObject({ ok: false, error: "missing", message: expect.stringMatching(/save it again/) });
+    await owner.browser.json("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: KAKAO_KEY } });
+    expect((await owner.browser.json("/v1/geo")).credentials[0].status).toBe("ok");
+    await ctx.handle.client.execute("UPDATE geo_credentials SET secret = 'garbage'");
+    expect((await owner.browser.send("/v1/geo/credentials/kakao", { method: "DELETE" })).status).toBe(200);
+  });
+
   it("refuses malformed keys and unknown providers", async () => {
     expect((await owner.browser.send("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: "has space key" } })).status).toBe(400);
     expect((await owner.browser.send("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: KAKAO_KEY, extra: "x" } })).status).toBe(400);

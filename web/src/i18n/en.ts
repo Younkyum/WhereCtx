@@ -578,6 +578,7 @@ export const EN = {
   "maps.getKey.naver": "How to get a Naver Cloud Maps key",
   "maps.savedKey": "Saved key {hint}",
   "maps.lastUsed": "last used {when}",
+  "maps.unusable": "This saved key can no longer be opened. Save it again.",
   "maps.lastError": "Last error: {why}",
   "maps.usingOperator": "No key of yours. This server's key is used.",
   "maps.noKey": "No key",

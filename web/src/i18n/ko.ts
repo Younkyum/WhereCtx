@@ -580,6 +580,7 @@ export const KO: Record<I18nKey, string> = {
   "maps.getKey.naver": "네이버 클라우드 Maps 키 발급 방법",
   "maps.savedKey": "저장된 키 {hint}",
   "maps.lastUsed": "마지막 사용 {when}",
+  "maps.unusable": "저장된 키를 열 수 없어요. 다시 저장해 주세요.",
   "maps.lastError": "마지막 오류: {why}",
   "maps.usingOperator": "내 키가 없어 서버의 키를 써요.",
   "maps.noKey": "키 없음",

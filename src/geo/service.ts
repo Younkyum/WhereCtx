@@ -29,7 +29,7 @@ import { log } from "../util/log.js";
 import { KeyedMutex } from "../util/mutex.js";
 import { isStale, secondsSince, systemClock, type Clock } from "../util/time.js";
 import type { GeoCacheStore } from "./cacheStore.js";
-import type { GeoCredentialsStore, StoredGeoCredential } from "./credentialsStore.js";
+import { UNUSABLE_KEY, type GeoCredentialsStore, type StoredGeoCredential } from "./credentialsStore.js";
 import { FakeGeoProvider } from "./fake.js";
 import { KakaoProvider } from "./kakao.js";
 import { NaverProvider } from "./naver.js";
@@ -225,7 +225,7 @@ export class GeoService {
     };
   }
 
-  /** Save some of a provider's keys; kinds not named keep their stored value. */
+  /** Save a provider's keys, replacing those saved for it before. */
   saveCredential(userId: UserId, provider: GeoProviderName, keys: Record<string, string>): Promise<StoredGeoCredential> {
     return this.deps.credentials.put(userId, provider, keys);
   }
@@ -238,7 +238,10 @@ export class GeoService {
   async testCredential(userId: UserId, provider: GeoProviderName): Promise<KeyTestOutcome> {
     const keys = await this.deps.credentials.open(userId, provider);
     const credentials = keys && restCredentials(provider, keys);
-    if (!credentials) return { ok: false, error: "missing", message: "no REST key saved for this provider" };
+    if (!credentials) {
+      const saved = (await this.deps.credentials.list(userId)).find((c) => c.provider === provider);
+      return { ok: false, error: "missing", message: saved ? UNUSABLE_KEY : "no REST key saved for this provider" };
+    }
     try {
       const region = await this.adapter(credentials).reverse(KEY_TEST_POINT);
       await this.deps.credentials.markUsed(userId, provider, null);

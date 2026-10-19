@@ -206,7 +206,11 @@ function KeyRow({
             ? t("maps.usingOperator")
             : t("maps.noKey")}
       </Text>
-      {saved?.lastError ? <Text type="supporting">{t("maps.lastError", { why: saved.lastError })}</Text> : null}
+      {saved?.status === "unusable" ? (
+        <Text type="supporting">{t("maps.unusable")}</Text>
+      ) : saved?.lastError ? (
+        <Text type="supporting">{t("maps.lastError", { why: saved.lastError })}</Text>
+      ) : null}
       <Link href={KEY_DOCS[provider]} isExternalLink>
         {t(`maps.getKey.${provider}`)}
       </Link>

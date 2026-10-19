@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDb, ensureSchema, type DbHandle } from "../db/index.js";
 import { asUserId } from "../types.js";
 import { SecretBox } from "../webhooks/secretBox.js";
-import { GeoCredentialsStore } from "./credentialsStore.js";
+import { GeoCredentialsStore, UNUSABLE_KEY } from "./credentialsStore.js";
 import { GeoCacheStore } from "./cacheStore.js";
 
 const ana = asUserId("ana");
@@ -52,16 +52,41 @@ describe("maps credentials at rest", () => {
     expect(await store.open(ana, "kakao")).not.toBeNull();
   });
 
-  it("cannot be opened with another install's key", async () => {
+  it("cannot be opened with another install's key, and says so instead of failing", async () => {
     await store.put(ana, "kakao", { restKey: KAKAO_KEY });
     const other = new GeoCredentialsStore(handle.db, new SecretBox("another-install"));
-    await expect(other.open(ana, "kakao")).rejects.toThrow();
+    expect(await other.open(ana, "kakao")).toBeNull();
+    expect(await other.list(ana)).toEqual([expect.objectContaining({ provider: "kakao", status: "unusable", lastError: UNUSABLE_KEY })]);
   });
 
-  it("refuses a row that is not sealed", async () => {
+  it("is bound to its person and provider: a row copied to another does not open", async () => {
     await store.put(ana, "kakao", { restKey: KAKAO_KEY });
-    await handle.client.execute({ sql: "UPDATE geo_credentials SET secret = ?", args: [JSON.stringify({ restKey: KAKAO_KEY })] });
-    await expect(store.open(ana, "kakao")).rejects.toThrow(/not sealed/);
+    await store.put(ben, "kakao", { restKey: "ben-key-0000000000000000" });
+    await handle.client.execute(
+      "UPDATE geo_credentials SET secret = (SELECT secret FROM geo_credentials WHERE user_id = 'ana') WHERE user_id = 'ben'",
+    );
+    expect(await store.open(ben, "kakao")).toBeNull();
+    expect((await store.list(ben))[0]!.status).toBe("unusable");
+    expect(await store.open(ana, "kakao")).toEqual({ restKey: KAKAO_KEY });
+  });
+
+  it("treats a corrupted, unsealed or incomplete row as unusable, and still replaces or removes it", async () => {
+    await store.put(ana, "kakao", { restKey: KAKAO_KEY });
+    await store.put(ana, "naver", { clientId: NAVER.clientId, clientSecret: NAVER.clientSecret });
+    await handle.client.execute("UPDATE geo_credentials SET secret = 'enc:v1:AAAAbroken' WHERE provider = 'kakao'");
+    await handle.client.execute({ sql: "UPDATE geo_credentials SET secret = ? WHERE provider = 'naver'", args: [JSON.stringify({ clientId: "x" })] });
+    expect((await store.list(ana)).map((c) => [c.provider, c.status])).toEqual([
+      ["kakao", "unusable"],
+      ["naver", "unusable"],
+    ]);
+    expect(await store.open(ana, "kakao")).toBeNull();
+    await store.put(ana, "kakao", { restKey: KAKAO_KEY });
+    expect(await store.open(ana, "kakao")).toEqual({ restKey: KAKAO_KEY });
+    expect(await store.delete(ana, "naver")).toBe(true);
+    expect((await store.list(ana)).map((c) => [c.provider, c.status])).toEqual([["kakao", "ok"]]);
+
+    const incomplete = await store.put(ana, "naver", { clientId: NAVER.clientId });
+    expect(incomplete.status).toBe("unusable");
   });
 
   it("replacing a key clears how the old one fared", async () => {
@@ -72,11 +97,10 @@ describe("maps credentials at rest", () => {
     expect((await store.list(ana))[0]).toMatchObject({ kinds: { restKey: "3210" }, lastError: null, lastUsedAt: null });
   });
 
-  it("keeps the kinds a save does not name, and removes one set to null", async () => {
-    await store.put(ana, "kakao", { restKey: KAKAO_KEY });
-    await store.put(ana, "kakao", { jsKey: "javascript-key-abcd" });
+  it("a save replaces the whole bag; it can still hold more than the REST kinds", async () => {
+    await store.put(ana, "kakao", { restKey: KAKAO_KEY, jsKey: "javascript-key-abcd" });
     expect(await store.open(ana, "kakao")).toEqual({ restKey: KAKAO_KEY, jsKey: "javascript-key-abcd" });
-    await store.put(ana, "kakao", { jsKey: null });
+    await store.put(ana, "kakao", { restKey: KAKAO_KEY });
     expect(await store.open(ana, "kakao")).toEqual({ restKey: KAKAO_KEY });
   });
 });
