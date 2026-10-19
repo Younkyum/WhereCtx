@@ -1415,6 +1415,47 @@ describe("create and edit dialogs", () => {
     expect(host.textContent).not.toContain("aaaa-bbbb");
   });
 
+  it("Sharing edits what a person sees in a dialog and sends only what changed", async () => {
+    let outgoing: any[] = [{ viewer: { id: "u2", displayName: "Kim" }, level: "coarse", hideHomeExact: true, showArea: false }];
+    const sent: string[] = [];
+    route("GET /v1/shares", () => ({ status: 200, body: { outgoing, incoming: [] } }));
+    route("GET /v1/workspaces", () => ({ status: 200, body: { workspaces: [{ id: "w1", name: "Home" }] } }));
+    route("GET /v1/workspaces/w1/members", () => ({
+      status: 200,
+      body: { members: [{ userId: "u1", displayName: "Me" }, { userId: "u2", displayName: "Kim" }, { userId: "u3", displayName: "Lee" }] },
+    }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { sharingPaused: false, hideHomeExactCoordinates: true, areaToPeople: false } } }));
+    route("GET /v1/shares/audit?limit=50", () => ({ status: 200, body: { audit: [] } }));
+    route("PUT /v1/shares/u2", (b) => (sent.push(`PUT u2 ${JSON.stringify(b)}`), (outgoing = [{ ...outgoing[0], ...(b as object) }]), { status: 200, body: {} }));
+    route("PUT /v1/shares/u3", (b) => (sent.push(`PUT u3 ${JSON.stringify(b)}`), { status: 200, body: {} }));
+    route("DELETE /v1/shares/u2", () => (sent.push("DELETE u2"), (outgoing = []), { status: 200, body: { ok: true } }));
+    await open("#sharing");
+    expect(host.querySelector('[role="combobox"]')).toBeNull();
+    expect(host.textContent).toContain("Status only");
+
+    await click(button("Edit"));
+    expect(dialog().textContent).toContain("Sharing with Kim");
+    expect(dialogButton("Save").disabled).toBe(true);
+    await choose(dialog(), "Exact location");
+    expect(dialog().textContent).toContain("Hide my exact location at home");
+    await click(dialogButton("Save"));
+    expect(sent).toEqual(['PUT u2 {"level":"precise"}']);
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).toContain("Exact location (hidden at home)");
+
+    const lee = [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Edit")[1]!;
+    await click(lee);
+    expect(dialog().textContent).toContain("Sharing with Lee");
+    await choose(dialog(), "Status only");
+    await click(dialogButton("Save"));
+    expect(sent[1]).toBe('PUT u3 {"level":"coarse"}');
+
+    await click(button("Edit"));
+    await choose(dialog(), "Not sharing");
+    await click(dialogButton("Save"));
+    expect(sent[2]).toBe("DELETE u2");
+  });
+
   it("Agents shows a refused create inside the dialog and keeps the name", async () => {
     route("GET /v1/tokens", () => ({ status: 200, body: { tokens: [] } }));
     route("GET /v1/oauth/grants", () => ({ status: 200, body: { grants: [] } }));

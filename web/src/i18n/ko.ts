@@ -730,4 +730,7 @@ export const KO: Record<I18nKey, string> = {
   "account.addPasskeyDesc": "브라우저나 휴대폰이 WhereCtx용 패스키를 만들라고 안내해요. 로그인하는 기기마다 하나씩 추가해 두면 하나를 잃어도 계정에 들어올 수 있어요.",
   "account.addPasskeyButton": "패스키 만들기",
   "account.newCodesButton": "새 코드 만들기",
+  "sharing.edit": "편집",
+  "sharing.levelLabel": "보여 줄 정보",
+  "sharing.areaOn": "동네 공개",
 };

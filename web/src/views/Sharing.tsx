@@ -11,10 +11,14 @@ import { Table } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { VStack } from "@astryxdesign/core/Layout";
+import { useState } from "react";
 import { api } from "../api";
 import { useApp, useMe } from "../context";
+import type { Translate } from "../i18n";
 import { SHARE_LEVELS, oneOf, type AuditEntry, type PrivacySettings, type ShareLevel, type ShareTerms, type Shares } from "../model";
-import { Empty, Loaded, Page, Panel, Row, Rows, useConfirm, useLoad, useNotify } from "../ui";
+import { DialogForm, Empty, FormDialog, Loaded, Page, Panel, Row, Rows, useConfirm, useLoad, useNotify } from "../ui";
+
+type Outgoing = Shares["outgoing"][number];
 
 interface CoMember {
   id: string;
@@ -51,7 +55,10 @@ async function loadSharing(myId: string) {
     api<{ settings: PrivacySettings }>("/v1/privacy"),
     api<{ audit: AuditEntry[] }>("/v1/shares/audit?limit=50"),
   ]);
-  return { shares, people, paused: Boolean(privacy.settings?.sharingPaused), audit: audit.audit ?? [] };
+  const s = privacy.settings;
+  // What the server gives a new share whose request leaves these out.
+  const defaults = { hideHomeExact: Boolean(s?.hideHomeExactCoordinates), showArea: Boolean(s?.areaToPeople) };
+  return { shares, people, paused: Boolean(s?.sharingPaused), defaults, audit: audit.audit ?? [] };
 }
 
 export function SharingView() {
@@ -60,6 +67,8 @@ export function SharingView() {
   const notify = useNotify();
   const confirm = useConfirm();
   const [state, reload] = useLoad(() => loadSharing(me.user.id), [me.user.id]);
+  const [editing, setEditing] = useState<CoMember | null>(null);
+  const close = () => setEditing(null);
 
   const change = async (fn: () => Promise<unknown>, message = t("toast.saved")) => {
     try {
@@ -71,12 +80,11 @@ export function SharingView() {
       await reload();
     }
   };
-  const share = (id: string) => `/v1/shares/${encodeURIComponent(id)}`;
 
   return (
     <Page title={t("sharing.title")} description={t("sharing.desc")}>
       <Loaded state={state}>
-        {({ shares, people, paused, audit }) => {
+        {({ shares, people, paused, defaults, audit }) => {
           const outgoing = new Map(shares.outgoing.map((s) => [s.viewer.id, s]));
           return (
             <VStack gap={6}>
@@ -96,47 +104,12 @@ export function SharingView() {
               <Panel title={t("sharing.outgoing")}>
                 {people.length ? (
                   <Rows items={people} keyOf={(p) => p.id}>
-                    {(p) => {
-                      const current = outgoing.get(p.id);
-                      const level: ShareLevel = current?.level ?? "off";
-                      return (
-                        <Row title={p.name} subtitle={p.spaces.join(", ")}>
-                          <Selector
-                            label={t("sharing.levelFor", { name: p.name })}
-                            isLabelHidden
-                            width={190}
-                            value={level}
-                            options={SHARE_LEVELS.map((l) => ({ value: l, label: t(`sharing.level.${l}`) }))}
-                            onChange={(next) => {
-                              if (!oneOf(SHARE_LEVELS, next) || next === level) return;
-                              void change(() =>
-                                next === "off"
-                                  ? api(share(p.id), { method: "DELETE" })
-                                  : api(share(p.id), { method: "PUT", body: { level: next } }),
-                              );
-                            }}
-                          />
-                          {current ? (
-                            <Switch
-                              size="sm"
-                              label={t("sharing.showArea")}
-                              value={Boolean(current.showArea)}
-                              changeAction={(on) => change(() => api(share(p.id), { method: "PUT", body: { level: current.level, showArea: on } }))}
-                            />
-                          ) : null}
-                          {current?.level === "precise" ? (
-                            <Switch
-                              size="sm"
-                              label={t("sharing.hideHome")}
-                              value={Boolean(current.hideHomeExact)}
-                              changeAction={(on) =>
-                                change(() => api(share(p.id), { method: "PUT", body: { level: "precise", hideHomeExact: on } }))
-                              }
-                            />
-                          ) : null}
-                        </Row>
-                      );
-                    }}
+                    {(p) => (
+                      <Row title={p.name} subtitle={p.spaces.join(", ")}>
+                        <Text>{shareSummary(outgoing.get(p.id), t)}</Text>
+                        <Button label={t("sharing.edit")} size="sm" onClick={() => setEditing(p)} />
+                      </Row>
+                    )}
                   </Rows>
                 ) : (
                   <Empty text={t("sharing.noMembers")} />
@@ -169,11 +142,93 @@ export function SharingView() {
               <Panel title={t("sharing.audit")}>
                 <AuditTable audit={audit} />
               </Panel>
+              <FormDialog isOpen={editing !== null} onClose={close}>
+                {editing ? (
+                  <EditShare
+                    person={editing}
+                    current={outgoing.get(editing.id)}
+                    defaults={defaults}
+                    onClose={close}
+                    onSaved={async () => {
+                      notify.ok(t("toast.saved"));
+                      await reload();
+                    }}
+                  />
+                ) : null}
+              </FormDialog>
             </VStack>
           );
         }}
       </Loaded>
     </Page>
+  );
+}
+
+/** One line for what a person sees of me now. */
+function shareSummary(current: Outgoing | undefined, t: Translate): string {
+  if (!current) return t("sharing.level.off");
+  const level = t(current.level === "precise" && current.hideHomeExact ? "sharing.terms.preciseHomeHidden" : `sharing.level.${current.level}`);
+  return current.showArea ? `${level} · ${t("sharing.areaOn")}` : level;
+}
+
+/**
+ * Changes how one person sees me. Only what changed is sent, so a new share
+ * keeps the server's defaults and an unchanged switch never counts as
+ * showing more (which would ask for a passkey).
+ */
+function EditShare({
+  person,
+  current,
+  defaults,
+  onClose,
+  onSaved,
+}: {
+  person: CoMember;
+  current: Outgoing | undefined;
+  defaults: { hideHomeExact: boolean; showArea: boolean };
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const { t } = useApp();
+  const initial = {
+    level: (current?.level ?? "off") as ShareLevel,
+    showArea: current ? Boolean(current.showArea) : defaults.showArea,
+    hideHomeExact: current ? Boolean(current.hideHomeExact) : defaults.hideHomeExact,
+  };
+  const [level, setLevel] = useState<ShareLevel>(initial.level);
+  const [showArea, setShowArea] = useState(initial.showArea);
+  const [hideHomeExact, setHideHomeExact] = useState(initial.hideHomeExact);
+  const path = `/v1/shares/${encodeURIComponent(person.id)}`;
+  const changed = level !== initial.level || (level !== "off" && (showArea !== initial.showArea || (level === "precise" && hideHomeExact !== initial.hideHomeExact)));
+  const save = async () => {
+    if (level === "off") {
+      await api(path, { method: "DELETE" });
+    } else {
+      const body: { level: ShareLevel; showArea?: boolean; hideHomeExact?: boolean } = { level };
+      if (showArea !== initial.showArea) body.showArea = showArea;
+      if (level === "precise" && hideHomeExact !== initial.hideHomeExact) body.hideHomeExact = hideHomeExact;
+      await api(path, { method: "PUT", body });
+    }
+    await onSaved();
+  };
+  return (
+    <DialogForm
+      title={t("sharing.levelFor", { name: person.name })}
+      subtitle={person.spaces.join(", ")}
+      submitLabel={t("common.save")}
+      canSubmit={changed}
+      onSubmit={save}
+      onClose={onClose}
+    >
+      <Selector
+        label={t("sharing.levelLabel")}
+        value={level}
+        options={SHARE_LEVELS.map((l) => ({ value: l, label: t(`sharing.level.${l}`) }))}
+        onChange={(next) => oneOf(SHARE_LEVELS, next) && setLevel(next)}
+      />
+      {level !== "off" ? <Switch label={t("sharing.showArea")} value={showArea} onChange={setShowArea} /> : null}
+      {level === "precise" ? <Switch label={t("sharing.hideHome")} value={hideHomeExact} onChange={setHideHomeExact} /> : null}
+    </DialogForm>
   );
 }
 

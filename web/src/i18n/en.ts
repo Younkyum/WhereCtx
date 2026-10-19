@@ -728,6 +728,9 @@ export const EN = {
   "account.addPasskeyDesc": "Your browser or phone asks you to create a passkey for WhereCtx. Add one on each device you sign in from, so losing one doesn't lock you out.",
   "account.addPasskeyButton": "Create passkey",
   "account.newCodesButton": "Make new codes",
+  "sharing.edit": "Edit",
+  "sharing.levelLabel": "What they see",
+  "sharing.areaOn": "neighbourhood shown",
 } as const;
 
 export type I18nKey = keyof typeof EN;
