@@ -6,6 +6,7 @@ import type { WhereCtxConfig } from "../config.js";
 import { OWNER_ADMIN, TestClock, bootApp, reauth, setupOwner, type Enrolled } from "../testing/accounts.js";
 import type { FakeGeoProvider } from "../geo/fake.js";
 import { GEO_CALLS_PER_MINUTE, KEY_TEST_POINT } from "../geo/service.js";
+import { roundCoord } from "../geo/types.js";
 
 const AGENT = "agent-token-strong-0123456789abcdef-eta";
 const HOME = { lat: 37.5, lon: 127.0 };
@@ -140,7 +141,7 @@ describe("testing a key", () => {
     const { test } = await owner.browser.json("/v1/geo/credentials/kakao/test", { method: "POST" });
     expect(test).toEqual({ ok: true, label: "성남시 분당구 삼평동" });
     expect(sent.map((u) => [u.searchParams.get("y"), u.searchParams.get("x")])).toEqual([
-      [String(KEY_TEST_POINT.lat), String(KEY_TEST_POINT.lon)],
+      [String(roundCoord(KEY_TEST_POINT.lat)), String(roundCoord(KEY_TEST_POINT.lon))],
     ]);
     expect((await owner.browser.json("/v1/geo")).credentials[0].lastUsedAt).not.toBeNull();
   });
@@ -199,12 +200,19 @@ describe("ETA", () => {
     expect(routeCalls()[0]!.origin).toEqual({ lat: 37.567, lon: 126.978 });
   });
 
+  it("sends a registered destination rounded too", async () => {
+    await settings({ geoEnabled: true });
+    await owner.browser.json("/v1/places", { body: { name: "clinic", type: "custom", lat: 37.4012345, lon: 127.1098765, radiusM: 100 } });
+    await owner.browser.json("/v1/geo/eta?to=clinic");
+    expect(routeCalls().at(-1)).toMatchObject({ origin: { lat: 37.567, lon: 126.978 }, destination: { lat: 37.401, lon: 127.11 } });
+  });
+
   it("gives map links to the owner and to a place manager, and for an address the agent named", async () => {
     await settings({ geoEnabled: true, etaToAgents: true });
     expect((await owner.browser.json("/v1/geo/eta?to=office")).eta.deepLinks.kakaoMap).toBe(
       "https://map.kakao.com/link/to/office,37.4,127.1",
     );
-    expect((await (await eta(OWNER_ADMIN, "to=office")).json() as any).eta.deepLinks.naverMap).toMatch(/^nmap:\/\/navigation\?dlat=37\.4&dlng=127\.1&dname=office&appname=/);
+    expect((await (await eta(OWNER_ADMIN, "to=office")).json() as any).eta.deepLinks.naverMap).toBe("nmap://navigation?dlat=37.4&dlng=127.1&dname=office&appname=wherectx");
     const byAddress = (await (await eta(AGENT, "to=" + encodeURIComponent("강남역"))).json()) as any;
     expect(byAddress.eta.destination).toEqual({ label: "강남역 2호선", kind: "address" });
     expect(byAddress.eta.deepLinks.kakaoMap).toContain("37.4979,127.0276");

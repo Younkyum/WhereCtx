@@ -33,10 +33,12 @@ import { UNUSABLE_KEY, type GeoCredentialsStore, type StoredGeoCredential } from
 import { FakeGeoProvider } from "./fake.js";
 import { KakaoProvider } from "./kakao.js";
 import { NaverProvider } from "./naver.js";
+import { mainRoads } from "./roads.js";
 import {
   GEO_PROVIDERS,
   GeoError,
   restCredentials,
+  roundingProvider,
   roundPoint,
   type GeocodeCandidate,
   type GeoCredentials,
@@ -153,12 +155,15 @@ export interface GeoServiceDeps {
   fetch?: typeof fetch;
 }
 
+/** The `appname` Naver Map asks a calling app to name itself by. */
+export const NAVER_APP_NAME = "wherectx";
+
 /** Map links to the destination; the origin is left to the app (the device's own location). */
-export function deepLinks(label: string, point: LatLon, appName: string): EtaAnswer["deepLinks"] {
+export function deepLinks(label: string, point: LatLon): EtaAnswer["deepLinks"] {
   const name = encodeURIComponent(label);
   return {
     kakaoMap: `https://map.kakao.com/link/to/${name},${point.lat},${point.lon}`,
-    naverMap: `nmap://navigation?dlat=${point.lat}&dlng=${point.lon}&dname=${name}&appname=${encodeURIComponent(appName)}`,
+    naverMap: `nmap://navigation?dlat=${point.lat}&dlng=${point.lon}&dname=${name}&appname=${NAVER_APP_NAME}`,
   };
 }
 
@@ -189,12 +194,15 @@ export class GeoService {
     return GEO_PROVIDERS.filter((p) => this.deps.config.geo.operatorKeys[p] !== undefined);
   }
 
+  /** Every provider is reached through `roundingProvider`, so no adapter is ever handed an unrounded point. */
   private adapter(credentials: GeoCredentials): GeoProvider {
-    if (this.fake) return this.fake;
     const common = { fetch: this.deps.fetch, now: this.clock };
-    return credentials.provider === "kakao"
-      ? new KakaoProvider({ restKey: credentials.restKey, ...common })
-      : new NaverProvider({ clientId: credentials.clientId, clientSecret: credentials.clientSecret, ...common });
+    return roundingProvider(
+      this.fake ??
+        (credentials.provider === "kakao"
+          ? new KakaoProvider({ restKey: credentials.restKey, ...common })
+          : new NaverProvider({ clientId: credentials.clientId, clientSecret: credentials.clientSecret, ...common })),
+    );
   }
 
   /** The provider to call for this person: their choice, else the first with a key; their own key before the operator's. */
@@ -345,7 +353,7 @@ export class GeoService {
     const nearHome = settings.skipProviderNearHome && isAtOrNearHome(presence);
     const home = places.find((p) => p.type === "home");
     if (nearHome && !home) return { kind: "denied", reason: "at home with no home place to start from" };
-    const origin = roundPoint(nearHome ? home! : presence.precise);
+    const origin: LatLon = nearHome ? home! : presence.precise;
 
     const resolved = await this.resolve(userId, settings);
     if (!resolved) return { kind: "unconfigured" };
@@ -392,12 +400,12 @@ export class GeoService {
         traffic: route.traffic,
         departAt: route.departAt,
         arriveAt: arrive.toISOString(),
-        summary: route.summary,
+        summary: mainRoads(route.roads),
         steps: route.steps,
         ...(route.tollFare !== undefined ? { tollFare: route.tollFare } : {}),
         ...(route.taxiFare !== undefined ? { taxiFare: route.taxiFare } : {}),
         provider: resolved.name,
-        ...(target.showLinks ? { deepLinks: deepLinks(target.label, target.point, this.deps.config.baseUrl) } : {}),
+        ...(target.showLinks ? { deepLinks: deepLinks(target.label, target.point) } : {}),
       },
     };
   }
@@ -455,7 +463,7 @@ export class GeoService {
     this.lastLookup.set(userId, { at: now, point: here });
     let region: ReverseResult | null;
     try {
-      region = await this.call(userId, { kind: "system" }, resolved, "geo.reverse", (p) => p.reverse(cell));
+      region = await this.call(userId, { kind: "system" }, resolved, "geo.reverse", (p) => p.reverse(here));
     } catch (e) {
       log.warn("area lookup failed", { provider: resolved.name, kind: asGeoError(e).kind });
       return clear(false);

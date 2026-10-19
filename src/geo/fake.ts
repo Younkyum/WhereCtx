@@ -41,6 +41,8 @@ function regionFor(point: LatLon): ReverseResult {
   return { region1: "서울특별시", region2: "테스트구", region3: dong, label: `테스트구 ${dong}` };
 }
 
+const midpoint = (a: LatLon, b: LatLon): LatLon => ({ lat: (a.lat + b.lat) / 2, lon: (a.lon + b.lon) / 2 });
+
 export class FakeGeoProvider implements GeoProvider {
   readonly name = "fake" as const;
   readonly calls: FakeCall[] = [];
@@ -80,8 +82,13 @@ export class FakeGeoProvider implements GeoProvider {
       traffic: future ? "predicted" : "live",
       tollFare: 0,
       taxiFare: 4800 + Math.round(distanceM / 131) * 100,
-      summary: ["테스트대로", "테스트로"],
-      steps: ["테스트대로 방면으로 우회전", "테스트로 진입"],
+      // The first stretch and turn name the street the route starts on, as a real provider's do.
+      roads: [
+        { name: "테스트출발로12번길", distanceM: Math.round(distanceM * 0.1), path: [origin] },
+        { name: "테스트대로", distanceM: Math.round(distanceM * 0.6), path: [midpoint(origin, destination)] },
+        { name: "테스트도착로", distanceM: Math.round(distanceM * 0.3), path: [destination] },
+      ],
+      steps: ["테스트출발로12번길에서 테스트대로 방면으로 우회전", "테스트도착로 진입"],
       departAt: (future ? request.departAt! : this.now()).toISOString(),
     };
   }

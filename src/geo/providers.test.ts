@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { KakaoProvider, kakaoDepartureTime } from "./kakao.js";
 import { NaverProvider } from "./naver.js";
-import { GeoError } from "./types.js";
+import { GEO_MAX_BODY_BYTES, PROVIDER_TEXT_MAX } from "./http.js";
+import { GeoError, roundingProvider } from "./types.js";
 
 const fixture = (name: string): unknown =>
   JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
@@ -93,10 +94,16 @@ describe("Kakao adapter, against the documented samples", () => {
       traffic: "live",
       tollFare: 0,
       taxiFare: 22200,
-      summary: ["문형산길", "판교역로241번길", "문형산안길1번길"],
+      roads: [
+        { name: "판교역로241번길", distanceM: 186, path: [{ lat: 37.40241072822385, lon: 127.10763122680424 }, { lat: 37.40322184743522, lon: 127.10645821495126 }] },
+        { name: "문형산길", distanceM: 596, path: [{ lat: 37.36601233289304, lon: 127.16765984810529 }, { lat: 37.36708073181059, lon: 127.17352998262038 }] },
+        expect.objectContaining({ name: "문형산안길1번길", distanceM: 85 }),
+        expect.objectContaining({ name: "", distanceM: 14 }),
+      ],
       steps: ["우회전"],
       departAt: NOW.toISOString(),
     });
+    expect(out.roads[2]!.path).toHaveLength(5);
     const url = stub.sent[0]!.url;
     expect(`${url.origin}${url.pathname}`).toBe("https://apis-navi.kakaomobility.com/v1/directions");
     expect(url.searchParams.get("origin")).toBe("127.108,37.402");
@@ -183,7 +190,12 @@ describe("Naver adapter, against the documented samples", () => {
       traffic: "live",
       tollFare: 21000,
       taxiFare: 352360,
-      summary: ["경부고속도로", "상주영천고속도로"],
+      // The documented sample's path holds two points, so its sections (from point 315 on) have none.
+      roads: [
+        { name: "경부고속도로", distanceM: 95575, path: [] },
+        { name: "상주영천고속도로", distanceM: 92508, path: [] },
+        { name: "경부고속도로", distanceM: 89391, path: [] },
+      ],
       steps: ["머내공원사거리에서 '서분당(고기)IC' 방면으로 우회전"],
       departAt: NOW.toISOString(),
     });
@@ -215,5 +227,47 @@ describe("Naver adapter, against the documented samples", () => {
   ] as const)("maps %j to %s", async (reply, kind) => {
     const stub = stubFetch(reply);
     expect((await failure(naver(stub).route({ origin: A, destination: B }))).kind).toBe(kind);
+  });
+});
+
+describe("what an adapter keeps from a response", () => {
+  const kakao = (stub: ReturnType<typeof stubFetch>) => new KakaoProvider({ restKey: "kakao-key", fetch: stub.fn, now: () => NOW });
+
+  it("strips control and bidi characters and caps each string", async () => {
+    const doc = { address_name: "서울\u0000 중구\u202e 세종대로" + "가".repeat(500), x: "126.97", y: "37.56" };
+    const [hit] = await kakao(stubFetch({ body: { documents: [doc] } })).geocode("x");
+    expect(hit!.label.startsWith("서울 중구 세종대로")).toBe(true);
+    expect([...hit!.label]).toHaveLength(PROVIDER_TEXT_MAX);
+    expect(hit!.label).not.toMatch(/[\u0000-\u001f\u202e]/);
+  });
+
+  it("refuses a body larger than the cap, declared or not", async () => {
+    const big = "x".repeat(GEO_MAX_BODY_BYTES + 1);
+    const declared = (async () => new Response(big, { headers: { "content-length": String(big.length) } })) as typeof fetch;
+    const streamed = (async () =>
+      new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(big)); c.close(); } }))) as typeof fetch;
+    for (const fetch of [declared, streamed]) {
+      const error = await failure(new KakaoProvider({ restKey: "k", fetch, now: () => NOW }).geocode("x"));
+      expect(error).toMatchObject({ kind: "upstream", message: expect.stringMatching(/too much/) });
+    }
+  });
+});
+
+describe("the rounding boundary", () => {
+  it("hands the provider only points cut to three decimals: reverse, origin and destination", async () => {
+    const seen: unknown[] = [];
+    const inner = {
+      name: "fake" as const,
+      geocode: async () => [],
+      reverse: async (p: unknown) => (seen.push(p), null),
+      route: async (r: unknown) => (seen.push(r), { durationSec: 1, distanceM: 1, traffic: "live" as const, roads: [], steps: [], departAt: "" }),
+    };
+    const outer = roundingProvider(inner);
+    await outer.reverse({ lat: 37.5665432, lon: 126.9784321 });
+    await outer.route({ origin: { lat: 37.5665432, lon: 126.9784321 }, destination: { lat: 37.4012345, lon: 127.1098765 } });
+    expect(seen).toEqual([
+      { lat: 37.567, lon: 126.978 },
+      { origin: { lat: 37.567, lon: 126.978 }, destination: { lat: 37.401, lon: 127.11 } },
+    ]);
   });
 });

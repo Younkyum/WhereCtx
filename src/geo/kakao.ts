@@ -12,8 +12,7 @@
  */
 
 import { z } from "zod";
-import { errorForStatus, getJson, malformed } from "./http.js";
-import { mainRoads } from "./roads.js";
+import { errorForStatus, getJson, malformed, providerText } from "./http.js";
 import {
   GeoError,
   type GeocodeCandidate,
@@ -22,6 +21,7 @@ import {
   type ReverseResult,
   type RouteRequest,
   type RouteResult,
+  type RouteRoad,
 } from "./types.js";
 
 export const KAKAO_LOCAL_BASE = "https://dapi.kakao.com";
@@ -30,18 +30,18 @@ export const KAKAO_NAVI_BASE = "https://apis-navi.kakaomobility.com";
 const num = z.union([z.number(), z.string()]).transform(Number).pipe(z.number().finite());
 
 const AddressDoc = z.object({
-  address_name: z.string(),
+  address_name: providerText,
   x: num,
   y: num,
-  address: z.object({ address_name: z.string() }).nullish(),
-  road_address: z.object({ address_name: z.string() }).nullish(),
+  address: z.object({ address_name: providerText }).nullish(),
+  road_address: z.object({ address_name: providerText }).nullish(),
 });
 const AddressSearch = z.object({ documents: z.array(AddressDoc) });
 
 const KeywordDoc = z.object({
-  place_name: z.string(),
-  address_name: z.string(),
-  road_address_name: z.string().optional(),
+  place_name: providerText,
+  address_name: providerText,
+  road_address_name: providerText.optional(),
   x: num,
   y: num,
 });
@@ -49,9 +49,9 @@ const KeywordSearch = z.object({ documents: z.array(KeywordDoc) });
 
 const RegionDoc = z.object({
   region_type: z.string(),
-  region_1depth_name: z.string(),
-  region_2depth_name: z.string(),
-  region_3depth_name: z.string(),
+  region_1depth_name: providerText,
+  region_2depth_name: providerText,
+  region_3depth_name: providerText,
 });
 const RegionCode = z.object({ documents: z.array(RegionDoc) });
 
@@ -71,8 +71,10 @@ const Directions = z.object({
         sections: z
           .array(
             z.object({
-              roads: z.array(z.object({ name: z.string(), distance: z.number() })).optional(),
-              guides: z.array(z.object({ name: z.string(), guidance: z.string(), type: z.number() })).optional(),
+              roads: z
+                .array(z.object({ name: providerText, distance: z.number(), vertexes: z.array(z.number()).optional() }))
+                .optional(),
+              guides: z.array(z.object({ name: providerText, guidance: providerText, type: z.number() })).optional(),
             }),
           )
           .optional(),
@@ -86,6 +88,13 @@ const ErrorBody = z.object({ code: z.number() }).partial();
 
 /** Guide types that mark the start, the end and a waypoint rather than a turn. */
 const ENDPOINT_GUIDES = new Set([100, 101, 1000]);
+
+/** A road's `vertexes`, flat [x1, y1, x2, y2, ...], as points. */
+function vertexPath(vertexes: readonly number[] | undefined): LatLon[] {
+  const path: LatLon[] = [];
+  for (let i = 0; vertexes && i + 1 < vertexes.length; i += 2) path.push({ lat: vertexes[i + 1]!, lon: vertexes[i]! });
+  return path;
+}
 
 /** `departure_time`, YYYYMMDDHHMM. The docs give no time zone; Kakao serves Korea, so it is read as KST. */
 export function kakaoDepartureTime(at: Date): string {
@@ -186,7 +195,9 @@ export class KakaoProvider implements GeoProvider {
       traffic: future ? "predicted" : "live",
       tollFare: route.summary.fare.toll,
       taxiFare: route.summary.fare.taxi,
-      summary: mainRoads(sections.flatMap((s) => s.roads ?? [])),
+      roads: sections.flatMap((s) =>
+        (s.roads ?? []).map((r): RouteRoad => ({ name: r.name, distanceM: r.distance, path: vertexPath(r.vertexes) })),
+      ),
       steps: sections
         .flatMap((s) => s.guides ?? [])
         .filter((g) => !ENDPOINT_GUIDES.has(g.type))

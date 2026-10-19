@@ -15,8 +15,7 @@
  */
 
 import { z } from "zod";
-import { errorForStatus, getJson, malformed } from "./http.js";
-import { mainRoads } from "./roads.js";
+import { errorForStatus, getJson, malformed, providerText } from "./http.js";
 import {
   GeoError,
   type GeocodeCandidate,
@@ -26,6 +25,7 @@ import {
   type RouteAvoid,
   type RouteRequest,
   type RouteResult,
+  type RouteRoad,
 } from "./types.js";
 
 export const NAVER_MAPS_BASE = "https://maps.apigw.ntruss.com";
@@ -36,21 +36,20 @@ const Geocode = z.object({
   status: z.string(),
   addresses: z.array(
     z.object({
-      roadAddress: z.string(),
-      jibunAddress: z.string(),
+      roadAddress: providerText,
+      jibunAddress: providerText,
       x: num,
       y: num,
     }),
   ),
 });
 
-const Area = z.object({ name: z.string() });
+const Area = z.object({ name: providerText });
 const Reverse = z.object({
   status: z.object({ code: z.number() }),
   results: z
     .array(
       z.object({
-        name: z.string(),
         region: z.object({ area1: Area, area2: Area, area3: Area }),
       }),
     )
@@ -64,8 +63,12 @@ const RouteBody = z.object({
     tollFare: z.number().optional(),
     taxiFare: z.number().optional(),
   }),
-  section: z.array(z.object({ name: z.string(), distance: z.number() })).optional(),
-  guide: z.array(z.object({ type: z.number(), instructions: z.string() })).optional(),
+  /** Every vertex of the route as [x, y]; a section is a run of it. */
+  path: z.array(z.tuple([z.number(), z.number()])).optional(),
+  section: z
+    .array(z.object({ name: providerText, distance: z.number(), pointIndex: z.number().int(), pointCount: z.number().int() }))
+    .optional(),
+  guide: z.array(z.object({ type: z.number(), instructions: providerText })).optional(),
 });
 const Directions = z.object({
   code: z.number(),
@@ -177,7 +180,13 @@ export class NaverProvider implements GeoProvider {
       traffic: "live",
       ...(route.summary.tollFare !== undefined ? { tollFare: route.summary.tollFare } : {}),
       ...(route.summary.taxiFare !== undefined ? { taxiFare: route.summary.taxiFare } : {}),
-      summary: mainRoads(route.section ?? []),
+      roads: (route.section ?? []).map(
+        (s): RouteRoad => ({
+          name: s.name,
+          distanceM: s.distance,
+          path: (route.path ?? []).slice(s.pointIndex, s.pointIndex + s.pointCount).map(([lon, lat]) => ({ lat, lon })),
+        }),
+      ),
       // 87 and 88 mark a waypoint and the destination, not a turn.
       steps: (route.guide ?? []).filter((g) => g.type !== 87 && g.type !== 88).map((g) => g.instructions).slice(0, 30),
       departAt: this.now().toISOString(),

@@ -53,14 +53,21 @@ export interface RouteRequest {
  */
 export type TrafficBasis = "live" | "predicted";
 
+/** One named stretch of a route and where it runs; `path` is empty when the provider gave no geometry for it. */
+export interface RouteRoad {
+  name: string;
+  distanceM: number;
+  path: LatLon[];
+}
+
 export interface RouteResult {
   durationSec: number;
   distanceM: number;
   traffic: TrafficBasis;
   tollFare?: number;
   taxiFare?: number;
-  /** The main roads, longest first, at most five. */
-  summary: string[];
+  /** Every named stretch in order, with its geometry, so a caller can tell which roads run near a point. */
+  roads: RouteRoad[];
   /** Turn-by-turn instructions in order, when the provider gives them. */
   steps: string[];
   departAt: string;
@@ -135,4 +142,18 @@ export function roundCoord(value: number, decimals = OUTBOUND_DECIMALS): number 
 
 export function roundPoint(point: LatLon): LatLon {
   return { lat: roundCoord(point.lat), lon: roundCoord(point.lon) };
+}
+
+/**
+ * The only way a provider is reached: every point it is handed (a reverse
+ * lookup, a route's origin and destination) is cut to OUTBOUND_DECIMALS
+ * first, whoever the caller is.
+ */
+export function roundingProvider(inner: GeoProvider): GeoProvider {
+  return {
+    name: inner.name,
+    geocode: (query) => inner.geocode(query),
+    reverse: (point) => inner.reverse(roundPoint(point)),
+    route: (request) => inner.route({ ...request, origin: roundPoint(request.origin), destination: roundPoint(request.destination) }),
+  };
 }
