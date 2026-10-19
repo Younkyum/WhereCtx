@@ -346,21 +346,24 @@ const locale = (lang: Lang) => (lang === "ko" ? "ko-KR" : "en-US");
 /** Date and age formatting in the page's language, for times inside sentences. */
 export function useFormat() {
   const { lang, t } = useApp();
+  const time = (iso: string | null | undefined): string => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleString(locale(lang), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
   return {
-    time(iso: string | null | undefined): string {
-      if (!iso) return "";
-      const d = new Date(iso);
-      if (Number.isNaN(d.getTime())) return iso;
-      return d.toLocaleString(locale(lang), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-    },
+    time,
     date(iso: string): string {
       const d = new Date(iso);
       if (Number.isNaN(d.getTime())) return "";
       return d.toLocaleDateString(locale(lang), { year: "numeric", month: "short", day: "numeric" });
     },
+    /** "12 min ago" within a day; past that, the date and time it was. */
     ago(min: number): string {
-      const [key, n] = ageParts(min);
-      return t(key, { n });
+      const parts = ageParts(min);
+      if (parts) return t(parts[0], { n: parts[1] });
+      return time(new Date(Date.now() - Math.max(0, Number(min) || 0) * 60_000).toISOString());
     },
   };
 }

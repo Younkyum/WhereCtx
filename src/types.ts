@@ -6,6 +6,8 @@
  * downstream component (privacy engine, geofence, store, MCP, REST) consumes.
  */
 
+import type { GeoProviderName } from "./geo/types.js";
+
 /**
  * Owner of every row of user data. Branded so a raw string (a place name, a
  * token id) can never be passed where a tenant key is expected; construct one
@@ -93,12 +95,12 @@ export interface PresenceContext {
   battery?: BatteryInfo;
   source: IngestSource;
   privacy: PresencePrivacy;
-  /** ISO timestamp reported by the device. */
+  /** ISO timestamp reported by the device: when the fix was taken. */
   updatedAt: string;
-  /** ISO timestamp the server received the update. */
+  /** ISO timestamp the server received the update. Every age agents see is from this. */
   receivedAt: string;
-  /** Seconds after `updatedAt` at which this reading is considered stale. */
-  staleAfterSec: number;
+  /** Server time of the first report at the current spot (pings and readings at rest keep it). */
+  movedAt?: string;
 }
 
 export interface Place {
@@ -210,20 +212,66 @@ export interface PrivacySettings {
    * touching the shares. Agents are governed by `defaultAgentAccess` alone.
    */
   sharingPaused: boolean;
+  /**
+   * Master switch for maps: no provider call is made with this person's
+   * location, and no area is kept, while it is off. Off by default.
+   */
+  geoEnabled: boolean;
+  /** Agents' coarse presence may include the neighbourhood (presence area). */
+  areaToAgents: boolean;
+  /** The default `showArea` of a new location share. */
+  areaToPeople: boolean;
+  /** Agents may ask for an ETA or directions from the current location. */
+  etaToAgents: boolean;
+  /** My own Home shows my neighbourhood while maps are on. On by default. */
+  areaOnHome: boolean;
+  /** No provider call with the live location while at or near home. On by default. */
+  skipProviderNearHome: boolean;
+  /** The provider to use; null picks the first one with a key. */
+  geoProvider: GeoProviderName | null;
 }
 
 /** Most points one GET /v1/presence/history returns, and how many by default. */
 export const HISTORY_MAX_POINTS = 5000;
 export const HISTORY_DEFAULT_POINTS = 1000;
 
+/**
+ * How much to trust the presence now. live: reported within STALE_AFTER_SEC
+ * and not at rest. stationary: at rest, or a connected device gone quiet
+ * after it last reported at rest, which a phone that reports only on
+ * movement does while staying put; treat as still at the last place.
+ * offline: a connected device has sent nothing for DEVICE_OFFLINE_AFTER_SEC.
+ * unknown: a connected device went quiet while on the move, or a manual,
+ * Shortcut or Tasker reading is older than STALE_AFTER_SEC.
+ */
+export const FRESHNESS = ["live", "stationary", "offline", "unknown"] as const;
+export type Freshness = (typeof FRESHNESS)[number];
+
 /** Coarse presence view returned to agents by default (plan section 5). */
 export interface CoarsePresenceView {
   status: PresenceStatus;
   label: string;
   motion: Motion;
+  /** The same as lastReportAgoSec, kept for older clients. */
   updatedAgoSec: number;
+  /**
+   * Too old to trust: a connected device has sent nothing for
+   * DEVICE_OFFLINE_AFTER_SEC (freshness offline), or a manual, Shortcut or
+   * Tasker reading is older than STALE_AFTER_SEC (freshness unknown). Not set
+   * merely because the person has not moved.
+   */
   stale: boolean;
+  /** Seconds since the server last heard from the device, pings included. */
+  lastReportAgoSec: number;
+  /** Seconds since the person arrived where they are now (moved more than about 100 m from it). */
+  lastMovedAgoSec?: number;
+  freshness: Freshness;
   privacy: PrivacyMode;
+  /**
+   * The neighbourhood ("성남시 분당구 삼평동"), when maps are on and the
+   * person lets agents see it (areaToAgents). Region names only.
+   */
+  area?: string;
 }
 
 /** Precise presence view, only returned when policy allows (plan section 9.7). */

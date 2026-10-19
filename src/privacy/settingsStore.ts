@@ -10,6 +10,7 @@ import { eq } from "drizzle-orm";
 import type { WhereCtxConfig } from "../config.js";
 import type { Database } from "../db/index.js";
 import { privacySettings } from "../db/schema.js";
+import type { GeoProviderName } from "../geo/types.js";
 import type { PrivacyMode, PrivacySettings, UserId } from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
@@ -24,6 +25,13 @@ interface SettingsRow {
   retentionHours: number;
   storeRawHistory: boolean;
   sharingPaused: boolean;
+  geoEnabled: boolean;
+  areaToAgents: boolean;
+  areaToPeople: boolean;
+  etaToAgents: boolean;
+  areaOnHome: boolean;
+  skipProviderNearHome: boolean;
+  geoProvider: GeoProviderName | null;
   updatedAt: string;
 }
 
@@ -38,6 +46,13 @@ function rowToSettings(row: SettingsRow): PrivacySettings {
     retentionHours: row.retentionHours,
     storeRawHistory: row.storeRawHistory,
     sharingPaused: row.sharingPaused,
+    geoEnabled: row.geoEnabled,
+    areaToAgents: row.areaToAgents,
+    areaToPeople: row.areaToPeople,
+    etaToAgents: row.etaToAgents,
+    areaOnHome: row.areaOnHome,
+    skipProviderNearHome: row.skipProviderNearHome,
+    geoProvider: row.geoProvider,
   };
 }
 
@@ -80,6 +95,13 @@ export class SettingsStore {
         retentionHours: privacy.retentionHours,
         storeRawHistory: privacy.storeRawHistory,
         sharingPaused: false,
+        geoEnabled: false,
+        areaToAgents: false,
+        areaToPeople: false,
+        etaToAgents: false,
+        areaOnHome: true,
+        skipProviderNearHome: true,
+        geoProvider: null,
         updatedAt: nowIso(this.clock),
       } satisfies SettingsRow)
       .onConflictDoNothing();

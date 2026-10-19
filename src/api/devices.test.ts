@@ -70,6 +70,7 @@ describe("POST /v1/devices/pair (owntracks)", () => {
       monitoring: 1,
       locatorDisplacement: 500,
       locatorInterval: 300,
+      ping: 15,
     });
     expect(body.config.url).not.toContain("token");
     expect(decodeLink(body.link)).toEqual(body.config);

@@ -268,6 +268,35 @@ describe("dashboard app", () => {
     location.hash = "";
   });
 
+  it("shows how long ago, never a stale badge, and 'device offline' only when the device is offline", async () => {
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { sharingPaused: false } } }));
+    route("GET /v1/presence", () => ({
+      status: 200,
+      body: { status: "home", label: "home", motion: "stationary", updatedAgoSec: 12 * 60, stale: false, freshness: "stationary", privacy: "coarse" },
+    }));
+    route("GET /v1/people", () => ({
+      status: 200,
+      body: {
+        people: [
+          {
+            user: { id: "u2", displayName: "Mina" },
+            level: "coarse",
+            paused: false,
+            presence: { status: "away", label: "away", motion: "unknown", updatedAgoMin: 3 * 1440, stale: true, freshness: "offline" },
+            precise: null,
+          },
+        ],
+      },
+    }));
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.textContent).toContain("12 min ago");
+    expect(host.textContent).not.toMatch(/stale|fresh/i);
+    expect(host.textContent).not.toMatch(/\d+ d ago/);
+    expect(host.textContent!.match(/device offline/g)).toHaveLength(1);
+  });
+
   it("on plain http, links the passkey warning to the README section that explains it", async () => {
     vi.stubGlobal("isSecureContext", false);
     route("GET /v1/me", () => ({ status: 401, body: { error: "unauthorized" } }));
@@ -321,7 +350,8 @@ describe("log views", () => {
     expect(path?.getAttribute("d")).toMatch(/^M[\d.]+ [\d.]+ L[\d.]+ [\d.]+$/);
     expect(host.textContent).toContain("At home");
     expect(host.textContent).toContain("37.52000, 127.03000");
-    const links = [...host.querySelectorAll("a")].filter((a) => a.textContent?.includes("Map"));
+    // The point links, not the nav's "Maps & routes".
+    const links = [...host.querySelectorAll("a")].filter((a) => a.textContent?.includes("Map") && a.getAttribute("href")?.startsWith("https:"));
     expect(links.map((a) => a.getAttribute("href"))).toEqual([
       "https://maps.google.com/?q=37.52,127.03",
       "https://maps.google.com/?q=37.5,127",
@@ -540,5 +570,112 @@ describe("log views", () => {
     expect(block.textContent).toContain("Header name");
     expect(block.textContent).toContain("Header value");
     expect(block.textContent).toContain("Get Contents of URL");
+  });
+});
+
+describe("maps", () => {
+  async function fill(input: HTMLInputElement, value: string) {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  const inputLabelled = (label: string) => {
+    const l = [...host.querySelectorAll("label")].find((x) => x.textContent?.trim() === label);
+    const input = (l?.htmlFor && document.getElementById(l.htmlFor)) || l?.parentElement?.querySelector("input");
+    if (!input) throw new Error(`no input "${label}"`);
+    return input as HTMLInputElement;
+  };
+
+  afterEach(() => {
+    location.hash = "";
+  });
+
+  it("shows a saved key only by its hint, saves a new one write-only, and turns maps on", async () => {
+    const bodies: unknown[] = [];
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/geo", () => ({
+      status: 200,
+      body: {
+        active: { provider: "kakao", source: "own" },
+        credentials: [{ provider: "kakao", kinds: { restKey: "cdef" }, updatedAt: "2026-10-19T00:00:00Z", lastUsedAt: null, lastError: null }],
+        operator: [],
+      },
+    }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: false, skipProviderNearHome: true, geoProvider: null } } }));
+    route("PUT /v1/privacy", (b) => (bodies.push(b), { status: 200, body: { settings: {} } }));
+    route("PUT /v1/geo/credentials/naver", (b) => (bodies.push(b), { status: 200, body: { credential: {} } }));
+    location.hash = "#maps";
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.textContent).toContain("Saved key ••••cdef");
+    expect(host.textContent).toContain("Routes and addresses go to Kakao with your key.");
+
+    await fill(inputLabelled("Client ID"), "naver-client-id-1234");
+    await fill(inputLabelled("Client Secret"), "naver-client-secret-5678");
+    await act(async () => button("Save key").click());
+    await settle();
+    expect(bodies).toContainEqual({ clientId: "naver-client-id-1234", clientSecret: "naver-client-secret-5678" });
+    expect(host.textContent).not.toContain("naver-client-secret-5678");
+
+    const toggle = inputLabelled("Use maps with my location");
+    await act(async () => toggle.click());
+    await settle();
+    expect(bodies).toContainEqual({ geoEnabled: true });
+  });
+
+  it("asks for the drive time home only when the button is pressed", async () => {
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { sharingPaused: false, geoEnabled: true } } }));
+    route("GET /v1/presence", () => ({
+      status: 200,
+      body: { status: "away", label: "away", motion: "unknown", updatedAgoSec: 60, stale: false, freshness: "live", privacy: "coarse" },
+    }));
+    route("GET /v1/people", () => ({ status: 200, body: { people: [] } }));
+    route("GET /v1/places", () => ({ status: 200, body: { places: [{ name: "집", type: "home", lat: 37.5, lon: 127, radiusM: 150 }] } }));
+    route("GET /v1/geo/eta", () => ({
+      status: 200,
+      body: { eta: { destination: { label: "집", kind: "place" }, origin: "current_location", precision: "exact", durationMin: 23, distanceKm: 9.1, traffic: "live", arriveAt: "2026-10-19T09:00:00Z", summary: [], provider: "kakao" } },
+    }));
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(calls.filter((c) => c.startsWith("GET /v1/geo/eta"))).toEqual([]);
+    await act(async () => button("Check time to home").click());
+    await settle();
+    expect(calls.filter((c) => c.startsWith("GET /v1/geo/eta"))).toEqual(["GET /v1/geo/eta?to=%EC%A7%91"]);
+    expect(host.textContent).toContain("To home: 23 min (live traffic)");
+  });
+
+  it("adds a place by address: search, pick, save with the picked point", async () => {
+    let posted: any;
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/places", () => ({ status: 200, body: { places: [] } }));
+    route("GET /v1/geo/search", () => ({
+      status: 200,
+      body: {
+        provider: "kakao",
+        candidates: [
+          { label: "판교역 신분당선", address: "경기 성남시 분당구 백현동 534", lat: 37.3948, lon: 127.1112, kind: "place" },
+          { label: "판교역 경강선", address: "경기 성남시 분당구 백현동 535", lat: 37.3951, lon: 127.1109, kind: "place" },
+        ],
+      },
+    }));
+    route("POST /v1/places", (b) => ((posted = b), { status: 201, body: { place: b } }));
+    location.hash = "#places";
+    await act(async () => root.render(<App />));
+    await settle();
+    await fill(inputLabelled("Address or place name"), "판교역");
+    await act(async () => button("Search").click());
+    await settle();
+    expect(calls).toContain(`GET /v1/geo/search?q=${encodeURIComponent("판교역")}`);
+    const map = [...host.querySelectorAll("a")].find((a) => a.textContent?.includes("View on map"))!;
+    expect(map.getAttribute("href")).toBe(`https://map.kakao.com/link/map/${encodeURIComponent("판교역 신분당선")},37.3948,127.1112`);
+    const use = [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Use this");
+    await act(async () => use[1]!.click());
+    await settle();
+    await act(async () => button("Save place").click());
+    await settle();
+    expect(posted).toMatchObject({ name: "판교역 경강선", type: "custom", lat: 37.3951, lon: 127.1109 });
   });
 });

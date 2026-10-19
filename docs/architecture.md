@@ -74,7 +74,8 @@ accident.
 3. `PresenceService` (`src/presence/service.ts`) runs per user under a
    `KeyedMutex`:
    - the geofence engine (`src/geofence/*`) computes the status from the
-     user's places,
+     user's places, and the reading's freshness window comes from its source
+     (`src/presence/freshness.ts`),
    - the new presence is stored and diffed against the previous one to emit
      `presence.updated`, `presence.entered_place`, `presence.left_place`, and
      `presence.privacy_changed`. A sweep emits `presence.became_stale`.
@@ -87,7 +88,7 @@ accident.
 ## Read flow
 
 - Agents read through `src/privacy/policy.ts`: `agentCoarseView` (status,
-  label, motion, age, stale, no coordinates) and `authorizePrecise`, a chain of
+  label, motion, age, freshness, the area when allowed, no coordinates) and `authorizePrecise`, a chain of
   deny checks (hidden mode, scope, policy, approval, reason, home protection).
 - People read each other through `buildPersonView` in the same file. It shows
   the status name, never a place's name or label, ages in whole minutes, and
@@ -131,6 +132,37 @@ first. Neither holds coordinates.
   which always answers `200`; a scope refusal comes from the access
   decision, and a `5xx` is `error`.
 - `/v1/activity/*` reads them for the signed-in person only (`requireSession`).
+
+## Maps
+
+`src/geo/` holds one adapter per provider (`kakao.ts`, `naver.ts`), each a
+GET with a 5 s timeout, a 4 MB body cap, no retries, the response parsed
+with zod (every kept string cleaned and capped) and every failure mapped to
+a `GeoError` kind. Every adapter is reached through `roundingProvider`
+(`types.ts`), which cuts each point to three decimals, so no caller can send
+an unrounded one. The rest is split by concern:
+
+- `keys.ts` (`GeoKeys`): which provider and key (the person's sealed key,
+  else the operator's), the per-person, per-key and daily budgets, and the
+  only place a provider is called, with an access log row per call.
+- `eta.ts`: what an ETA answer may say to whom (the freshness gate,
+  near home by distance, an agent's coarse numbers and filtered roads).
+- `area.ts` (`AreaRefresher`): the background area lookup.
+- `service.ts` (`GeoService`): search and ETA for one caller, and the facade
+  route handlers and MCP tools reach through `scope.geo`, bound to one user.
+- `replies.ts`: each outcome as the REST status, body and access decision,
+  shared by `api/geo.ts` and the MCP tools.
+
+The area of a reading is looked up after the reading is stored:
+`PresenceService.processReading` drops city and area as it stores a reading
+more than 200 m from the point they were looked up for, then calls
+`afterReading` once its lock is released (as does `reevaluateCurrent` after
+a place change). `AreaRefresher.refresh` decides whether a lookup is due,
+schedules a trailing one when the throttle holds, and
+`PresenceService.setArea` writes the region names and the point back under
+the lock, only if the person has not moved on since. Shutdown cancels
+trailing lookups and waits for running ones. Every provider call is
+server-side; the dashboard's CSP is unchanged.
 
 ## Server log
 
@@ -215,9 +247,10 @@ adds at runtime. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-
 | `src/store/` | Presence, places, events, history, reminders, webhooks |
 | `src/presence/` | `PresenceService` |
 | `src/api/` | Hono routers, auth middleware, rate limiting |
-| `src/mcp/` | MCP server (9 tools, each recorded in the access log) and the raw-Node `/mcp` handler |
+| `src/mcp/` | MCP server (11 tools, each recorded in the access log) and the raw-Node `/mcp` handler |
 | `src/oauth/` | OAuth 2.1 authorization server for MCP clients (oidc-provider), its store, scopes, and consent API |
 | `src/activity/` | Access log and ingest log stores, the recording helper |
+| `src/geo/` | Maps providers (Kakao, Naver, a fake) behind one rounding boundary; keys and budgets, the ETA policy, the background area lookup, search and ETA, each provider call access-logged |
 | `src/webhooks/` | Dispatcher, delivery payload (shared with the dashboard's example), SSRF guard, secret encryption |
 | `src/dashboard/` | Serves `dist/web` |
 | `src/app/` | Context, scopes, and HTTP app assembly |

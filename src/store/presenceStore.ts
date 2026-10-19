@@ -8,6 +8,7 @@
 import { eq } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { presence } from "../db/schema.js";
+import type { LatLon } from "../geo/types.js";
 import {
   asUserId,
   type CoarsePlaceType,
@@ -23,6 +24,12 @@ import {
 export interface StoredPresence extends PresenceContext {
   currentPlaceName?: string;
   staleEventFired: boolean;
+  /** Where the person arrived at `movedAt` (freshness.ts `arrivalFor`). */
+  movedFrom?: LatLon;
+  /** The reading `coarse.city` and `coarse.area` were looked up for. */
+  areaFor?: LatLon;
+  /** Written for an older build rolled back onto this database; never read (see schema). */
+  staleAfterSec: number;
 }
 
 interface PresenceRow {
@@ -38,6 +45,8 @@ interface PresenceRow {
   geohash: string | null;
   city: string | null;
   area: string | null;
+  areaLat: number | null;
+  areaLon: number | null;
   coarsePlaceType: CoarsePlaceType | null;
   motion: Motion | null;
   batteryLevel: number | null;
@@ -49,6 +58,9 @@ interface PresenceRow {
   staleEventFired: boolean;
   updatedAt: string;
   receivedAt: string;
+  movedAt: string | null;
+  movedLat: number | null;
+  movedLon: number | null;
   staleAfterSec: number;
 }
 
@@ -86,6 +98,9 @@ function rowToStored(row: PresenceRow): StoredPresence {
     privacy: { mode: row.privacyMode, allowPreciseToAgents: row.allowPreciseToAgents },
     updatedAt: row.updatedAt,
     receivedAt: row.receivedAt,
+    ...(row.movedAt ? { movedAt: row.movedAt } : {}),
+    ...(row.movedLat !== null && row.movedLon !== null ? { movedFrom: { lat: row.movedLat, lon: row.movedLon } } : {}),
+    ...(row.areaLat !== null && row.areaLon !== null ? { areaFor: { lat: row.areaLat, lon: row.areaLon } } : {}),
     staleAfterSec: row.staleAfterSec,
     currentPlaceName: row.currentPlaceName ?? undefined,
     staleEventFired: row.staleEventFired,
@@ -106,6 +121,8 @@ function storedToRow(p: StoredPresence): PresenceRow {
     geohash: p.coarse?.geohash ?? null,
     city: p.coarse?.city ?? null,
     area: p.coarse?.area ?? null,
+    areaLat: p.areaFor?.lat ?? null,
+    areaLon: p.areaFor?.lon ?? null,
     coarsePlaceType: p.coarse?.placeType ?? null,
     motion: p.motion ?? null,
     batteryLevel: p.battery?.level ?? null,
@@ -117,13 +134,16 @@ function storedToRow(p: StoredPresence): PresenceRow {
     staleEventFired: p.staleEventFired,
     updatedAt: p.updatedAt,
     receivedAt: p.receivedAt,
+    movedAt: p.movedAt ?? null,
+    movedLat: p.movedFrom?.lat ?? null,
+    movedLon: p.movedFrom?.lon ?? null,
     staleAfterSec: p.staleAfterSec,
   };
 }
 
 /** Drop internal bookkeeping fields for external (API/MCP) consumers. */
 export function toPresenceContext(stored: StoredPresence): PresenceContext {
-  const { currentPlaceName: _c, staleEventFired: _s, ...ctx } = stored;
+  const { currentPlaceName: _c, staleEventFired: _s, movedFrom: _m, areaFor: _a, staleAfterSec: _w, ...ctx } = stored;
   return ctx;
 }
 
@@ -139,21 +159,11 @@ export class PresenceStore {
    * Readings across all users whose `became_stale` has not fired yet, for the
    * periodic sweep to age-check. Cross-user: system handle only.
    */
-  async listUnfiredStale(): Promise<
-    Array<{ userId: UserId; updatedAt: string; staleAfterSec: number }>
-  > {
-    const rows = (await this.db
-      .select({
-        userId: presence.userId,
-        updatedAt: presence.updatedAt,
-        staleAfterSec: presence.staleAfterSec,
-      })
+  async listUnfiredStale(): Promise<Array<{ userId: UserId; source: IngestSource; receivedAt: string }>> {
+    const rows = await this.db
+      .select({ userId: presence.userId, source: presence.source, receivedAt: presence.receivedAt })
       .from(presence)
-      .where(eq(presence.staleEventFired, false))) as Array<{
-      userId: string;
-      updatedAt: string;
-      staleAfterSec: number;
-    }>;
+      .where(eq(presence.staleEventFired, false));
     return rows.map((r) => ({ ...r, userId: asUserId(r.userId) }));
   }
 
@@ -174,6 +184,19 @@ export class PresenceStore {
       .insert(presence)
       .values(row)
       .onConflictDoUpdate({ target: presence.userId, set: rest });
+  }
+
+  /** Update only the region names of the current reading and the point they are for (null clears them). */
+  async setArea(userId: UserId, area: { city: string; area: string; forPoint: LatLon } | null): Promise<void> {
+    await this.db
+      .update(presence)
+      .set({
+        city: area?.city ?? null,
+        area: area?.area ?? null,
+        areaLat: area?.forPoint.lat ?? null,
+        areaLon: area?.forPoint.lon ?? null,
+      })
+      .where(eq(presence.userId, userId));
   }
 
   /** Update only the stale-event flag (used when marking a reading stale). */

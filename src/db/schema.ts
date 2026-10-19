@@ -45,6 +45,7 @@ import type {
   IngestRoute,
 } from "../activity/types.js";
 import type { AuthenticatorTransportFuture } from "@simplewebauthn/server";
+import type { GeoProviderName, ReverseResult } from "../geo/types.js";
 
 export const tokens = sqliteTable(
   "tokens",
@@ -98,6 +99,9 @@ export const presence = sqliteTable("presence", {
   geohash: text("geohash"),
   city: text("city"),
   area: text("area"),
+  /** The reading `city` and `area` were looked up for; a reading farther than AREA_REFRESH_MOVE_M from it drops them. */
+  areaLat: real("area_lat"),
+  areaLon: real("area_lon"),
   coarsePlaceType: text("coarse_place_type").$type<CoarsePlaceType>(),
 
   motion: text("motion").$type<Motion>(),
@@ -121,6 +125,21 @@ export const presence = sqliteTable("presence", {
 
   updatedAt: text("updated_at").notNull(),
   receivedAt: text("received_at").notNull(),
+  /**
+   * Server time of the first report at this spot: later reports within
+   * MOVED_THRESHOLD_M of `moved_lat`/`moved_lon` (pings, a phone at rest,
+   * GPS jitter) keep it. Null before 0011.
+   */
+  movedAt: text("moved_at"),
+  /** Where the person arrived at `moved_at`: the point later reports are measured from. */
+  movedLat: real("moved_lat"),
+  movedLon: real("moved_lon"),
+  /**
+   * The source's window when the reading was stored. Nothing reads it any
+   * more (freshness works the window out from the source and the config at
+   * read time); it is still written so an older build rolled back onto this
+   * database keeps working.
+   */
   staleAfterSec: integer("stale_after_sec").notNull(),
 });
 
@@ -195,6 +214,16 @@ export const privacySettings = sqliteTable("privacy_settings", {
     .notNull()
     .default(false),
   sharingPaused: integer("sharing_paused", { mode: "boolean" }).notNull().default(false),
+  /** Master switch for any maps provider call made with this person's location. */
+  geoEnabled: integer("geo_enabled", { mode: "boolean" }).notNull().default(false),
+  areaToAgents: integer("area_to_agents", { mode: "boolean" }).notNull().default(false),
+  /** Seeds a new share's show_area. */
+  areaToPeople: integer("area_to_people", { mode: "boolean" }).notNull().default(false),
+  etaToAgents: integer("eta_to_agents", { mode: "boolean" }).notNull().default(false),
+  /** The owner's own Home shows their neighbourhood (while maps are on). */
+  areaOnHome: integer("area_on_home", { mode: "boolean" }).notNull().default(true),
+  skipProviderNearHome: integer("skip_provider_near_home", { mode: "boolean" }).notNull().default(true),
+  geoProvider: text("geo_provider").$type<GeoProviderName>(),
   updatedAt: text("updated_at").notNull(),
 });
 
@@ -305,6 +334,8 @@ export const locationShares = sqliteTable(
     level: text("level").$type<ShareLevel>().notNull(),
     /** Withhold exact coordinates while the owner is at or near home. */
     hideHomeExact: integer("hide_home_exact", { mode: "boolean" }).notNull().default(false),
+    /** Show the owner's neighbourhood (presence.area) to this viewer. */
+    showArea: integer("show_area", { mode: "boolean" }).notNull().default(false),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -332,6 +363,8 @@ export const shareAudit = sqliteTable(
     afterLevel: text("after_level").$type<ShareLevel>(),
     beforeHideHome: integer("before_hide_home", { mode: "boolean" }),
     afterHideHome: integer("after_hide_home", { mode: "boolean" }),
+    beforeShowArea: integer("before_show_area", { mode: "boolean" }),
+    afterShowArea: integer("after_show_area", { mode: "boolean" }),
     createdAt: text("created_at").notNull(),
   },
   (t) => ({
@@ -563,5 +596,48 @@ export const ingestLog = sqliteTable(
     userReceivedIdx: index("ingest_log_user_received_idx").on(t.userId, t.receivedAt, t.id),
     tokenReceivedIdx: index("ingest_log_token_received_idx").on(t.tokenId, t.receivedAt),
     receivedAtIdx: index("ingest_log_received_at_idx").on(t.receivedAt),
+  }),
+);
+
+/**
+ * A person's own maps provider keys (BYOK), one row per provider. `secret` is
+ * the provider's keys by kind (REST keys now, map SDK keys later), one JSON
+ * value sealed with AES-256-GCM under a per-install key from server_secrets;
+ * it is never returned. `hints` names the kinds held for the dashboard.
+ */
+export const geoCredentials = sqliteTable(
+  "geo_credentials",
+  {
+    userId: text("user_id").notNull(),
+    provider: text("provider").$type<GeoProviderName>().notNull(),
+    secret: text("secret").notNull(),
+    /** Each key kind held, with the last four characters of the non-secret ones. */
+    hints: text("hints", { mode: "json" }).$type<Record<string, string>>().notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    lastUsedAt: text("last_used_at"),
+    lastError: text("last_error"),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.provider] }),
+  }),
+);
+
+/**
+ * Reverse geocoding answers per person and provider, keyed by the rounded
+ * cell that was sent (about 100 m). Pruned after 7 days.
+ */
+export const geoCache = sqliteTable(
+  "geo_cache",
+  {
+    userId: text("user_id").notNull(),
+    provider: text("provider").notNull(),
+    cell: text("cell").notNull(),
+    result: text("result", { mode: "json" }).$type<ReverseResult | null>(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.userId, t.provider, t.cell] }),
+    createdAtIdx: index("geo_cache_created_at_idx").on(t.createdAt),
   }),
 );

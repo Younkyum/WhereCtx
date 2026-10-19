@@ -7,11 +7,9 @@ import {
 } from "../types.js";
 import {
   accessAtLeast,
-  agentCoarseView,
   authorizePrecise,
-  buildCoarseView,
-  buildPersonView,
   buildPreciseView,
+  presenceViews,
   canReadPresence,
   isAtOrNearHome,
   shouldHideExact,
@@ -30,9 +28,10 @@ const basePresence = (over: Partial<PresenceContext> = {}): PresenceContext => (
   privacy: { mode: "coarse", allowPreciseToAgents: false },
   updatedAt: "2026-06-05T00:09:18.000Z", // 42s before FIXED
   receivedAt: "2026-06-05T00:09:18.000Z",
-  staleAfterSec: 900,
   ...over,
 });
+
+const views = presenceViews({ staleAfterSec: 900, deviceOfflineAfterSec: 86_400 }, clock);
 
 const settings = (over: Partial<PrivacySettings> = {}): PrivacySettings => ({
   defaultAgentAccess: "coarse",
@@ -64,36 +63,34 @@ describe("canReadPresence", () => {
   });
 });
 
-describe("buildCoarseView", () => {
-  it("derives label fallback, age, and stale flag", () => {
-    const v = buildCoarseView(basePresence(), clock);
+describe("the coarse view", () => {
+  it("derives label fallback, age from when the server heard it, and stale flag", () => {
+    const v = views.ownerCoarse(basePresence({ updatedAt: "2026-06-05T00:00:00.000Z" }), settings());
     expect(v.label).toBe("near home");
     expect(v.updatedAgoSec).toBe(42);
+    expect(v.lastReportAgoSec).toBe(42);
     expect(v.stale).toBe(false);
   });
 
-  it("marks stale when older than staleAfterSec", () => {
-    const v = buildCoarseView(
-      basePresence({ updatedAt: "2026-06-05T00:00:00.000Z", staleAfterSec: 300 }),
-      clock,
-    );
-    expect(v.stale).toBe(true);
+  it("marks stale past the source's window", () => {
+    const v = views.ownerCoarse(basePresence({ source: "manual", receivedAt: "2026-06-04T23:50:00.000Z" }), settings());
+    expect(v).toMatchObject({ stale: true, freshness: "unknown" });
   });
 });
 
-describe("agentCoarseView (hidden-mode enforcement)", () => {
+describe("the agent coarse view (hidden-mode enforcement)", () => {
   it("returns a view for coarse/precise modes", () => {
-    expect(agentCoarseView(basePresence(), settings({ defaultAgentAccess: "coarse" }), clock)).not.toBeNull();
-    expect(agentCoarseView(basePresence(), settings({ defaultAgentAccess: "precise" }), clock)).not.toBeNull();
+    expect(views.agentCoarse(basePresence(), settings({ defaultAgentAccess: "coarse" }))).not.toBeNull();
+    expect(views.agentCoarse(basePresence(), settings({ defaultAgentAccess: "precise" }))).not.toBeNull();
   });
 
   it("withholds presence entirely when mode is hidden", () => {
-    expect(agentCoarseView(basePresence(), settings({ defaultAgentAccess: "hidden" }), clock)).toBeNull();
+    expect(views.agentCoarse(basePresence(), settings({ defaultAgentAccess: "hidden" }))).toBeNull();
   });
 
   it("reflects the live policy mode, not the per-reading snapshot", () => {
     const stale = basePresence({ privacy: { mode: "precise", allowPreciseToAgents: true } });
-    const v = agentCoarseView(stale, settings({ defaultAgentAccess: "coarse" }), clock);
+    const v = views.agentCoarse(stale, settings({ defaultAgentAccess: "coarse" }));
     expect(v?.privacy).toBe("coarse");
   });
 });
@@ -192,33 +189,33 @@ describe("buildPreciseView + shouldHideExact", () => {
   });
 });
 
-describe("buildPersonView", () => {
+describe("the person view", () => {
   const sharing = { sharingPaused: false, hasHomePlace: true };
   const precise = { level: "precise" as const, hideHomeExact: true };
 
   it("labels by status only and buckets the age to whole minutes", () => {
-    const labelled = basePresence({ status: "custom", label: "Dr. Kim Oncology", updatedAt: "2026-06-05T00:08:01.000Z" });
-    const view = buildPersonView(labelled, { level: "coarse", hideHomeExact: false }, sharing, clock);
+    const labelled = basePresence({ status: "custom", label: "Dr. Kim Oncology", receivedAt: "2026-06-05T00:08:01.000Z" });
+    const view = views.person(labelled, { level: "coarse", hideHomeExact: false, showArea: false }, sharing);
     expect(view).toEqual({
       paused: false,
-      presence: { status: "custom", label: "custom", motion: "walking", updatedAgoMin: 1, stale: false },
+      presence: { status: "custom", label: "custom", motion: "walking", updatedAgoMin: 1, stale: false, freshness: "stationary" },
       precise: null,
     });
   });
 
   it("withholds coordinates at or near home, and everywhere without a home place", () => {
     expect(isAtOrNearHome(basePresence())).toBe(true);
-    expect(buildPersonView(basePresence(), precise, sharing, clock)).toMatchObject({
+    expect(views.person(basePresence(), precise, sharing)).toMatchObject({
       precise: null,
       preciseWithheld: "at_home",
     });
     const away = basePresence({ status: "away" });
-    expect(buildPersonView(away, precise, sharing, clock).precise).toMatchObject({ lat: 37.123456 });
-    expect(buildPersonView(away, precise, { ...sharing, hasHomePlace: false }, clock)).toMatchObject({
+    expect(views.person(away, precise, sharing).precise).toMatchObject({ lat: 37.123456 });
+    expect(views.person(away, precise, { ...sharing, hasHomePlace: false })).toMatchObject({
       precise: null,
       preciseWithheld: "no_home_place",
     });
-    expect(buildPersonView(basePresence(), { ...precise, hideHomeExact: false }, sharing, clock).precise).toEqual({
+    expect(views.person(basePresence(), { ...precise, hideHomeExact: false }, sharing).precise).toEqual({
       lat: 37.123456,
       lon: 127.123456,
       accuracyM: 21,
@@ -228,7 +225,7 @@ describe("buildPersonView", () => {
   });
 
   it("shows nothing of a paused owner", () => {
-    expect(buildPersonView(basePresence({ status: "away" }), precise, { ...sharing, sharingPaused: true }, clock)).toEqual({
+    expect(views.person(basePresence({ status: "away" }), precise, { ...sharing, sharingPaused: true })).toEqual({
       paused: true,
       presence: null,
       precise: null,

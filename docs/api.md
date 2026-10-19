@@ -59,74 +59,112 @@ Authorization: Bearer AGENT_TOKEN
 ```
 ```json
 { "status":"near_home", "label":"near home", "motion":"walking",
-  "updatedAgoSec":42, "stale":false, "privacy":"coarse" }
+  "updatedAgoSec":42, "stale":false, "lastReportAgoSec":42, "lastMovedAgoSec":3600,
+  "freshness":"stationary", "privacy":"coarse", "area":"성남시 분당구 삼평동" }
 ```
 `403` with `{ "privacy":"hidden" }` in hidden mode; `404` before any reading.
 
-```http
-GET /v1/presence/precise?reason=user_requested_map
-Authorization: Bearer AGENT_TOKEN
+- Every age is from when the server received the report, not the device's
+  timestamp. `updatedAgoSec` is the same as `lastReportAgoSec`, kept for
+  older clients.
+- `freshness`: `live` (received within `STALE_AFTER_SEC`, not at rest),
+  `stationary` (at a registered place, reported at rest, or a connected
+  phone gone quiet: it sends nothing while it stays put, so treat it as
+  still at the last place), `offline` (a connected device, OwnTracks, the
+  app or Home Assistant, has sent nothing for `DEVICE_OFFLINE_AFTER_SEC`,
+  24 h by default), `unknown` (a connected device went quiet while driving
+  or in transit, or a manual, Shortcut or Tasker reading is older than
+  `STALE_AFTER_SEC`).
+- `stale` is true for `offline`, and for a manual, Shortcut or Tasker
+  reading past `STALE_AFTER_SEC`. `lastMovedAgoSec` counts from when the
+  person arrived where they are now (reports within 100 m of that point keep
+  it), absent for readings stored before it was tracked.
+- `area` is the neighbourhood, present only when maps are on and the person
+  lets agents see it (see [Maps](#maps)). A signed-in owner gets it while
+  maps and `areaOnHome` are on.
+
+Directions, ETA, address search and the maps keys. See
+[privacy.md](privacy.md#maps-directions-eta-and-neighbourhood-names) for
+what leaves the server. The switches are privacy settings (`geoEnabled`,
+`skipProviderNearHome`, `areaOnHome`, `areaToAgents`, `etaToAgents`,
+`areaToPeople`, `geoProvider` on `PUT /v1/privacy`).
+
 ```
+GET    /v1/geo                               # session only: provider in use, my keys' hints, operator fallbacks
+PUT    /v1/geo/credentials/kakao             # session, step-up: { "restKey":"…" }
+PUT    /v1/geo/credentials/naver             # session, step-up: { "clientId":"…", "clientSecret":"…" }
+DELETE /v1/geo/credentials/:provider         # session, step-up
+POST   /v1/geo/credentials/:provider/test    # session: looks up Seoul City Hall with the saved key
+GET    /v1/geo/search?q=                     # manage_places, maps on: address or place search, with coordinates
+GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
+                                             # read_presence: drive time from my current location
+```
+
+`GET /v1/geo`:
+
 ```json
-{ "lat":37.123456, "lon":127.123456, "accuracyM":21,
-  "mapUrl":"https://maps.google.com/?q=37.123456,127.123456", "updatedAgoSec":42 }
+{ "active": { "provider":"kakao", "source":"own" },
+  "credentials": [{ "provider":"kakao", "status":"ok", "kinds":{ "restKey":"cdef" },
+    "createdAt":"…", "updatedAt":"…", "lastUsedAt":"…", "lastError":null }],
+  "operator": [] }
 ```
-`403 { "error":"precise location denied", "detail":"…" }` when policy/home-protection deny it.
 
-```
-GET /v1/presence/history?from=&to=&limit=   # manage_privacy (a session, or an admin token)
-```
+A key is never returned; `kinds` names each key kind held with its last four
+characters. Saving replaces the provider's keys. `status` is `unusable` (with
+`lastError`) when the saved row cannot be opened; calls skip it, and it can
+still be replaced or removed. The key test counts against the maps limits.
+
+`GET /v1/geo/search` needs maps on (`403` otherwise); a token also needs a
+presence it may see.
+
+`GET /v1/geo/eta`: `to` is a registered place's name, else an address or a
+place name to search. When a search finds several, the answer is `409` with
+`candidates` numbered by `pick` (coordinates only for a session or a
+`manage_places` token); pass `pick`. `departAt` is an ISO 8601 time with an
+offset for a future departure (Kakao only; Naver answers `502`
+`kind:"unsupported"`). `avoid` is a comma list of `toll`, `motorway`,
+`ferries` (Naver: one of `toll`, `motorway`). `directions=true` asks for the
+turn-by-turn steps. `reason` is why an agent needs the precise route.
+
+The owner (a session) gets the provider's answer as it is:
+
 ```json
-{ "enabled":true, "retentionHours":24,
-  "from":"2026-10-17T09:00:00.000Z", "to":"2026-10-18T09:05:00.000Z", "truncated":false,
-  "points":[{ "id":"…", "recordedAt":"2026-10-18T08:10:00.000Z", "lat":37.12, "lon":127.12,
-              "accuracyM":12, "source":"owntracks", "place":"home" }] }
-```
-The caller's own raw history in `[from, to]`, **oldest first**. `from` and
-`to` are ISO 8601 date-times with an offset (`2026-10-18T09:00:00Z` or
-`2026-10-18T18:00:00+09:00`); a bare date, a time without an offset, or
-anything else is `400`, as is a reversed range. The default range is the last
-24 hours, reaching 5 minutes past now so a point from a phone whose clock runs
-a little fast is included. At most `limit` points (default 1000, max 5000):
-when the range holds more, `truncated` is true and the response holds the
-**newest** `limit` of them; ask for a shorter or earlier range to see the
-rest. `id` is the point's row id. `place` names the place whose geofence held
-the point, by the places as they are now. There is no `mapUrl`; build a map
-link from `lat` and `lon`. Empty unless the person turned on
-`storeRawHistory`; `enabled` says whether they did. `Cache-Control:
-no-store`. A share gives a viewer no history: every caller gets only their
-own.
-
-## Places
-
-```
-GET    /v1/places            # read_presence (agents: name+type only) | manage_places (full)
-POST   /v1/places            # manage_places — create/replace by name
-DELETE /v1/places/:name      # manage_places
-```
-```json
-{ "name":"home", "label":"Home", "lat":37.123, "lon":127.123, "radiusM":150, "type":"home" }
-```
-`type`: `home | work | custom`.
-
-## Events
-
-```
-GET /v1/events?limit=50      # read_presence; placeName stripped for agents; 403 in hidden mode
+{ "eta": { "destination": { "label":"office", "kind":"place" }, "origin":"current_location",
+  "precision":"exact", "durationMin":23, "distanceKm":11.4, "traffic":"live",
+  "departAt":"…", "arriveAt":"…", "summary":["강남대로","테헤란로"], "steps":["…"],
+  "tollFare":0, "taxiFare":15600, "provider":"kakao", "freshness":"live", "originAgeMin":2,
+  "deepLinks": { "kakaoMap":"https://map.kakao.com/link/to/…", "naverMap":"nmap://navigation?…&appname=wherectx" } } }
 ```
 
-## Privacy (admin)
+A token gets `precision: "approximate"`: `durationMin` in 5-minute steps
+(at least 5), `distanceKm` in whole kilometres, `arriveAt` to 5 minutes, no
+fares, and `summary` without any road within 1.5 km of either end, any side
+street (…번길, …로12길) or any road the provider gave no geometry for. A
+token may route only to a registered place, and gets `steps` (with
+`directions=true`) only when it may read the precise location: it holds
+`read_precise_location`, the person allows precise location, `reason` is
+given if the person requires one, and they are not at home. An address
+destination needs the same. Otherwise `stepsWithheld` says why.
 
-```
-GET /v1/privacy              # manage_privacy
-PUT /v1/privacy              # manage_privacy — partial update; emits privacy_changed
-```
-Body keys: `defaultAgentAccess`, `allowPreciseLocation`, `preciseRequiresReason`,
-`preciseRequiresApproval`, `hideHomeExactCoordinates`, `protectHomePlace`,
-`retentionHours`, `storeRawHistory`, `sharingPaused` (all optional).
-`sharingPaused` hides you from everyone you share your location with (see
-[Location sharing](#location-sharing-signed-in-people)); it has no effect on
-agents.
+`origin` is `home` only for the owner at or near home with
+`skipProviderNearHome` on: the route starts at the home place. `freshness`
+and `originAgeMin` say how old the reading the route starts from is.
+`deepLinks` appear only for a session, a `manage_places` token, or an
+address the caller named.
+
+| Case | Status |
+|------|--------|
+| maps off, or (token) `etaToAgents` off | `403` |
+| (token) hidden mode | `403` `{ "privacy":"hidden" }` |
+| (token) at or near home with `skipProviderNearHome` on | `403` |
+| (token) an address without precise access | `403` |
+| no reading | `404` |
+| the reading is not `live`, nor `stationary` inside a registered place | `409` `{ "error", "freshness", "originAgeMin" }` |
+| no such place and nothing found | `404` |
+| several matches | `409` with numbered `candidates` |
+| no key set up | `409` |
+| the person's 30 provider calls a minute, the key's 60, or (operator key, anyone but `USER_ID`) `GEO_OPERATOR_DAILY_CAP` a day are spent | `429` |
+| the provider refused or failed | `502` `{ "error", "kind" }` (`auth`, `quota`, `no_route`, `unsupported`, `bad_request`, `timeout`, `upstream`) |
 
 ## Accounts (signed-in people)
 
@@ -178,7 +216,7 @@ viewer's agents ever reach these routes.
 ```
 GET    /v1/shares                        # { outgoing: [{ viewer:{id,displayName}, level, hideHomeExact }],
                                          #   incoming: [{ owner:{id,displayName}, level, hideHomeExact }] }
-PUT    /v1/shares/:viewerUserId          # { "level":"coarse"|"precise", "hideHomeExact"?:bool } -> { share }
+PUT    /v1/shares/:viewerUserId          # { "level":"coarse"|"precise", "hideHomeExact"?:bool, "showArea"?:bool } -> { share }
 DELETE /v1/shares/:viewerUserId          # stop sharing
 DELETE /v1/shares/incoming/:ownerUserId  # stop seeing someone who shares with me
 GET    /v1/shares/audit?limit=50         # my shares' audit, newest first (max 500)
@@ -206,7 +244,7 @@ revoking a share do not.
   "user": { "id":"…", "displayName":"Mina" },
   "level": "precise",
   "paused": false,
-  "presence": { "status":"away", "label":"away", "motion":"walking", "updatedAgoMin":3, "stale":false },
+  "presence": { "status":"away", "label":"away", "motion":"walking", "updatedAgoMin":3, "stale":false, "freshness":"live" },
   "precise": "available"
 } ] }
 ```
@@ -330,7 +368,10 @@ GET /v1/activity/ingest?limit=50&before=               # device uploads (max 200
     `events.list`, `privacy.read`, `privacy.update`, `webhooks.list`,
     `webhooks.create`, `webhooks.update`, `webhooks.delete`,
     `webhooks.dead_letters`, `tokens.list`, `tokens.create`, `tokens.revoke`,
-    `devices.list`, `devices.pair`, `activity.read`, `admin.logs`; `account`
+    `devices.list`, `devices.pair`, `activity.read`, `admin.logs`,
+    `geo.settings`, `geo.credentials.write`, `geo.credentials.delete`,
+    `geo.credentials.test`, `geo.search`, `geo.eta`; the maps provider calls
+    `geo.reverse`, `geo.geocode`, `geo.route`; `account`
     for any `/v1/me`, `/v1/workspaces`, `/v1/shares`, `/v1/people` or
     `/v1/oauth` route, or the OAuth consent API under `/oauth/interaction/`
     (a token is always refused there); an MCP tool name; `mcp.request` for an
@@ -351,8 +392,9 @@ GET /v1/activity/ingest?limit=50&before=               # device uploads (max 200
     within a minute of the previous one fold into one row: `count` of them,
     the first at `createdAt`, the latest at `lastAt`. The row keeps the first
     reason.
-  - `credential.kind` is `token` for a WhereCtx token, or `oauth` for an MCP
-    client connected with OAuth. An OAuth row's `id` is the grant id (the `id`
+  - `credential.kind` is `token` for a WhereCtx token, `oauth` for an MCP
+    client connected with OAuth, or `system` (with `surface: "system"`) for
+    a maps call WhereCtx made on its own: the background area lookup. An OAuth row's `id` is the grant id (the `id`
     in `GET /v1/oauth/grants`), and its `name` is the client's name, else its
     `client_id` host.
   - `credential` filters by token or grant id. The person's own dashboard
@@ -444,7 +486,9 @@ ok = fresh && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.head
 ```
 
 Events: `presence.updated`, `presence.entered_place`, `presence.left_place`,
-`presence.became_stale`, `presence.privacy_changed`. Location sharing is not
+`presence.became_stale`, `presence.privacy_changed`. `presence.became_stale`
+means the device appears offline (see `freshness` above); it does not fire
+for a phone that is only quiet at rest. Location sharing is not
 delivered by webhook; its audit is at `GET /v1/shares/audit`.
 
 ## Misc

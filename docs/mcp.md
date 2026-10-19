@@ -161,15 +161,17 @@ protected from it.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `get_presence` | – | coarse status/label/motion/age/stale (no GPS). `{status:"hidden"}` in hidden mode |
+| `get_presence` | – | coarse status/label/motion/age, `freshness`, `lastReportAgoSec` (`updatedAgoSec` is the same), `lastMovedAgoSec`, `stale` (no GPS); `area` when allowed. `{status:"hidden"}` in hidden mode |
 | `get_precise_location` | `reason: string` | `{lat, lon, accuracyM?, mapUrl, updatedAgoSec}` or an error if denied by policy/home-protection |
-| `is_near_place` | `name: string` | `{name, inside, near}` booleans (no coordinates) |
+| `is_near_place` | `name: string` | `{name, inside, near, freshness, lastReportAgoSec}` as of the last report (no coordinates) |
 | `list_places` | – | `[{name, type}]` (admins also get coordinates) |
-| `get_location_age` | – | `{updatedAgoSec, stale, updatedAt}` |
+| `get_location_age` | – | `{updatedAgoSec, updatedAt, stale, freshness, lastReportAgoSec, lastMovedAgoSec}`; ages are from when the server heard the phone, `updatedAt` is the device's own time of the fix |
 | `list_recent_presence_events` | `limit?: number` | recent events (place names omitted for agents) |
 | `create_location_reminder` | `place: string, message: string` | `{id, place, message}`; the place must exist; refused in hidden mode |
-| `create_place` | `name, type, lat, lon, radiusM?` | `{name, type, radiusM}`; registers/replaces a geofence |
+| `create_place` | `name, type, lat, lon, radiusM?` or `name, type, address, pick?, radiusM?` | `{name, type, radiusM, address?}`; registers/replaces a geofence. An address is looked up with the user's maps provider, which needs the user's maps on, `manage_places` and a presence the agent may see; several matches come back numbered for `pick` |
 | `remember_current_place` | `name, type?, radiusM?` | `{name, type, radiusM}`; saves the **current** location as a place (coordinates are never returned) |
+| `get_eta` | `to, pick?, departAt?, avoid?, reason?` | `{destination, origin, precision:"approximate", durationMin, distanceKm, traffic, departAt, arriveAt, summary, provider, freshness, originAgeMin, …}`: roughly how long the user's drive takes from where they are now to a registered place, with live traffic. Never coordinates. Needs the user's `geoEnabled` and `etaToAgents`. It still tells the agent roughly how far away the user is |
+| `get_directions` | same | `get_eta` plus `steps` (the provider's turn instructions) when the agent may read the precise location, else `stepsWithheld`; and, for an address the agent named or a `manage_places` token, `deepLinks` (Kakao Map web, Naver Map app) |
 
 All tools apply the same privacy rules as the REST API: hidden mode withholds,
 precise is policy-gated, home coordinates are protected, and coarse tools never
@@ -197,6 +199,44 @@ in the dashboard's Agent access view; see [privacy.md](privacy.md#what-is-logged
 A POST may batch at most 10 JSON-RPC messages; a larger batch is refused with
 `400` and JSON-RPC error `-32600`.
 
+### ETA and directions
+
+`to` is the name of one of the user's registered places (`home`,
+`office`). The route starts at the user's current location, rounded to about
+100 m before it leaves the server.
+
+The answer is approximate on purpose, so it cannot be worked back to where
+the user is: `durationMin` in 5-minute steps (at least 5), `distanceKm` in
+whole kilometres, `arriveAt` to 5 minutes, no fares, and `summary` only the
+main roads at least 1.5 km from both ends, without side streets (…번길,
+…로12길). It still reveals roughly how far away the user is, which is why the
+user turns it on separately (`etaToAgents`).
+
+Precise access opens two more things: the turn-by-turn `steps` of
+`get_directions` (they name the streets around the user) and an address or
+place to search as `to`. It needs `read_precise_location`, the user's
+`allowPreciseLocation`, a `reason` when the user requires one, and the user
+not at home, the same gate as `get_precise_location`. Without it, an address
+is refused and `stepsWithheld` says why the steps are missing. Several
+search matches return `{ambiguous:true, candidates:[{pick, label, address,
+…}]}`; call again with `pick`.
+
+A tool answers with an error text, never a guess, when maps or ETA for
+agents are off, the user is at or near home (with `skipProviderNearHome`,
+the default), no maps key is set up, the user's maps budget is spent (30
+provider calls a minute, a route to an address being two), or the reading is
+too old to start from. A route starts only from a `live` reading or a
+`stationary` one inside a registered place; the refusal carries `freshness`
+and `originAgeMin`, as every answer does. Each call also writes a
+`geo.geocode` or `geo.route` row to the user's access log under the same
+credential.
+
+Provider support: Kakao (Kakao Mobility Directions) times a future
+`departAt` on predicted traffic (`traffic:"predicted"`); Naver Directions 5
+always uses live traffic and refuses `departAt`. Neither offers walking or
+public transit routes through these APIs, so the tools answer for driving
+only.
+
 ## Agent usage policy
 
 Recommended system-prompt snippet (also in `examples/hermes/prompt.md`):
@@ -207,7 +247,9 @@ You have access to user presence through WhereCtx.
 Use location only when relevant.
 Prefer coarse presence over precise GPS.
 Never reveal raw coordinates unless the user explicitly asks.
-If location is stale, say that clearly.
+A quiet phone is normal: phones report only when they move. Treat
+freshness "stationary" as still at the last place. "offline" and "unknown"
+mean the location may be wrong; say that clearly.
 When the user is moving, prefer concise replies.
 When precise location is requested, provide the reason to the tool.
 Do not infer sensitive behavior from location history.

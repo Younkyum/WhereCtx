@@ -12,7 +12,7 @@ import {
 } from "../store/index.js";
 import type { NormalizedReading } from "../normalizer/types.js";
 import {
-  agentCoarseView,
+  presenceViews,
   authorizePrecise,
   canReadPresence,
 } from "../privacy/policy.js";
@@ -33,6 +33,7 @@ const config: WhereCtxConfig = {
     hideHomeExactCoordinates: true,
     protectHomePlace: true,
     staleAfterSec: 900,
+    deviceOfflineAfterSec: 86_400,
     retentionHours: 24,
     storeRawHistory: false,
   },
@@ -43,6 +44,7 @@ const config: WhereCtxConfig = {
   events: { retentionHours: 720 },
   sharing: { auditRetentionDays: 365 },
   oauth: { dynamicRegistration: false },
+  geo: { operatorKeys: {}, operatorKeyForAll: false, operatorDailyCap: 200, fake: false },
   activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
 };
 
@@ -51,6 +53,10 @@ const USER = asUserId("default");
 
 let nowMs = T0;
 const clock = () => new Date(nowMs);
+const views = presenceViews({ staleAfterSec: 900, deviceOfflineAfterSec: 86_400 }, clock);
+
+/** Past the 24 h DEVICE_OFFLINE_AFTER_SEC of the test config. */
+const DAY_PLUS = 86_400_000 + 1000;
 
 function reading(lat: number, lon: number, over: Partial<NormalizedReading> = {}): NormalizedReading {
   return {
@@ -97,6 +103,22 @@ beforeEach(async () => {
   });
 });
 
+describe("the area a reading keeps", () => {
+  const REGION = { region1: "서울특별시", region2: "중구", region3: "명동", label: "중구 명동" };
+  const AT = { lat: 37.05, lon: 127.0 };
+
+  it("is dropped as a reading more than 200 m from where it was looked up is stored, before any lookup", async () => {
+    await service.processReading(USER, reading(AT.lat, AT.lon));
+    await service.setArea(USER, { region: REGION, forPoint: AT });
+    await service.processReading(USER, reading(AT.lat + 0.0012, AT.lon)); // about 130 m
+    expect((await presenceStore.getCurrent(USER))!.coarse).toMatchObject({ area: "중구 명동", city: "중구" });
+    await service.processReading(USER, reading(AT.lat + 0.0025, AT.lon)); // about 280 m from where it was looked up
+    const current = (await presenceStore.getCurrent(USER))!;
+    expect(current.coarse?.area).toBeUndefined();
+    expect(current.areaFor).toBeUndefined();
+  });
+});
+
 describe("PresenceService.processReading", () => {
   it("computes home status and emits updated + entered_place", async () => {
     const r = await service.processReading(USER, reading(37.0, 127.0));
@@ -136,11 +158,13 @@ describe("PresenceService.processReading", () => {
 });
 
 describe("PresenceService.checkStale", () => {
-  it("emits became_stale once after the stale window", async () => {
+  it("emits became_stale once when the device goes offline, not when it is merely quiet", async () => {
     await service.processReading(USER, reading(37.0, 127.0));
     expect(await service.checkStale(USER)).toBeNull(); // fresh
 
-    nowMs = T0 + 1000 * 1000; // +1000s > 900s stale window
+    nowMs = T0 + 1000 * 1000; // +1000s: past STALE_AFTER_SEC, but a device at rest stays quiet
+    expect(await service.checkStale(USER)).toBeNull();
+    nowMs = T0 + DAY_PLUS; // past DEVICE_OFFLINE_AFTER_SEC: the device is offline
     const stale = await service.checkStale(USER);
     expect(stale?.type).toBe("presence.became_stale");
     expect(await service.checkStale(USER)).toBeNull(); // only once
@@ -151,7 +175,7 @@ describe("PresenceService.sweepStale", () => {
   it("fires became_stale for the stale user only, once", async () => {
     const OTHER = asUserId("other");
     await service.processReading(USER, reading(37.0, 127.0));
-    nowMs = T0 + 1000 * 1000;
+    nowMs = T0 + DAY_PLUS;
     await service.processReading(OTHER, reading(37.05, 127.0));
 
     const swept = await service.sweepStale();
@@ -220,7 +244,7 @@ describe("end-to-end privacy enforcement", () => {
     const settings = await settingsStore.getOrSeed(USER);
     const current = (await presenceStore.getCurrent(USER))!;
 
-    expect(agentCoarseView(current, settings, clock)).toBeNull();
+    expect(views.agentCoarse(current, settings)).toBeNull();
     const auth = authorizePrecise({
       scopes: ROLE_SCOPES.agent,
       settings,
@@ -251,7 +275,7 @@ describe("end-to-end privacy enforcement", () => {
     await service.processReading(USER, reading(37.05, 127.0));
     const settings = await settingsStore.getOrSeed(USER);
     const current = (await presenceStore.getCurrent(USER))!;
-    const view = agentCoarseView(current, settings, clock)!;
+    const view = views.agentCoarse(current, settings)!;
     expect(view).not.toHaveProperty("geohash");
     expect(view).not.toHaveProperty("lat");
     expect(JSON.stringify(view)).not.toContain(String(current.coarse?.geohash));
@@ -277,14 +301,14 @@ describe("end-to-end privacy enforcement", () => {
 describe("staleness re-arming", () => {
   it("fires became_stale again after a fresh reading resets the flag", async () => {
     await service.processReading(USER, reading(37.0, 127.0));
-    nowMs = T0 + 1000 * 1000;
+    nowMs = T0 + DAY_PLUS;
     expect((await service.checkStale(USER))?.type).toBe("presence.became_stale");
 
     // A fresh reading re-arms the flag.
     await service.processReading(USER, reading(37.0, 127.0));
     expect(await service.checkStale(USER)).toBeNull();
 
-    nowMs += 1000 * 1000;
+    nowMs += DAY_PLUS;
     expect((await service.checkStale(USER))?.type).toBe("presence.became_stale");
   });
 });

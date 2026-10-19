@@ -19,11 +19,3 @@ export function secondsSince(iso: string, clock: Clock = systemClock): number {
   return Math.max(0, Math.floor(diffMs / 1000));
 }
 
-/** Whether a reading taken at `updatedAt` is stale given its `staleAfterSec`. */
-export function isStale(
-  updatedAt: string,
-  staleAfterSec: number,
-  clock: Clock = systemClock,
-): boolean {
-  return secondsSince(updatedAt, clock) > staleAfterSec;
-}

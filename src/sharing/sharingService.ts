@@ -5,14 +5,14 @@
  * the store's SQL decides whether that counterpart is a current co-member.
  *
  * This module loads and audits; what a viewer may see is decided by
- * `buildPersonView` (../privacy/policy.ts). Sharing with a person is separate
+ * `PresenceViews.person` (../privacy/policy.ts). Sharing with a person is separate
  * from what the owner's agents may see: `defaultAgentAccess` does not narrow
  * it, `sharingPaused` does, and the viewer's agent tokens never reach it
  * (it is session-only).
  */
 
 import { fail, hasFreshAuth, ok, type Actor, type Result } from "../accounts/types.js";
-import { buildPersonView, type PersonView } from "../privacy/policy.js";
+import type { PersonView, PresenceViews } from "../privacy/policy.js";
 import type { SettingsStore } from "../privacy/settingsStore.js";
 import type { ShareLevel, UserId } from "../types.js";
 import type { Clock } from "../util/time.js";
@@ -50,6 +50,9 @@ export class SharingService {
   constructor(
     private readonly stores: SharingStores,
     private readonly clock: Clock,
+    private readonly views: PresenceViews,
+    /** Told when one of `owner`'s shares changes, so their area lookup follows who may see it. */
+    private readonly onShareChanged: (owner: UserId) => void = () => {},
   ) {}
 
   async list(me: Actor): Promise<{ outgoing: OutgoingShare[]; incoming: IncomingShare[] }> {
@@ -72,6 +75,7 @@ export class SharingService {
     const outcome = await this.stores.shares.put(me.userId, viewer, grant, {
       mayWiden: hasFreshAuth(me.reauthAt, this.clock()),
       defaultHideHomeExact: settings.hideHomeExactCoordinates,
+      defaultShowArea: settings.areaToPeople,
     });
     if (outcome === "reauth_required") {
       return fail(
@@ -80,19 +84,22 @@ export class SharingService {
       );
     }
     if (outcome === "not_found") return notFound();
+    this.onShareChanged(me.userId);
     const share = (await this.stores.shares.listOutgoing(me.userId)).find((s) => s.viewer.id === viewer);
     return share ? ok(share) : notFound();
   }
 
   async revoke(me: Actor, viewer: UserId): Promise<Result<void>> {
-    return (await this.stores.shares.revoke(me.userId, viewer, null)) ? ok(undefined) : notFound();
+    if (!(await this.stores.shares.revoke(me.userId, viewer, null))) return notFound();
+    this.onShareChanged(me.userId);
+    return ok(undefined);
   }
 
   /** Stop seeing `owner`: the viewer's side of ending a share. */
   async decline(me: Actor, owner: UserId): Promise<Result<void>> {
-    return (await this.stores.shares.revoke(owner, me.userId, "viewer_declined"))
-      ? ok(undefined)
-      : notFound();
+    if (!(await this.stores.shares.revoke(owner, me.userId, "viewer_declined"))) return notFound();
+    this.onShareChanged(owner);
+    return ok(undefined);
   }
 
   /** Everyone sharing with me, without coordinates; nothing is audited. */
@@ -124,7 +131,7 @@ export class SharingService {
     return {
       user: owner,
       level: share.level,
-      ...buildPersonView(presence, share, ownerContext, this.clock),
+      ...this.views.person(presence, share, ownerContext),
     };
   }
 }

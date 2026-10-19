@@ -12,7 +12,8 @@ passkey dashboard and share their location with each other, like Find My.
 ## What it does
 
 - Computes a status from your phone's location and your places: `home`,
-  `near_home`, `work`, `custom`, `transit`, `away`, plus motion and staleness.
+  `near_home`, `work`, `custom`, `transit`, `away`, plus motion and how fresh
+  the report is (a phone at rest is quiet, not stale).
 - Gives agents a coarse view over MCP and REST. Precise coordinates sit behind
   a policy gate and are refused at or near home.
 - Hosts several people. Each person's data belongs to them. Workspaces group
@@ -23,6 +24,10 @@ passkey dashboard and share their location with each other, like Find My.
 - Connects a phone by QR code (OwnTracks) or with ready-made steps (iOS
   Shortcut), and an agent with a generated MCP config.
 - Fires geofence events to signed webhooks.
+- Tells agents roughly how long it takes you to drive to one of your places
+  with live traffic, and which neighbourhood you are in, through Kakao or
+  Naver with your own key. Off until you turn it on; your position leaves the
+  server rounded to about 100 m, and never from home.
 
 ## Quick start with Docker
 

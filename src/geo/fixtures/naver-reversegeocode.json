@@ -1,0 +1,16 @@
+{
+  "status": { "code": 0, "name": "ok", "message": "done" },
+  "results": [
+    {
+      "name": "admcode",
+      "code": { "id": "4623025000", "type": "L", "mappingId": "12230250" },
+      "region": {
+        "area0": { "name": "kr", "coords": { "center": { "crs": "", "x": 0.0, "y": 0.0 } } },
+        "area1": { "name": "전라남도", "coords": { "center": { "crs": "EPSG:4326", "x": 126.957167, "y": 34.900727 } }, "alias": "전남" },
+        "area2": { "name": "광양시", "coords": { "center": { "crs": "EPSG:4326", "x": 127.695899, "y": 34.940658 } } },
+        "area3": { "name": "광양읍", "coords": { "center": { "crs": "EPSG:4326", "x": 127.58105, "y": 34.97341 } } },
+        "area4": { "name": "", "coords": { "center": { "crs": "", "x": 0.0, "y": 0.0 } } }
+      }
+    }
+  ]
+}

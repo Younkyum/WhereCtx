@@ -3,7 +3,7 @@
  * never see other people, and never grant access to their owner).
  *   GET    /v1/shares                        -> { outgoing, incoming }
  *   GET    /v1/shares/audit?limit=           -> my shares' audit, newest first
- *   PUT    /v1/shares/:viewerUserId          -> share with a co-member {level, hideHomeExact?}
+ *   PUT    /v1/shares/:viewerUserId          -> share with a co-member {level, hideHomeExact?, showArea?}
  *                                               (step-up to create or widen)
  *   DELETE /v1/shares/:viewerUserId          -> stop sharing
  *   DELETE /v1/shares/incoming/:ownerUserId  -> stop seeing someone who shares with me
@@ -26,6 +26,7 @@ import type { SessionEnv } from "./types.js";
 const PutShare = z.object({
   level: z.enum(SHARE_LEVELS),
   hideHomeExact: z.boolean().optional(),
+  showArea: z.boolean().optional(),
 });
 
 export function sharesRouter(): Hono<SessionEnv> {

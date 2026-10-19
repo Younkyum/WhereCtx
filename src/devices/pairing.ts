@@ -15,6 +15,11 @@
  * - Monitoring 1 ("significant changes") is the battery-friendly mode; on
  *   Android it honours locatorDisplacement (default 500 m) and locatorInterval:
  *   https://owntracks.org/booklet/features/location/
+ * - In that mode a phone at rest reports nothing; iOS still sends a `t: "p"`
+ *   ping "once in a while", and Android a ping every `ping` minutes (Android
+ *   only, https://owntracks.org/booklet/tech/json/; the minutes and the
+ *   default of 15 are from the app's Scheduler.kt and DefaultsProvider.kt).
+ *   The ping is what tells a quiet phone from an offline one.
  */
 
 import QRCode from "qrcode";
@@ -98,6 +103,8 @@ export function ownTracksConfig(baseUrl: string, name: string, secret: string) {
     monitoring: SIGNIFICANT_CHANGES,
     locatorDisplacement: 500,
     locatorInterval: 300,
+    // Android: a heartbeat every 15 minutes (its default, set so it is not lost).
+    ping: 15,
   };
 }
 

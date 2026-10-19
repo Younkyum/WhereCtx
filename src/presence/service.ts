@@ -13,7 +13,8 @@
 
 import type { WhereCtxConfig } from "../config.js";
 import { computeGeofence, labelForStatus } from "../geofence/engine.js";
-import { encodeGeohash } from "../geofence/distance.js";
+import { encodeGeohash, haversineMeters } from "../geofence/distance.js";
+import { AREA_REFRESH_MOVE_M, type AreaUpdate } from "../geo/area.js";
 import type { NormalizedReading } from "../normalizer/types.js";
 import type {
   CoarsePlaceType,
@@ -24,8 +25,9 @@ import type {
   PrivacySettings,
   UserId,
 } from "../types.js";
-import { nowIso, isStale, type Clock, systemClock } from "../util/time.js";
+import { nowIso, type Clock, systemClock } from "../util/time.js";
 import { KeyedMutex } from "../util/mutex.js";
+import { arrivalFor, isPastWindow, offlineAfterSec } from "./freshness.js";
 import type { EventsStore, NewPresenceEvent } from "../store/eventsStore.js";
 import type { HistoryStore } from "../store/historyStore.js";
 import type { PlacesStore } from "../store/placesStore.js";
@@ -47,6 +49,12 @@ export interface PresenceServiceDeps {
   remindersStore: RemindersStore;
   settingsStore: SettingsStore;
   clock?: Clock;
+  /**
+   * Called once a reading is stored, or the places it is judged against
+   * change, and the lock released, to bring its area up to date in the
+   * background (GeoService.refreshArea). Must not throw.
+   */
+  afterReading?: (userId: UserId) => void;
 }
 
 export interface ProcessResult {
@@ -75,7 +83,26 @@ export class PresenceService {
    * cannot race the read-diff-write sequence (review finding F10).
    */
   async processReading(userId: UserId, reading: NormalizedReading): Promise<ProcessResult> {
-    return this.mutex.run(userId, () => this.processReadingLocked(userId, reading));
+    const result = await this.mutex.run(userId, () => this.processReadingLocked(userId, reading));
+    this.deps.afterReading?.(userId);
+    return result;
+  }
+
+  /**
+   * Set the region names of the current reading, or clear them. A lookup made
+   * for an earlier reading is dropped once the person has moved on from it.
+   */
+  async setArea(userId: UserId, update: AreaUpdate): Promise<void> {
+    await this.mutex.run(userId, async () => {
+      const current = await this.deps.presenceStore.getCurrent(userId);
+      if (!current) return;
+      const { region, forPoint } = update;
+      if (region && forPoint) {
+        const here = current.precise;
+        if (!here || haversineMeters(here.lat, here.lon, forPoint.lat, forPoint.lon) > AREA_REFRESH_MOVE_M) return;
+      }
+      await this.deps.presenceStore.setArea(userId, region && forPoint ? { city: region.region2, area: region.label, forPoint } : null);
+    });
   }
 
   private async processReadingLocked(
@@ -107,6 +134,12 @@ export class PresenceService {
       label = labelForStatus("transit");
     }
 
+    const receivedAt = nowIso(this.clock);
+    const areaFor = prev?.areaFor;
+    const areaStillHolds =
+      prev !== null &&
+      areaFor !== undefined &&
+      haversineMeters(areaFor.lat, areaFor.lon, reading.precise.lat, reading.precise.lon) <= AREA_REFRESH_MOVE_M;
     const next: StoredPresence = {
       userId,
       status,
@@ -115,7 +148,11 @@ export class PresenceService {
       coarse: {
         geohash: encodeGeohash(reading.precise.lat, reading.precise.lon),
         placeType: coarsePlaceTypeFor(geo.matchedPlace),
+        // Kept while the reading is near the point it was looked up for; the
+        // background lookup (afterReading) confirms or replaces it.
+        ...(areaStillHolds ? { city: prev.coarse?.city, area: prev.coarse?.area } : {}),
       },
+      ...(areaStillHolds ? { areaFor: prev.areaFor } : {}),
       motion: reading.motion ?? "unknown",
       battery: reading.battery,
       source: reading.source,
@@ -124,8 +161,9 @@ export class PresenceService {
         allowPreciseToAgents: settings.allowPreciseLocation,
       },
       updatedAt: reading.updatedAt,
-      receivedAt: nowIso(this.clock),
-      staleAfterSec: config.privacy.staleAfterSec,
+      receivedAt,
+      ...arrivalFor(prev, reading.precise, receivedAt),
+      staleAfterSec: offlineAfterSec(reading.source, config.privacy),
       currentPlaceName: geo.matchedPlace?.name,
       staleEventFired: false,
     };
@@ -215,8 +253,7 @@ export class PresenceService {
     return this.mutex.run(userId, async () => {
       const current = await this.deps.presenceStore.getCurrent(userId);
       if (!current) return null;
-      const stale = isStale(current.updatedAt, current.staleAfterSec, this.clock);
-      if (!stale || current.staleEventFired) return null;
+      if (!isPastWindow(current, this.deps.config.privacy, this.clock) || current.staleEventFired) return null;
       await this.deps.presenceStore.setStaleEventFired(userId, true);
       return this.deps.eventsStore.append(userId, {
         type: "presence.became_stale",
@@ -234,7 +271,7 @@ export class PresenceService {
    */
   async sweepStale(): Promise<PresenceEvent[]> {
     const candidates = await this.deps.presenceStore.listUnfiredStale();
-    const due = candidates.filter((c) => isStale(c.updatedAt, c.staleAfterSec, this.clock));
+    const due = candidates.filter((c) => isPastWindow(c, this.deps.config.privacy, this.clock));
     const results = await Promise.allSettled(due.map((c) => this.checkStale(c.userId)));
     const events: PresenceEvent[] = [];
     results.forEach((r, i) => {
@@ -258,6 +295,13 @@ export class PresenceService {
    * per user so it cannot race a concurrent ingest.
    */
   async reevaluateCurrent(userId: UserId): Promise<ProcessResult | null> {
+    const result = await this.reevaluateLocked(userId);
+    // A new or moved place can put the person at or near home: bring the area up to date too.
+    if (result) this.deps.afterReading?.(userId);
+    return result;
+  }
+
+  private reevaluateLocked(userId: UserId): Promise<ProcessResult | null> {
     return this.mutex.run(userId, async () => {
       const prev = await this.deps.presenceStore.getCurrent(userId);
       if (!prev?.precise) return null;

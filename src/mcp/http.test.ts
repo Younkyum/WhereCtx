@@ -24,6 +24,7 @@ const config: WhereCtxConfig = {
     hideHomeExactCoordinates: true,
     protectHomePlace: true,
     staleAfterSec: 900,
+    deviceOfflineAfterSec: 86_400,
     retentionHours: 24,
     storeRawHistory: false,
   },
@@ -34,6 +35,7 @@ const config: WhereCtxConfig = {
   events: { retentionHours: 720 },
   sharing: { auditRetentionDays: 365 },
   oauth: { dynamicRegistration: false },
+  geo: { operatorKeys: {}, operatorKeyForAll: false, fake: false },
   activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
 };
 

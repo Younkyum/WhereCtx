@@ -14,7 +14,8 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { useState, type FormEvent } from "react";
-import { api } from "../api";
+import { Link } from "@astryxdesign/core/Link";
+import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import {
   AGENT_ACCESS,
@@ -22,12 +23,13 @@ import {
   PRIVACY_FLAGS,
   oneOf,
   type AgentAccess,
+  type GeoCandidate,
   type Place,
   type PlaceType,
   type PresenceEvent,
   type PrivacySettings,
 } from "../model";
-import { Empty, Hint, Loaded, Page, Panel, useAction, useConfirm, useLoad, useNotify } from "../ui";
+import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
 
 function usePlaceTypes() {
   const { t } = useApp();
@@ -80,9 +82,110 @@ export function PlacesView() {
           }
         </Loaded>
       </Panel>
+      <AddByAddress onAdded={reload} />
       <AddHere onAdded={reload} />
       <AddByCoordinates onAdded={reload} />
     </Page>
+  );
+}
+
+/** Kakao Map's documented web link to a point (apis.map.kakao.com/web/guide, "지도 URL"). */
+const mapLink = (c: GeoCandidate) => `https://map.kakao.com/link/map/${encodeURIComponent(c.label)},${c.lat},${c.lon}`;
+
+function AddByAddress({ onAdded }: { onAdded: () => Promise<void> }) {
+  const { t } = useApp();
+  const notify = useNotify();
+  const types = usePlaceTypes();
+  const [query, setQuery] = useState("");
+  const [found, setFound] = useState<GeoCandidate[] | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<GeoCandidate | null>(null);
+  const [name, setName] = useState("");
+  const [type, setType] = useState<PlaceType>("custom");
+  const [searching, search] = useAction(async () => {
+    setProblem(null);
+    setChosen(null);
+    try {
+      setFound((await api<{ candidates: GeoCandidate[] }>(`/v1/geo/search?q=${encodeURIComponent(query.trim())}`)).candidates);
+    } catch (e) {
+      setFound(null);
+      setProblem(
+        e instanceof ApiError && e.status === 409
+          ? t("places.byAddressNoKey")
+          : e instanceof ApiError && e.status === 403
+            ? t("places.byAddressMapsOff")
+            : e instanceof Error
+              ? e.message
+              : String(e),
+      );
+    }
+  });
+  const [saving, save] = useAction(async () => {
+    if (!chosen) return;
+    await api("/v1/places", { body: { name: name.trim(), type, lat: chosen.lat, lon: chosen.lon, label: chosen.label } });
+    notify.ok(t("toast.saved"));
+    setChosen(null);
+    setFound(null);
+    setQuery("");
+    setName("");
+    await onAdded();
+  });
+  return (
+    <Panel title={t("places.byAddress")}>
+      <VStack gap={3}>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (query.trim()) void search();
+          }}
+        >
+          <HStack gap={2} wrap="wrap" vAlign="end">
+            <TextInput label={t("places.byAddressQuery")} value={query} onChange={setQuery} width={320} />
+            <Button type="submit" label={t("places.byAddressSearch")} isLoading={searching} isDisabled={!query.trim()} />
+          </HStack>
+        </form>
+        <Hint>{t("places.byAddressHint")}</Hint>
+        {problem ? <Text type="supporting">{problem}</Text> : null}
+        {found && !found.length ? <Empty text={t("places.byAddressNone")} /> : null}
+        {found?.length && !chosen ? (
+          <Rows items={found} keyOf={(c) => `${c.lat},${c.lon},${c.label}`}>
+            {(c) => (
+              <Row title={c.label} subtitle={c.roadAddress && c.roadAddress !== c.label ? `${c.roadAddress} · ${c.address}` : c.address}>
+                <Link href={mapLink(c)} isExternalLink>
+                  {t("places.viewOnMap")}
+                </Link>
+                <Button
+                  label={t("places.useThis")}
+                  size="sm"
+                  onClick={() => {
+                    setChosen(c);
+                    if (!name.trim()) setName(c.label.slice(0, 64));
+                  }}
+                />
+              </Row>
+            )}
+          </Rows>
+        ) : null}
+        {chosen ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (name.trim()) void save();
+            }}
+          >
+            <VStack gap={2}>
+              <Text>{t("places.chosen", { place: chosen.roadAddress ?? chosen.address })}</Text>
+              <HStack gap={2} wrap="wrap" vAlign="end">
+                <TextInput label={t("places.name")} value={name} onChange={setName} isRequired width={240} />
+                <Selector label={t("places.type")} value={type} options={types} onChange={(v) => oneOf(PLACE_TYPES, v) && setType(v)} width={160} />
+                <Button type="submit" label={t("places.save")} variant="primary" isLoading={saving} isDisabled={!name.trim()} />
+                <Button label={t("common.cancel")} onClick={() => setChosen(null)} />
+              </HStack>
+            </VStack>
+          </form>
+        ) : null}
+      </VStack>
+    </Panel>
   );
 }
 

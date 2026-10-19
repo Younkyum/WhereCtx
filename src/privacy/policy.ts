@@ -21,6 +21,7 @@
 import { labelForStatus } from "../geofence/engine.js";
 import type {
   CoarsePresenceView,
+  Freshness,
   Motion,
   PrecisePresenceView,
   PresenceEvent,
@@ -32,7 +33,8 @@ import type {
   TokenScope,
 } from "../types.js";
 import { hasScope } from "../auth/scopes.js";
-import { secondsSince, isStale, type Clock, systemClock } from "../util/time.js";
+import { freshnessOf, type FreshnessConfig, type FreshnessView } from "../presence/freshness.js";
+import { secondsSince, type Clock, systemClock } from "../util/time.js";
 
 const ACCESS_ORDER: Record<PrivacyMode, number> = {
   hidden: 0,
@@ -48,40 +50,6 @@ export function accessAtLeast(level: PrivacyMode, min: PrivacyMode): boolean {
 /** Whether a token may read presence at all (read boundary; plan §9.3). */
 export function canReadPresence(scopes: TokenScope[]): boolean {
   return hasScope(scopes, "read_presence");
-}
-
-/**
- * Build the coarse presence summary. Pure mapping — no raw GPS, no geohash.
- * Used directly for admin/internal views (admin sees everything).
- */
-export function buildCoarseView(
-  presence: PresenceContext,
-  clock: Clock = systemClock,
-): CoarsePresenceView {
-  return {
-    status: presence.status,
-    label: presence.label ?? labelForStatus(presence.status),
-    motion: presence.motion ?? "unknown",
-    updatedAgoSec: secondsSince(presence.updatedAt, clock),
-    stale: isStale(presence.updatedAt, presence.staleAfterSec, clock),
-    privacy: presence.privacy.mode,
-  };
-}
-
-/**
- * Agent-facing coarse view. Returns null when the live policy hides presence
- * from agents (`defaultAgentAccess === "hidden"`). The returned view reflects
- * the live policy mode, not the per-reading snapshot (F8).
- */
-export function agentCoarseView(
-  presence: PresenceContext,
-  settings: PrivacySettings,
-  clock: Clock = systemClock,
-): CoarsePresenceView | null {
-  if (!accessAtLeast(settings.defaultAgentAccess, "coarse")) {
-    return null; // hidden
-  }
-  return { ...buildCoarseView(presence, clock), privacy: settings.defaultAgentAccess };
 }
 
 /**
@@ -136,12 +104,16 @@ export interface ShareTerms {
   level: ShareLevel;
   /** Withhold coordinates while the owner is at or near home. */
   hideHomeExact: boolean;
+  /** Show the owner's neighbourhood (presence area). */
+  showArea: boolean;
 }
 
 /** The owner-side facts a person view depends on, beyond the presence row. */
 export interface SharingOwnerContext {
   sharingPaused: boolean;
   hasHomePlace: boolean;
+  /** The owner's maps switch: no area is shown while it is off. */
+  geoEnabled: boolean;
 }
 
 /**
@@ -161,7 +133,11 @@ export interface PersonPresence {
   label: string;
   motion: Motion;
   updatedAgoMin: number;
+  /** The device appears offline (see CoarsePresenceView.stale). */
   stale: boolean;
+  freshness: Freshness;
+  /** The neighbourhood, when the share shows it. */
+  area?: string;
 }
 
 export interface PersonPrecise {
@@ -198,39 +174,79 @@ function preciseWithheld(
 }
 
 /**
- * What a viewer sees of one person who shares with them. Human sharing does
- * not consult the owner's agent policy (`defaultAgentAccess` and the precise
- * gates are about agents); the owner's `sharingPaused` hides them from every
- * viewer at once.
+ * Every view of a presence that says how fresh it is, bound once to the
+ * freshness config (STALE_AFTER_SEC, DEVICE_OFFLINE_AFTER_SEC) and the clock,
+ * so no caller threads either through.
  */
-export function buildPersonView(
-  presence: PresenceContext | null,
-  share: ShareTerms,
-  owner: SharingOwnerContext,
-  clock: Clock = systemClock,
-): PersonView {
-  if (owner.sharingPaused) return { paused: true, presence: null, precise: null };
-  const summary: PersonPresence | null = presence && {
-    status: presence.status,
-    label: labelForStatus(presence.status),
-    motion: presence.motion ?? "unknown",
-    updatedAgoMin: minutesSince(presence.updatedAt, clock),
-    stale: isStale(presence.updatedAt, presence.staleAfterSec, clock),
+export interface PresenceViews {
+  freshness(presence: PresenceContext): FreshnessView;
+  /**
+   * What an agent sees, or null when the live policy hides presence from
+   * agents (`defaultAgentAccess === "hidden"`). The view reflects the live
+   * policy mode, not the per-reading snapshot (F8). No raw GPS, no geohash.
+   */
+  agentCoarse(presence: PresenceContext, settings: PrivacySettings): CoarsePresenceView | null;
+  /** What the owner sees of themself: the area while maps and areaOnHome are on. */
+  ownerCoarse(presence: PresenceContext, settings: PrivacySettings): CoarsePresenceView;
+  /**
+   * What a viewer sees of one person who shares with them. Human sharing does
+   * not consult the owner's agent policy (`defaultAgentAccess` and the precise
+   * gates are about agents); the owner's `sharingPaused` hides them from every
+   * viewer at once.
+   */
+  person(presence: PresenceContext | null, share: ShareTerms, owner: SharingOwnerContext): PersonView;
+}
+
+export function presenceViews(config: FreshnessConfig, clock: Clock): PresenceViews {
+  const coarse = (presence: PresenceContext, privacy: PrivacyMode, area: string | undefined): CoarsePresenceView => {
+    const fresh = freshnessOf(presence, config, clock);
+    return {
+      status: presence.status,
+      label: presence.label ?? labelForStatus(presence.status),
+      motion: presence.motion ?? "unknown",
+      updatedAgoSec: fresh.lastReportAgoSec,
+      ...fresh,
+      privacy,
+      ...(area ? { area } : {}),
+    };
   };
-  if (share.level !== "precise") return { paused: false, presence: summary, precise: null };
-  const withheld = preciseWithheld(presence, share, owner);
-  if (withheld) return { paused: false, presence: summary, precise: null, preciseWithheld: withheld };
-  const point = presence?.precise;
-  const precise: PersonPrecise | null = point
-    ? {
-        lat: point.lat,
-        lon: point.lon,
-        accuracyM: point.accuracyM,
-        mapUrl: mapUrl(point.lat, point.lon),
-        updatedAgoMin: minutesSince(presence.updatedAt, clock),
-      }
-    : null;
-  return { paused: false, presence: summary, precise };
+  return {
+    freshness: (presence) => freshnessOf(presence, config, clock),
+    agentCoarse: (presence, settings) =>
+      accessAtLeast(settings.defaultAgentAccess, "coarse")
+        ? coarse(presence, settings.defaultAgentAccess, settings.geoEnabled && settings.areaToAgents ? presence.coarse?.area : undefined)
+        : null,
+    ownerCoarse: (presence, settings) =>
+      coarse(presence, settings.defaultAgentAccess, settings.geoEnabled && settings.areaOnHome ? presence.coarse?.area : undefined),
+    person: (presence, share, owner) => {
+      if (owner.sharingPaused) return { paused: true, presence: null, precise: null };
+      const area = share.showArea && owner.geoEnabled ? presence?.coarse?.area : undefined;
+      const fresh = presence && freshnessOf(presence, config, clock);
+      const summary: PersonPresence | null = presence && fresh && {
+        status: presence.status,
+        label: labelForStatus(presence.status),
+        motion: presence.motion ?? "unknown",
+        updatedAgoMin: Math.floor(fresh.lastReportAgoSec / 60),
+        stale: fresh.stale,
+        freshness: fresh.freshness,
+        ...(area ? { area } : {}),
+      };
+      if (share.level !== "precise") return { paused: false, presence: summary, precise: null };
+      const withheld = preciseWithheld(presence, share, owner);
+      if (withheld) return { paused: false, presence: summary, precise: null, preciseWithheld: withheld };
+      const point = presence?.precise;
+      const precise: PersonPrecise | null = point
+        ? {
+            lat: point.lat,
+            lon: point.lon,
+            accuracyM: point.accuracyM,
+            mapUrl: mapUrl(point.lat, point.lon),
+            updatedAgoMin: minutesSince(presence.updatedAt, clock),
+          }
+        : null;
+      return { paused: false, presence: summary, precise };
+    },
+  };
 }
 
 export interface PreciseAuthInput {

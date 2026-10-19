@@ -1,7 +1,7 @@
 /**
  * My status, "share my location now" (one browser geolocation fix posted as a
- * manual reading), and the people who share with me. Opening someone's exact
- * location is audited on their side.
+ * manual reading), the drive time home when I ask for it, and the people who
+ * share with me. Opening someone's exact location is audited on their side.
  */
 
 import { Avatar } from "@astryxdesign/core/Avatar";
@@ -13,27 +13,34 @@ import { Grid } from "@astryxdesign/core/Grid";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
-import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { useEffect, useState } from "react";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import { geoErrorKey, motionOf, safeHttpUrl, statusOf } from "../lib";
-import type { Person, PreciseLocation, Presence, PrivacySettings } from "../model";
+import type { Eta, Person, Place, PreciseLocation, Presence, PrivacySettings } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, useAction, useFormat, useLoad, useNotify } from "../ui";
 
-type Mine = { presence: Presence | null; problem: "none" | "hidden" | null; paused: boolean };
+type Mine = { presence: Presence | null; problem: "none" | "hidden" | null; paused: boolean; geoEnabled: boolean };
 
 async function loadMine(): Promise<Mine> {
   const privacy = await api<{ settings: PrivacySettings }>("/v1/privacy");
   const paused = Boolean(privacy.settings?.sharingPaused);
+  const geoEnabled = Boolean(privacy.settings?.geoEnabled);
   try {
-    return { presence: await api<Presence>("/v1/presence"), problem: null, paused };
+    return { presence: await api<Presence>("/v1/presence"), problem: null, paused, geoEnabled };
   } catch (e) {
-    if (e instanceof ApiError && e.status === 404) return { presence: null, problem: "none", paused };
-    if (e instanceof ApiError && e.status === 403) return { presence: null, problem: "hidden", paused };
+    if (e instanceof ApiError && e.status === 404) return { presence: null, problem: "none", paused, geoEnabled };
+    if (e instanceof ApiError && e.status === 403) return { presence: null, problem: "hidden", paused, geoEnabled };
     throw e;
   }
+}
+
+/** Drive time to my home place, asked only when I press the button: one provider call each time. */
+async function timeToHome(): Promise<Eta | null> {
+  const home = (await api<{ places: Place[] }>("/v1/places")).places?.find((p) => p.type === "home");
+  if (!home) return null;
+  return (await api<{ eta: Eta }>(`/v1/geo/eta?to=${encodeURIComponent(home.name)}`)).eta;
 }
 
 function locate(t: ReturnType<typeof useApp>["t"]): Promise<GeolocationPosition> {
@@ -106,7 +113,7 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
   const p = mine.presence;
   const motion = p ? motionOf(p.motion) : null;
   const meta = p
-    ? t("home.updated", { age: fmt.ago(Math.floor(p.updatedAgoSec / 60)) })
+    ? t("home.updated", { age: fmt.ago(Math.floor(p.updatedAgoSec / 60)) }) + (p.freshness === "offline" ? ` · ${t("home.offline")}` : "")
     : t(mine.problem === "hidden" ? "home.hiddenFromAgents" : "home.none");
   return (
     <HStack gap={4} wrap="wrap" vAlign="center">
@@ -114,10 +121,10 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
         <VStack gap={1}>
           <Text type="supporting">{t("home.mine")}</Text>
           <Heading level={2}>{p ? t(`st.${statusOf(p.status)}`) : "—"}</Heading>
+          {p?.area ? <Text>{p.area}</Text> : null}
+          {mine.geoEnabled && p && p.status !== "home" ? <ToHome /> : null}
           <HStack gap={2} vAlign="center" wrap="wrap">
-            {p && !p.stale ? <StatusDot variant="success" label={t("badge.fresh")} /> : null}
             <Text type="supporting">{meta}</Text>
-            {p?.stale ? <Badge variant="warning" label={t("badge.stale")} /> : null}
             {motion ? <Badge label={t(`motion.${motion}`)} /> : null}
             {mine.paused ? <Badge variant="warning" label={t("badge.pausedAll")} /> : null}
           </HStack>
@@ -128,6 +135,37 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
         <Hint>{t(mine.paused ? "home.shareNowPaused" : "home.shareNowHint")}</Hint>
       </VStack>
     </HStack>
+  );
+}
+
+function ToHome() {
+  const { t } = useApp();
+  const [eta, setEta] = useState<Eta | null | undefined>(undefined);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [checking, check] = useAction(async () => {
+    setProblem(null);
+    try {
+      setEta(await timeToHome());
+    } catch (e) {
+      setEta(undefined);
+      setProblem(e instanceof Error ? e.message : String(e));
+    }
+  });
+  return (
+    <VStack gap={1}>
+      <HStack gap={2} vAlign="center" wrap="wrap">
+        <Button label={t("home.checkToHome")} size="sm" isLoading={checking} onClick={() => void check()} />
+        {eta ? (
+          <Text weight="medium">
+            {t(eta.traffic === "live" ? "home.toHomeLive" : "home.toHome", { min: eta.durationMin })}
+            {eta.origin === "home" ? ` · ${t("maps.from.home")}` : ""}
+          </Text>
+        ) : eta === null ? (
+          <Text type="supporting">{t("home.noHomePlace")}</Text>
+        ) : null}
+      </HStack>
+      {problem ? <Text type="supporting">{problem}</Text> : <Hint>{t("home.checkToHomeHint")}</Hint>}
+    </VStack>
   );
 }
 
@@ -160,9 +198,11 @@ function PersonCard({ person: p }: { person: Person }) {
         ) : (
           <VStack gap={1}>
             <Text weight="medium">{t(`st.${statusOf(pr.status)}`)}</Text>
-            <Text type="supporting">{fmt.ago(pr.updatedAgoMin)}</Text>
+            {pr.area ? <Text>{pr.area}</Text> : null}
+            <Text type="supporting">
+              {fmt.ago(pr.updatedAgoMin) + (pr.freshness === "offline" ? ` · ${t("home.offline")}` : "")}
+            </Text>
             <HStack gap={1} wrap="wrap">
-              {pr.stale ? <Badge variant="warning" label={t("badge.stale")} /> : null}
               {motion ? <Badge label={t(`motion.${motion}`)} /> : null}
               {p.precise === "available" ? <Badge variant="info" label={t("badge.preciseAvailable")} /> : null}
             </HStack>

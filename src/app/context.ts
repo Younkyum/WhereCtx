@@ -53,6 +53,11 @@ import { OAuthStore } from "../oauth/store.js";
 import { AccessLogStore } from "../activity/accessLogStore.js";
 import { IngestLogStore } from "../activity/ingestLogStore.js";
 import type { PresenceEvent, UserId } from "../types.js";
+import { GeoService } from "../geo/service.js";
+import type { Schedule } from "../geo/area.js";
+import { GeoCredentialsStore } from "../geo/credentialsStore.js";
+import { GeoCacheStore } from "../geo/cacheStore.js";
+import { presenceViews, type PresenceViews } from "../privacy/policy.js";
 
 export interface SystemStores {
   tokens: TokenStore;
@@ -77,6 +82,7 @@ export interface SystemStores {
   oauth: OAuthStore;
   accessLog: AccessLogStore;
   ingestLog: IngestLogStore;
+  geo: GeoService;
 }
 
 type Unbound<F, A> = F extends (first: A, ...args: infer P) => infer R ? (...args: P) => R : never;
@@ -112,6 +118,15 @@ function scopeFor(system: SystemStores, userId: UserId) {
     reminders: bindFirst(system.reminders, userId, ["create", "countActive", "listActive"]),
     accessLog: bindFirst(system.accessLog, userId, ["record", "list"]),
     ingestLog: bindFirst(system.ingestLog, userId, ["record", "list", "deviceSummaries"]),
+    geo: bindFirst(system.geo, userId, [
+      "status",
+      "saveCredential",
+      "deleteCredential",
+      "testCredential",
+      "search",
+      "eta",
+      "refreshArea",
+    ]),
     webhooks: bindFirst(system.webhooks, userId, [
       "list",
       "count",
@@ -175,6 +190,8 @@ export interface AppContext {
   config: WhereCtxConfig;
   handle: DbHandle;
   clock: Clock;
+  /** Presence views bound to the freshness config and the clock. */
+  views: PresenceViews;
   system: SystemStores;
   forUser(userId: UserId): UserScope;
   forSession(actor: Actor): AccountScope;
@@ -190,7 +207,7 @@ export interface AppContext {
 }
 
 /** What route handlers and MCP tools may touch besides their user scope. */
-export type RouteContext = Pick<AppContext, "config" | "clock" | "onEvents">;
+export type RouteContext = Pick<AppContext, "config" | "clock" | "views" | "onEvents">;
 
 export interface BootstrapInfo {
   seed: SeedResult;
@@ -204,6 +221,10 @@ export interface AppContextOptions {
   ceremony?: PasskeyCeremony;
   /** Replaces the fetch that retrieves OAuth Client ID Metadata Documents (tests). */
   oauthFetch?: typeof fetch;
+  /** Replaces the network for the Kakao and Naver adapters (tests). */
+  geoFetch?: typeof fetch;
+  /** Replaces the timer behind the trailing area lookup (tests). */
+  geoSchedule?: Schedule;
 }
 
 /**
@@ -217,6 +238,7 @@ export async function createAppContext(
   options: AppContextOptions = {},
 ): Promise<{ ctx: AppContext; bootstrap: BootstrapInfo }> {
   const clock = options.clock ?? systemClock;
+  const views = presenceViews(config.privacy, clock);
   const handle = createDb(config.databaseUrl);
   await ensureSchema(handle);
   const db = handle.db;
@@ -254,19 +276,33 @@ export async function createAppContext(
     accessLog: new AccessLogStore(db, clock),
     ingestLog: new IngestLogStore(db, clock),
   };
-  const system: SystemStores = {
-    ...stores,
-    service: new PresenceService({
-      config,
-      presenceStore: stores.presence,
-      placesStore: stores.places,
-      eventsStore: stores.events,
-      historyStore: stores.history,
-      remindersStore: stores.reminders,
-      settingsStore: stores.settings,
-      clock,
-    }),
-  };
+  const geo: GeoService = new GeoService({
+    config,
+    views,
+    credentials: new GeoCredentialsStore(db, new SecretBox(await stores.serverSecrets.geoCredentialKey()), clock),
+    cache: new GeoCacheStore(db, await stores.serverSecrets.geoCacheKey(), clock),
+    settings: stores.settings,
+    presence: stores.presence,
+    places: stores.places,
+    accessLog: stores.accessLog,
+    shares: stores.shares,
+    setArea: (userId, update) => service.setArea(userId, update),
+    schedule: options.geoSchedule,
+    clock,
+    fetch: options.geoFetch,
+  });
+  const service = new PresenceService({
+    config,
+    presenceStore: stores.presence,
+    placesStore: stores.places,
+    eventsStore: stores.events,
+    historyStore: stores.history,
+    remindersStore: stores.reminders,
+    settingsStore: stores.settings,
+    clock,
+    afterReading: (userId) => geo.refreshArea(userId),
+  });
+  const system: SystemStores = { ...stores, service, geo };
 
   // `defaultUserId` owns the env-configured tokens, the first settings row,
   // the Default workspace, and the setup passkey. Request paths take their
@@ -299,7 +335,7 @@ export async function createAppContext(
   const services: AccountServices = {
     self,
     workspaces: new WorkspaceService(pick(system, ["workspaces", "invites"]), config),
-    sharing: new SharingService(pick(system, ["shares", "settings"]), clock),
+    sharing: new SharingService(pick(system, ["shares", "settings"]), clock, views, (owner) => geo.refreshArea(owner)),
     oauth,
   };
 
@@ -307,6 +343,7 @@ export async function createAppContext(
     config,
     handle,
     clock,
+    views,
     system,
     forUser: (userId) => scopeFor(system, userId),
     forSession: (actor) => accountScopeFor(services, actor),

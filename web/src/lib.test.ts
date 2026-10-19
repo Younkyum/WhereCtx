@@ -73,7 +73,8 @@ describe("dashboard helpers", () => {
     expect(lib.ageParts(0)).toEqual(["age.now", 0]);
     expect(lib.ageParts(59)).toEqual(["age.min", 59]);
     expect(lib.ageParts(61)).toEqual(["age.hour", 1]);
-    expect(lib.ageParts(1440 * 3)).toEqual(["age.day", 3]);
+    expect(lib.ageParts(1439)).toEqual(["age.hour", 23]);
+    expect(lib.ageParts(1440 * 3)).toBeNull();
     expect(lib.statusOf("custom")).toBe("custom");
     expect(lib.statusOf("<b>")).toBe("unknown");
     expect(lib.motionOf("walking")).toBe("walking");

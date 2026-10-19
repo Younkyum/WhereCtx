@@ -33,6 +33,7 @@ function config(defaultUserId: string): WhereCtxConfig {
       hideHomeExactCoordinates: true,
       protectHomePlace: true,
       staleAfterSec: 900,
+      deviceOfflineAfterSec: 86_400,
       retentionHours: 24,
       storeRawHistory: false,
     },
@@ -43,6 +44,7 @@ function config(defaultUserId: string): WhereCtxConfig {
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
     oauth: { dynamicRegistration: false },
+    geo: { operatorKeys: {}, operatorKeyForAll: false, fake: false },
     activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
   };
 }
@@ -252,6 +254,8 @@ describe("migration 0009 on an install that ran the activity logs", () => {
       "0007_access_log",
       "0008_ingest_log",
       "0009_oauth_store",
+      "0010_geo",
+      "0011_presence_freshness_area",
     ]);
   });
 

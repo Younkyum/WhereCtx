@@ -114,7 +114,7 @@ describe("granting a share", () => {
   it("refuses sharing with myself", async () => {
     expect((await share(owner.browser, owner.userId, { level: "coarse" })).status).toBe(400);
     const me = asUserId(owner.userId);
-    const options = { mayWiden: true, defaultHideHomeExact: true };
+    const options = { mayWiden: true, defaultHideHomeExact: true, defaultShowArea: false };
     expect(await ctx.system.shares.put(me, me, { level: "coarse" }, options)).toBe("not_found");
     expect(await shareRows()).toBe(0);
   });
@@ -122,12 +122,12 @@ describe("granting a share", () => {
   it("is listed for both people, with the terms the viewer is held to", async () => {
     const res = await share(owner.browser, mina.userId, { level: "coarse" });
     expect(res.status).toBe(200);
-    const shared = { viewer: { id: mina.userId, displayName: "Mina" }, level: "coarse", hideHomeExact: true };
+    const shared = { viewer: { id: mina.userId, displayName: "Mina" }, level: "coarse", hideHomeExact: true, showArea: false };
     expect(((await res.json()) as any).share).toEqual(shared);
     expect(await owner.browser.json("/v1/shares")).toEqual({ outgoing: [shared], incoming: [] });
     expect(await mina.browser.json("/v1/shares")).toEqual({
       outgoing: [],
-      incoming: [{ owner: { id: owner.userId, displayName: "owner" }, level: "coarse", hideHomeExact: true }],
+      incoming: [{ owner: { id: owner.userId, displayName: "owner" }, level: "coarse", hideHomeExact: true, showArea: false }],
     });
   });
 
@@ -182,7 +182,7 @@ describe("what a viewer sees", () => {
         user: { id: owner.userId, displayName: "owner" },
         level: "coarse",
         paused: false,
-        presence: { status: "away", label: "away", motion: "unknown", updatedAgoMin: 1, stale: false },
+        presence: { status: "away", label: "away", motion: "unknown", updatedAgoMin: 1, stale: false, freshness: "live" },
         precise: null,
       },
     ]);
@@ -368,7 +368,7 @@ describe("when a membership ends", () => {
     expect(await people(mina)).toEqual([]);
     expect(await people(owner)).toEqual([]);
     expect((await auditOf(owner))[0]).toEqual(ended(mina.userId));
-    expect((await auditOf(owner))[0].before).toEqual({ level: "precise", hideHomeExact: true });
+    expect((await auditOf(owner))[0].before).toEqual({ level: "precise", hideHomeExact: true, showArea: false });
     expect((await auditOf(mina))[0]).toEqual(ended(owner.userId));
   });
 
@@ -492,20 +492,20 @@ describe("the share audit", () => {
 
     const audit = await auditOf(owner);
     expect(audit.map(({ action, reason, before, after }) => ({ action, reason, before, after }))).toEqual([
-      { action: "revoked", reason: null, before: { level: "precise", hideHomeExact: false }, after: null },
+      { action: "revoked", reason: null, before: { level: "precise", hideHomeExact: false, showArea: false }, after: null },
       {
         action: "changed",
         reason: null,
-        before: { level: "precise", hideHomeExact: true },
-        after: { level: "precise", hideHomeExact: false },
+        before: { level: "precise", hideHomeExact: true, showArea: false },
+        after: { level: "precise", hideHomeExact: false, showArea: false },
       },
       {
         action: "changed",
         reason: null,
-        before: { level: "coarse", hideHomeExact: true },
-        after: { level: "precise", hideHomeExact: true },
+        before: { level: "coarse", hideHomeExact: true, showArea: false },
+        after: { level: "precise", hideHomeExact: true, showArea: false },
       },
-      { action: "granted", reason: null, before: null, after: { level: "coarse", hideHomeExact: true } },
+      { action: "granted", reason: null, before: null, after: { level: "coarse", hideHomeExact: true, showArea: false } },
     ]);
     expect(audit.every((a) => a.viewer.id === mina.userId && a.viewer.displayName === "Mina")).toBe(true);
     expect(await auditOf(mina)).toEqual([]);
@@ -565,5 +565,63 @@ describe("the share audit", () => {
     clock.advance(MINUTE);
     expect(await ctx.system.shares.pruneAudit(1)).toBe(1);
     expect((await auditOf(owner)).map((a) => a.action)).toEqual(["changed"]);
+  });
+});
+
+describe("showing my neighbourhood", () => {
+  const setArea = (area: string | null) =>
+    ctx.handle.client.execute({ sql: "UPDATE presence SET area = ? WHERE user_id = ?", args: [area, owner.userId] });
+
+  it("is off for a new share unless areaToPeople says otherwise; an explicit value wins", async () => {
+    let res = await share(owner.browser, mina.userId, { level: "coarse" });
+    expect(((await res.json()) as any).share.showArea).toBe(false);
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { areaToPeople: true } });
+    res = await share(owner.browser, outsider.userId, { level: "coarse" });
+    expect(((await res.json()) as any).share.showArea).toBe(true);
+    await owner.browser.send(`/v1/shares/${outsider.userId}`, { method: "DELETE" });
+    res = await share(owner.browser, outsider.userId, { level: "coarse", showArea: false });
+    expect(((await res.json()) as any).share.showArea).toBe(false);
+  });
+
+  it("needs a fresh passkey to turn on, not to turn off, and is audited", async () => {
+    await share(owner.browser, mina.userId, { level: "coarse" });
+    clock.advance(11 * MINUTE);
+    const on = await share(owner.browser, mina.userId, { level: "coarse", showArea: true });
+    expect(on.status).toBe(403);
+    expect(((await on.json()) as any).code).toBe("reauth_required");
+    await reauth(owner.browser, owner.credentialId);
+    expect((await share(owner.browser, mina.userId, { level: "coarse", showArea: true })).status).toBe(200);
+    clock.advance(11 * MINUTE);
+    expect((await share(owner.browser, mina.userId, { level: "coarse", showArea: false })).status).toBe(200);
+    const changes = (await auditOf(owner)).filter((a) => a.action === "changed");
+    expect(changes.map((a) => [a.before.showArea, a.after.showArea])).toEqual([
+      [true, false],
+      [false, true],
+    ]);
+  });
+
+  it("shows the area only with showArea on and the owner's maps switch on", async () => {
+    await setArea("테스트구 테스트1동");
+    await share(owner.browser, mina.userId, { level: "coarse" });
+    expect((await personOf(mina, owner.userId)).presence.area).toBeUndefined();
+    await share(owner.browser, mina.userId, { level: "coarse", showArea: true });
+    expect((await personOf(mina, owner.userId)).presence.area).toBeUndefined();
+    await owner.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
+    // With no maps key the lookup that turning maps on starts drops the area; set it after.
+    await ctx.system.geo.settled();
+    await setArea("테스트구 테스트1동");
+    expect((await personOf(mina, owner.userId)).presence.area).toBe("테스트구 테스트1동");
+    expect((await people(mina))[0].presence.area).toBe("테스트구 테스트1동");
+    await share(owner.browser, mina.userId, { level: "coarse", showArea: false });
+    expect(JSON.stringify(await personOf(mina, owner.userId))).not.toContain("테스트");
+  });
+
+  it("is copied into the audit when a membership ends the share", async () => {
+    await share(owner.browser, mina.userId, { level: "coarse", showArea: true });
+    await mina.browser.json(`/v1/workspaces/${defaultWs}/members/${mina.userId}`, { method: "DELETE" });
+    expect((await auditOf(owner))[0]).toMatchObject({
+      reason: "membership_ended",
+      before: { level: "coarse", hideHomeExact: true, showArea: true },
+    });
   });
 });

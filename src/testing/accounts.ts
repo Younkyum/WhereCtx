@@ -41,6 +41,7 @@ export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxCon
       hideHomeExactCoordinates: true,
       protectHomePlace: true,
       staleAfterSec: 900,
+      deviceOfflineAfterSec: 86_400,
       retentionHours: 24,
       storeRawHistory: false,
     },
@@ -51,6 +52,7 @@ export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxCon
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
     oauth: { dynamicRegistration: false },
+    geo: { operatorKeys: {}, operatorKeyForAll: false, operatorDailyCap: 200, fake: false },
     activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
     ...overrides,
   };
@@ -277,7 +279,7 @@ export async function bootApp(
   clock: TestClock,
   overrides: Partial<WhereCtxConfig> = {},
   build: BuildAppOptions = {},
-  options: Pick<AppContextOptions, "oauthFetch"> = {},
+  options: Pick<AppContextOptions, "oauthFetch" | "geoFetch" | "geoSchedule"> = {},
 ): Promise<BootedApp> {
   const { ctx, bootstrap } = await createAppContext(
     testConfig({ bootstrapTokens: { admin: OWNER_ADMIN }, ...overrides }),

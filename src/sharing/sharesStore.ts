@@ -44,6 +44,8 @@ export interface ShareGrant {
   level: ShareLevel;
   /** Omitted on an update: keep the current setting. */
   hideHomeExact?: boolean;
+  /** Omitted on an update: keep the current setting. */
+  showArea?: boolean;
 }
 
 export interface PutOptions {
@@ -51,6 +53,8 @@ export interface PutOptions {
   mayWiden: boolean;
   /** hideHomeExact for a new share whose grant omits it. */
   defaultHideHomeExact: boolean;
+  /** showArea for a new share whose grant omits it. */
+  defaultShowArea: boolean;
 }
 
 export type PutOutcome = "ok" | "not_found" | "reauth_required";
@@ -105,8 +109,9 @@ function auditId(): string {
   return randomBytes(16).toString("hex");
 }
 
-function terms(level: ShareLevel | null, hideHomeExact: boolean | null): ShareTerms | null {
-  return level === null || hideHomeExact === null ? null : { level, hideHomeExact };
+/** Audit rows written before show_area existed, and by the 0006 trigger, have none: it was off. */
+function terms(level: ShareLevel | null, hideHomeExact: boolean | null, showArea: boolean | null): ShareTerms | null {
+  return level === null || hideHomeExact === null ? null : { level, hideHomeExact, showArea: showArea ?? false };
 }
 
 export class SharesStore {
@@ -121,13 +126,16 @@ export class SharesStore {
     const eligible = and(eq(users.id, viewer), ne(users.id, owner), shareAWorkspace(owner, viewer))!;
     const thisShare = and(eq(locationShares.ownerUserId, owner), eq(locationShares.viewerUserId, viewer))!;
     const nextHide = grant.hideHomeExact ?? locationShares.hideHomeExact;
+    const nextShow = grant.showArea ?? locationShares.showArea;
     // Evaluated against the current row: does this write show the viewer more?
     const widens = or(
       grant.level === "precise" ? eq(locationShares.level, "coarse") : undefined,
       grant.hideHomeExact === false ? eq(locationShares.hideHomeExact, true) : undefined,
+      grant.showArea === true ? eq(locationShares.showArea, false) : undefined,
     );
     const allowed = options.mayWiden || !widens ? undefined : not(widens);
     const createHide = grant.hideHomeExact ?? options.defaultHideHomeExact;
+    const createShow = grant.showArea ?? options.defaultShowArea;
 
     const granted = insertWhen(
       this.db,
@@ -142,6 +150,8 @@ export class SharesStore {
         afterLevel: grant.level,
         beforeHideHome: null,
         afterHideHome: createHide,
+        beforeShowArea: null,
+        afterShowArea: createShow,
         createdAt: now,
       },
       { from: users, where: and(eligible, not(this.exists(thisShare)))! },
@@ -159,6 +169,8 @@ export class SharesStore {
         afterLevel: grant.level,
         beforeHideHome: locationShares.hideHomeExact,
         afterHideHome: grant.hideHomeExact ?? locationShares.hideHomeExact,
+        beforeShowArea: locationShares.showArea,
+        afterShowArea: nextShow,
         createdAt: now,
       },
       {
@@ -166,7 +178,11 @@ export class SharesStore {
         where: and(
           thisShare,
           shareAWorkspace(owner, viewer),
-          or(ne(locationShares.level, grant.level), ne(locationShares.hideHomeExact, nextHide)),
+          or(
+            ne(locationShares.level, grant.level),
+            ne(locationShares.hideHomeExact, nextHide),
+            ne(locationShares.showArea, nextShow),
+          ),
           allowed,
         )!,
       },
@@ -179,6 +195,7 @@ export class SharesStore {
         viewerUserId: viewer,
         level: grant.level,
         hideHomeExact: createHide,
+        showArea: createShow,
         createdAt: now,
         updatedAt: now,
       },
@@ -189,6 +206,7 @@ export class SharesStore {
       set: {
         level: grant.level,
         ...(grant.hideHomeExact === undefined ? {} : { hideHomeExact: grant.hideHomeExact }),
+        ...(grant.showArea === undefined ? {} : { showArea: grant.showArea }),
         updatedAt: now,
       },
       setWhere: allowed,
@@ -221,6 +239,8 @@ export class SharesStore {
         afterLevel: null,
         beforeHideHome: locationShares.hideHomeExact,
         afterHideHome: null,
+        beforeShowArea: locationShares.showArea,
+        afterShowArea: null,
         createdAt: nowIso(this.clock),
       },
       { from: locationShares, where: thisShare },
@@ -237,6 +257,7 @@ export class SharesStore {
         displayName: counterpart.displayName,
         level: locationShares.level,
         hideHomeExact: locationShares.hideHomeExact,
+        showArea: locationShares.showArea,
       })
       .from(locationShares)
       .innerJoin(counterpart, eq(counterpart.id, locationShares.viewerUserId))
@@ -256,6 +277,7 @@ export class SharesStore {
         displayName: counterpart.displayName,
         level: locationShares.level,
         hideHomeExact: locationShares.hideHomeExact,
+        showArea: locationShares.showArea,
       })
       .from(locationShares)
       .innerJoin(counterpart, eq(counterpart.id, locationShares.ownerUserId))
@@ -265,6 +287,16 @@ export class SharesStore {
       owner: { id: asUserId(id), displayName },
       ...share,
     }));
+  }
+
+  /** Whether any of `owner`'s shares shows their neighbourhood. */
+  async showsAreaToAnyone(owner: UserId): Promise<boolean> {
+    const rows = await this.db
+      .select({ viewer: locationShares.viewerUserId })
+      .from(locationShares)
+      .where(and(eq(locationShares.ownerUserId, owner), eq(locationShares.showArea, true)))
+      .limit(1);
+    return rows.length > 0;
   }
 
   /**
@@ -279,7 +311,9 @@ export class SharesStore {
         displayName: counterpart.displayName,
         level: locationShares.level,
         hideHomeExact: locationShares.hideHomeExact,
+        showArea: locationShares.showArea,
         sharingPaused: privacySettings.sharingPaused,
+        geoEnabled: privacySettings.geoEnabled,
         hasHomePlace: sql<number>`${exists(
           this.db
             .select({ one: sql`1` })
@@ -302,9 +336,13 @@ export class SharesStore {
       .orderBy(counterpart.displayName);
     return rows.map((row) => ({
       owner: { id: asUserId(row.id), displayName: row.displayName },
-      share: { level: row.level, hideHomeExact: row.hideHomeExact },
-      // An owner who never opened their settings has the seeded default: not paused.
-      ownerContext: { sharingPaused: row.sharingPaused ?? false, hasHomePlace: Boolean(row.hasHomePlace) },
+      share: { level: row.level, hideHomeExact: row.hideHomeExact, showArea: row.showArea },
+      // An owner who never opened their settings has the seeded defaults: not paused, maps off.
+      ownerContext: {
+        sharingPaused: row.sharingPaused ?? false,
+        hasHomePlace: Boolean(row.hasHomePlace),
+        geoEnabled: row.geoEnabled ?? false,
+      },
       presence: row.presence ? presenceFromRow(row.presence) : null,
     }));
   }
@@ -341,6 +379,8 @@ export class SharesStore {
         afterLevel: null,
         beforeHideHome: null,
         afterHideHome: null,
+        beforeShowArea: null,
+        afterShowArea: null,
         createdAt: now.toISOString(),
       },
       { from: users, where: and(eq(users.id, owner), not(exists(recent)))! },
@@ -362,8 +402,8 @@ export class SharesStore {
       viewer: { id: asUserId(audit.viewerUserId), displayName: viewerName },
       action: audit.action,
       reason: audit.reason,
-      before: terms(audit.beforeLevel, audit.beforeHideHome),
-      after: terms(audit.afterLevel, audit.afterHideHome),
+      before: terms(audit.beforeLevel, audit.beforeHideHome, audit.beforeShowArea),
+      after: terms(audit.afterLevel, audit.afterHideHome, audit.afterShowArea),
       createdAt: audit.createdAt,
     }));
   }
