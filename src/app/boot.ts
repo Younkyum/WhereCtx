@@ -75,11 +75,18 @@ ${RULE}
   if (config.webhooks.encryptionKey) {
     const migrated = await ctx.system.webhooks.encryptLegacySecrets();
     if (migrated > 0) {
-      log.info("encrypted legacy webhook secrets at rest", { count: migrated });
+      log.info("encrypted legacy webhook signing secrets at rest", { count: migrated });
     }
   } else if (await ctx.system.webhooks.hasPlaintextSecrets()) {
+    log.warn("webhook signing secrets are stored as plaintext; set WEBHOOK_ENCRYPTION_KEY to encrypt them at rest");
+  }
+  const stuck = await ctx.system.webhooks.undeliverableAuthHeaders();
+  if (stuck > 0) {
     log.warn(
-      "webhook signing secrets are stored as plaintext; set WEBHOOK_ENCRYPTION_KEY to encrypt them at rest",
+      config.webhooks.encryptionKey
+        ? "webhooks have an auth header stored unencrypted and are not delivered; replace or remove each one's auth header in the dashboard"
+        : "webhooks have an auth header but WEBHOOK_ENCRYPTION_KEY is not set, so they are not delivered; set the key they were saved with",
+      { count: stuck },
     );
   }
 
@@ -93,14 +100,20 @@ ${RULE}
   ctx.onEvents = () => dispatcher.nudge();
   dispatcher.start(WEBHOOK_TICK_MS);
 
-  // Periodic stale sweep: fires became_stale even with no reads.
+  // Periodic sweeps: became_stale fires even with no reads, and a pending
+  // enter or leave is confirmed once its dwell time passes with no new reading.
   const staleSweep = setInterval(() => {
+    const nudgeOn = (events: unknown[]) => {
+      if (events.length > 0) dispatcher.nudge();
+    };
     ctx.system.service
       .sweepStale()
-      .then((events) => {
-        if (events.length > 0) dispatcher.nudge();
-      })
+      .then(nudgeOn)
       .catch((e) => log.error("stale sweep failed", e));
+    ctx.system.service
+      .sweepDwell()
+      .then(nudgeOn)
+      .catch((e) => log.error("dwell sweep failed", e));
   }, STALE_SWEEP_MS);
   staleSweep.unref?.();
 

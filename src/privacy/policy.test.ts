@@ -11,7 +11,6 @@ import {
   buildPreciseView,
   presenceViews,
   canReadPresence,
-  isAtOrNearHome,
   shouldHideExact,
 } from "./policy.js";
 
@@ -28,6 +27,7 @@ const basePresence = (over: Partial<PresenceContext> = {}): PresenceContext => (
   privacy: { mode: "coarse", allowPreciseToAgents: false },
   updatedAt: "2026-06-05T00:09:18.000Z", // 42s before FIXED
   receivedAt: "2026-06-05T00:09:18.000Z",
+  atOrNearHome: true,
   ...over,
 });
 
@@ -100,7 +100,7 @@ describe("authorizePrecise", () => {
     const r = authorizePrecise({
       scopes: PRECISE_SCOPES,
       settings: settings({ defaultAgentAccess: "hidden" }),
-      presence: basePresence({ status: "away" }),
+      presence: basePresence({ status: "away", atOrNearHome: false }),
       reason: "map",
     });
     expect(r.allowed).toBe(false);
@@ -110,7 +110,7 @@ describe("authorizePrecise", () => {
     const r = authorizePrecise({
       scopes: ["read_presence"],
       settings: settings(),
-      presence: basePresence({ status: "away" }),
+      presence: basePresence({ status: "away", atOrNearHome: false }),
       reason: "map",
     });
     expect(r.allowed).toBe(false);
@@ -120,7 +120,7 @@ describe("authorizePrecise", () => {
     const r = authorizePrecise({
       scopes: PRECISE_SCOPES,
       settings: settings({ allowPreciseLocation: false }),
-      presence: basePresence({ status: "away" }),
+      presence: basePresence({ status: "away", atOrNearHome: false }),
       reason: "map",
     });
     expect(r.allowed).toBe(false);
@@ -130,7 +130,7 @@ describe("authorizePrecise", () => {
     const r = authorizePrecise({
       scopes: PRECISE_SCOPES,
       settings: settings({ preciseRequiresApproval: true }),
-      presence: basePresence({ status: "away" }),
+      presence: basePresence({ status: "away", atOrNearHome: false }),
       reason: "map",
     });
     expect(r.allowed).toBe(false);
@@ -140,7 +140,7 @@ describe("authorizePrecise", () => {
     const r = authorizePrecise({
       scopes: PRECISE_SCOPES,
       settings: settings({ preciseRequiresReason: true }),
-      presence: basePresence({ status: "away" }),
+      presence: basePresence({ status: "away", atOrNearHome: false }),
     });
     expect(r.allowed).toBe(false);
   });
@@ -160,7 +160,7 @@ describe("authorizePrecise", () => {
     const r = authorizePrecise({
       scopes: PRECISE_SCOPES,
       settings: settings(),
-      presence: basePresence({ status: "away" }),
+      presence: basePresence({ status: "away", atOrNearHome: false }),
       reason: "user_requested_map",
     });
     expect(r.allowed).toBe(true);
@@ -169,7 +169,7 @@ describe("authorizePrecise", () => {
 
 describe("buildPreciseView + shouldHideExact", () => {
   it("returns exact coordinates (gating is done by authorizePrecise)", () => {
-    const v = buildPreciseView(basePresence({ status: "away" }), clock);
+    const v = buildPreciseView(basePresence({ status: "away", atOrNearHome: false }), clock);
     expect(v?.lat).toBe(37.123456);
     expect(v?.accuracyM).toBe(21);
     expect(v?.mapUrl).toContain("37.123456,127.123456");
@@ -179,10 +179,11 @@ describe("buildPreciseView + shouldHideExact", () => {
     expect(buildPreciseView(basePresence({ precise: undefined }), clock)).toBeNull();
   });
 
-  it("flags home/near_home for protection but not away", () => {
+  it("flags a point at or near home for protection, whatever the status says", () => {
     expect(shouldHideExact(basePresence({ status: "home" }), settings())).toBe(true);
-    expect(shouldHideExact(basePresence({ status: "near_home" }), settings())).toBe(true);
-    expect(shouldHideExact(basePresence({ status: "away" }), settings())).toBe(false);
+    expect(shouldHideExact(basePresence({ status: "custom" }), settings())).toBe(true);
+    expect(shouldHideExact(basePresence({ status: "home", atOrNearHome: false }), settings())).toBe(false);
+    expect(shouldHideExact(basePresence({ status: "away", atOrNearHome: false }), settings())).toBe(false);
     expect(
       shouldHideExact(basePresence({ status: "home" }), settings({ hideHomeExactCoordinates: false })),
     ).toBe(false);
@@ -204,12 +205,11 @@ describe("the person view", () => {
   });
 
   it("withholds coordinates at or near home, and everywhere without a home place", () => {
-    expect(isAtOrNearHome(basePresence())).toBe(true);
     expect(views.person(basePresence(), precise, sharing)).toMatchObject({
       precise: null,
       preciseWithheld: "at_home",
     });
-    const away = basePresence({ status: "away" });
+    const away = basePresence({ status: "away", atOrNearHome: false });
     expect(views.person(away, precise, sharing).precise).toMatchObject({ lat: 37.123456 });
     expect(views.person(away, precise, { ...sharing, hasHomePlace: false })).toMatchObject({
       precise: null,
@@ -225,7 +225,7 @@ describe("the person view", () => {
   });
 
   it("shows nothing of a paused owner", () => {
-    expect(views.person(basePresence({ status: "away" }), precise, { ...sharing, sharingPaused: true })).toEqual({
+    expect(views.person(basePresence({ status: "away", atOrNearHome: false }), precise, { ...sharing, sharingPaused: true })).toEqual({
       paused: true,
       presence: null,
       precise: null,

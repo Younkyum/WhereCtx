@@ -7,6 +7,7 @@
 import type { WorkspaceRole } from "../../src/accounts/types";
 import type { AccessEntry as ServerAccessEntry } from "../../src/activity/types";
 import type { GeoProviderName, RouteMode, TransitLegKind } from "../../src/geo/types";
+import type { PlaceRules } from "../../src/types";
 
 export type { WorkspaceRole };
 export {
@@ -238,12 +239,16 @@ export interface InvitePreview {
   expiresAt: string;
 }
 
-export interface Place {
+export interface Place extends Partial<PlaceRules> {
   name: string;
   type: PlaceType;
+  label?: string;
   lat: number;
   lon: number;
   radiusM: number;
+  /** A polygon place's closed [lon, lat] ring; lat/lon/radiusM are then its centroid and circumradius. */
+  polygon?: Array<[number, number]>;
+  updatedAt?: string;
 }
 
 export interface PresenceEvent {
@@ -257,7 +262,21 @@ export interface Webhook {
   id: string;
   url: string;
   events: string[];
+  /** Place names a place event must name; absent: every place. */
+  places?: string[];
   active: boolean;
+  /** Never the value: its name and last characters only. */
+  authHeader?: { name: string; hint: string };
+  /** Its stored credentials do not open on the server: it is not delivered until replaced or deleted. */
+  credentialsUnreadable?: true;
+}
+
+/** What the server can do with webhooks, from GET /v1/webhooks. */
+export interface WebhookCapabilities {
+  /** False without WEBHOOK_ENCRYPTION_KEY: auth headers are only stored encrypted. */
+  authHeader: boolean;
+  /** An auth header is sent only to an https URL. */
+  authHeaderRequiresHttps: boolean;
 }
 
 export interface DeadLetter {

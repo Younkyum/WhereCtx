@@ -22,7 +22,7 @@ import { log } from "../util/log.js";
 import { KeyedMutex } from "../util/mutex.js";
 import type { Clock } from "../util/time.js";
 import { cacheTtlMs, type GeoCacheStore } from "./cacheStore.js";
-import { nearHomePlace } from "./eta.js";
+import { nearHomePlace } from "../geofence/shape.js";
 import type { GeoKeys } from "./keys.js";
 import type { LatLon, ReverseResult } from "./types.js";
 

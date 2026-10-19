@@ -40,6 +40,38 @@ function button(name: string): HTMLButtonElement {
   return found;
 }
 
+function buttonIn(scope: ParentNode, name: string): HTMLButtonElement {
+  const found = [...scope.querySelectorAll("button")].find((b) => b.textContent?.trim() === name);
+  if (!found) throw new Error(`no button "${name}"`);
+  return found;
+}
+
+function inputLabelled(scope: ParentNode, label: string): HTMLInputElement {
+  const target = [...scope.querySelectorAll("label")].find((l) => l.textContent?.trim().startsWith(label));
+  const input = target?.htmlFor ? (scope.querySelector(`#${CSS.escape(target.htmlFor)}`) as HTMLInputElement | null) : null;
+  if (!input) throw new Error(`no input labelled "${label}"`);
+  return input;
+}
+
+async function fill(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+function openDialog(): HTMLDialogElement | undefined {
+  return [...host.querySelectorAll("dialog")].find((d) => d.open);
+}
+
+function dialogButton(name: string): HTMLButtonElement {
+  const dialog = openDialog();
+  if (!dialog) throw new Error(`no open dialog in: ${host.textContent}`);
+  const found = [...dialog.querySelectorAll("button")].find((b) => b.textContent?.trim() === name);
+  if (!found) throw new Error(`no button "${name}" in the dialog: ${dialog.textContent}`);
+  return found;
+}
+
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   routes = new Map();
@@ -497,6 +529,140 @@ describe("log views", () => {
     expect(host.textContent).toContain("error=bad");
   });
 
+  it("Webhooks adds a hook in a dialog, starting with arrivals and departures and an optional auth header", async () => {
+    let created: any;
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: [], capabilities: { authHeader: true, authHeaderRequiresHttps: true } } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    route("POST /v1/webhooks", (body) => {
+      created = body;
+      return { status: 201, body: { webhook: { id: "h2" } } };
+    });
+    await open("#webhooks");
+    expect(host.textContent).toContain("Home Assistant");
+    expect(host.querySelector('input[placeholder="https://…"]')).toBeNull();
+
+    await act(async () => button("Add webhook").click());
+    await settle();
+    const dialog = () => document.querySelector("dialog")!;
+    expect(dialog().textContent).toContain("Arrived at a place");
+    expect(dialog().textContent).toContain("When you leave one of your places");
+    expect(dialog().textContent).toContain("signing secret");
+    const checked = [...dialog().querySelectorAll<HTMLInputElement>('li input[type="checkbox"]')]
+      .filter((c) => c.checked)
+      .map((c) => c.closest("li")?.textContent ?? "");
+    expect(checked).toHaveLength(2);
+    expect(checked[0]).toContain("presence.entered_place");
+    expect(checked[1]).toContain("presence.left_place");
+    const example = () => [...dialog().querySelectorAll("pre, code")].map((n) => n.textContent).join("\n");
+    expect(example()).toContain('"event": "presence.entered_place"');
+    expect(example()).not.toMatch(/"lat"|"lon"|Authorization/);
+
+    await fill(dialog().querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
+    const nameInput = inputLabelled(dialog(), "Header name");
+    expect(nameInput.value).toBe("Authorization");
+    await fill(inputLabelled(dialog(), "Header value"), "Bearer n8n-header-credential-9f3k");
+    const valueInput = inputLabelled(dialog(), "Header value");
+    expect(valueInput.type).toBe("password");
+    expect(valueInput.getAttribute("autocomplete")).toBe("new-password");
+    expect(valueInput.hasAttribute("data-1p-ignore")).toBe(true);
+    expect(valueInput.getAttribute("data-lpignore")).toBe("true");
+    expect(dialog().textContent).toContain("The value is stored encrypted");
+    expect(example()).toContain("Authorization: ••••••••9f3k");
+    expect(example()).not.toContain("credential");
+
+    await fill(nameInput, "X-WhereCtx-Signature");
+    expect(dialog().textContent).toContain("an X- name ending in -Token");
+    expect(buttonIn(dialog(), "Add").disabled).toBe(true);
+    await fill(nameInput, "Authorization");
+
+    await fill(dialog().querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "http://n8n.example/hook");
+    expect(dialog().textContent).toContain("only to an https URL");
+    expect(buttonIn(dialog(), "Add").disabled).toBe(true);
+    await fill(dialog().querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
+    expect(dialog().textContent).not.toContain("only to an https URL");
+
+    await act(async () => buttonIn(dialog(), "Add").click());
+    await settle();
+    expect(created).toEqual({
+      url: "https://n8n.example/hook",
+      events: ["presence.entered_place", "presence.left_place"],
+      authHeader: { name: "Authorization", value: "Bearer n8n-header-credential-9f3k" },
+    });
+    expect(document.querySelector("dialog[open]")).toBeNull();
+  });
+
+  it("Webhooks edits a hook in a dialog: events, and replacing or removing its auth header", async () => {
+    const hooks = [{ id: "h1", url: "https://ha.example/hook", events: ["*"], active: true, authHeader: { name: "Authorization", hint: "…9f3k" } }];
+    const patched: any[] = [];
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: hooks, capabilities: { authHeader: true, authHeaderRequiresHttps: true } } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    route("PATCH /v1/webhooks/h1", (body) => {
+      patched.push(body);
+      return { status: 200, body: { webhook: hooks[0] } };
+    });
+    await open("#webhooks");
+    expect(host.textContent).toContain("Authorization …9f3k");
+
+    await act(async () => button("Edit").click());
+    await settle();
+    const dialog = () => document.querySelector("dialog")!;
+    expect(dialog().textContent).toContain("Sends Authorization with a value ending …9f3k.");
+    const updated = [...dialog().querySelectorAll("li")].find((li) => li.textContent?.startsWith("Every location update"))!;
+    await act(async () => updated.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await act(async () => buttonIn(dialog(), "Remove").click());
+    expect(dialog().textContent).toContain("removed when you save");
+    await act(async () => buttonIn(dialog(), "Save").click());
+    await settle();
+    expect(patched.at(-1)).toEqual({ events: ["presence.updated"], authHeader: null });
+
+    await act(async () => button("Edit").click());
+    await settle();
+    await act(async () => buttonIn(dialog(), "Replace").click());
+    expect(buttonIn(dialog(), "Save").disabled).toBe(true);
+    await fill(inputLabelled(dialog(), "Header name"), "X-Api-Key");
+    await fill(inputLabelled(dialog(), "Header value"), "replacement-key-0042");
+    await act(async () => buttonIn(dialog(), "Save").click());
+    await settle();
+    expect(patched.at(-1)).toEqual({ authHeader: { name: "X-Api-Key", value: "replacement-key-0042" } });
+    expect(openDialog()).toBeUndefined();
+  });
+
+  it("Webhooks explains, and offers no auth header fields, when the server cannot encrypt one", async () => {
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: [], capabilities: { authHeader: false, authHeaderRequiresHttps: true } } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    await open("#webhooks");
+    await act(async () => button("Add webhook").click());
+    await settle();
+    const dialog = document.querySelector("dialog")!;
+    expect(dialog.textContent).toContain("WEBHOOK_ENCRYPTION_KEY is not set");
+    expect(dialog.textContent).not.toContain("The value is stored encrypted");
+    expect([...dialog.querySelectorAll("label")].map((l) => l.textContent)).not.toContain("Header value");
+  });
+
+  it("Webhooks marks a hook whose credentials are unreadable and offers to replace or delete it", async () => {
+    const hooks = [{ id: "h1", url: "https://ha.example/hook", events: ["*"], active: true, credentialsUnreadable: true }];
+    const patched: any[] = [];
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: hooks, capabilities: { authHeader: true, authHeaderRequiresHttps: true } } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    route("PATCH /v1/webhooks/h1", (body) => {
+      patched.push(body);
+      return { status: 200, body: { webhook: hooks[0] } };
+    });
+    await open("#webhooks");
+    expect(host.textContent).toContain("Credentials unreadable: replace or delete");
+    expect(button("Delete")).toBeDefined();
+
+    await act(async () => button("Edit").click());
+    await settle();
+    const dialog = () => document.querySelector("dialog")!;
+    expect(dialog().textContent).toContain("nothing is delivered to it");
+    await act(async () => buttonIn(dialog(), "Replace").click());
+    await fill(inputLabelled(dialog(), "Header value"), "Bearer replacement-credential-00042");
+    await act(async () => buttonIn(dialog(), "Save").click());
+    await settle();
+    expect(patched.at(-1)).toEqual({ authHeader: { name: "Authorization", value: "Bearer replacement-credential-00042" } });
+  });
+
   it("Webhooks starts with arrivals and departures, explains each event, and edits a hook's events", async () => {
     const hooks = [{ id: "h1", url: "https://ha.example/hook", events: ["*"], active: true }];
     let created: any;
@@ -513,36 +679,45 @@ describe("log views", () => {
     });
     await open("#webhooks");
     expect(host.textContent).toContain("Home Assistant");
-    expect(host.textContent).toContain("Arrived at a place");
-    expect(host.textContent).toContain("When you leave one of your places");
+    expect(openDialog()).toBeUndefined();
+    expect(host.querySelector('input[placeholder="https://…"]')).toBeNull();
+
+    await act(async () => button("Add webhook").click());
+    await settle();
+    const dialog = openDialog()!;
+    expect(dialog.textContent).toContain("Arrived at a place");
+    expect(dialog.textContent).toContain("When you leave one of your places");
     const checked = () =>
-      [...host.querySelectorAll<HTMLInputElement>('li input[type="checkbox"]')].filter((c) => c.checked).map((c) => c.closest("li")?.textContent ?? "");
+      [...dialog.querySelectorAll<HTMLInputElement>('li input[type="checkbox"]')].filter((c) => c.checked).map((c) => c.closest("li")?.textContent ?? "");
     const on = checked();
     expect(on).toHaveLength(2);
     expect(on[0]).toContain("presence.entered_place");
     expect(on[1]).toContain("presence.left_place");
-    const example = [...host.querySelectorAll("pre, code")].map((n) => n.textContent).join("\n");
+    const example = [...dialog.querySelectorAll("pre, code")].map((n) => n.textContent).join("\n");
     expect(example).toContain('"event": "presence.entered_place"');
     expect(example).not.toMatch(/"lat"|"lon"/);
 
-    const input = host.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!;
+    const input = dialog.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
       setter.call(input, "https://n8n.example/hook");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    await act(async () => button("Add").click());
+    await act(async () => dialogButton("Add").click());
     await settle();
     expect(created).toEqual({ url: "https://n8n.example/hook", events: ["presence.entered_place", "presence.left_place"] });
+    expect(openDialog()).toBeUndefined();
 
-    await act(async () => button("Change events").click());
+    await act(async () => button("Edit").click());
     await settle();
-    const updated = [...host.querySelectorAll("li")].find((li) => li.textContent?.startsWith("Every location update"))!;
+    const updated = [...openDialog()!.querySelectorAll("li")].find((li) => li.textContent?.startsWith("Every location update"))!;
     await act(async () => updated.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
-    await act(async () => button("Save").click());
+    await act(async () => dialogButton("Save").click());
     await settle();
     expect(patched).toEqual({ events: ["presence.updated"] });
+    expect(openDialog()).toBeUndefined();
   });
+
 
   it("Devices shows the Shortcut's Authorization header as a name and a Bearer value", async () => {
     route("GET /v1/devices", () => ({ status: 200, body: { devices: [] } }));
@@ -616,7 +791,7 @@ describe("maps", () => {
     const add = [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Add key");
     await act(async () => add[0]!.click());
     await settle();
-    expect(document.querySelector("dialog")?.textContent).toContain("Add your Naver key");
+    expect(openDialog()?.textContent).toContain("Add your Naver key");
     await fill(inputLabelled("Client ID"), "naver-client-id-1234");
     await fill(inputLabelled("Client Secret"), "naver-client-secret-5678");
     await act(async () => button("Save key").click());
@@ -719,7 +894,7 @@ describe("maps", () => {
     expect(host.querySelector("input")).toBeNull();
     await act(async () => button("Add by address or name").click());
     await settle();
-    expect(document.querySelector("dialog")?.textContent).toContain("Add by address or name");
+    expect(openDialog()?.textContent).toContain("Add by address or name");
     await fill(inputLabelled("Address or place name"), "판교역");
     await act(async () => button("Search").click());
     await settle();
@@ -732,6 +907,302 @@ describe("maps", () => {
     await act(async () => button("Save place").click());
     await settle();
     expect(posted).toMatchObject({ name: "판교역 경강선", type: "custom", lat: 37.3951, lon: 127.1109 });
-    expect(document.querySelector("dialog[open]")).toBeNull();
+    expect(openDialog()).toBeUndefined();
+  });
+});
+
+describe("place rules and webhook places", () => {
+  const OFFICE = [
+    [127.012345, 37.567891],
+    [127.014567, 37.567891],
+    [127.014567, 37.569123],
+    [127.012345, 37.567891],
+  ];
+  const OFFICE_PLACE = {
+    name: "office",
+    type: "work",
+    lat: 37.5685,
+    lon: 127.0134,
+    radiusM: 120,
+    polygon: OFFICE,
+    enterAfterSec: 0,
+    exitAfterSec: 0,
+    approachM: null,
+    emits: ["presence.entered_place", "presence.left_place", "presence.approaching_place"],
+    notifyWebhooks: true,
+    notifyReminders: true,
+  };
+  const GYM = { name: "gym", type: "custom", lat: 37.1, lon: 127, radiusM: 80 };
+
+  async function open(hash: string) {
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    location.hash = hash;
+    await act(async () => root.render(<App />));
+    await settle();
+  }
+
+  async function fill(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+  }
+
+  const inputLabelled = (label: string) => {
+    const l = [...host.querySelectorAll("label")].find((x) => x.textContent?.trim().startsWith(label));
+    const input = (l?.htmlFor && document.getElementById(l.htmlFor)) || l?.parentElement?.querySelector("input");
+    if (!input) throw new Error(`no input "${label}"`);
+    return input as HTMLInputElement;
+  };
+
+  const vertices = () => openDialog()!.querySelector("textarea")!;
+
+  async function click(target: HTMLElement) {
+    await act(async () => target.click());
+    await settle();
+  }
+
+  function servePlaces(places: unknown[]) {
+    const posted: any[] = [];
+    route("GET /v1/places", () => ({ status: 200, body: { places } }));
+    route("POST /v1/places", (b) => (posted.push(b), { status: 201, body: { place: b } }));
+    return posted;
+  }
+
+  afterEach(() => {
+    location.hash = "";
+  });
+
+  it("lists each place's rules read-only and edits them in a dialog that keeps a polygon's outline", async () => {
+    const posted = servePlaces([OFFICE_PLACE]);
+    await open("#places");
+    expect(host.textContent).toContain("Place rules");
+    expect(host.textContent).toContain("Polygon");
+    expect(host.textContent).toContain("Arrival after 0 min, departure after 0 min");
+    expect(host.textContent).not.toContain("Count an arrival after");
+    expect(openDialog()).toBeUndefined();
+
+    await click(button("Edit rules"));
+    expect(openDialog()!.textContent).toContain("Rules for office");
+    expect(openDialog()!.textContent).toContain("Other events still carry your status");
+    expect(vertices().value).toBe("37.567891, 127.012345\n37.567891, 127.014567\n37.569123, 127.014567");
+    await fill(inputLabelled("Count an arrival after"), "5");
+    await click(dialogButton("Save"));
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ name: "office", type: "work", polygon: OFFICE, enterAfterSec: 300, exitAfterSec: 0, approachM: null });
+    expect(posted[0]).not.toHaveProperty("lat");
+    expect(openDialog()).toBeUndefined();
+  });
+
+  it("posts nothing on Cancel and opens with the saved values again", async () => {
+    const posted = servePlaces([GYM]);
+    await open("#places");
+    await click(button("Edit rules"));
+    await fill(inputLabelled("Count an arrival after"), "5");
+    await click(dialogButton("Cancel"));
+    expect(openDialog()).toBeUndefined();
+    expect(posted).toEqual([]);
+
+    await click(button("Edit rules"));
+    expect(inputLabelled("Count an arrival after").value).toBe("0");
+  });
+
+  it("turns typed lat, lon lines into a closed [lon, lat] ring and names the line that is not a point", async () => {
+    const posted = servePlaces([GYM]);
+    await open("#places");
+    await click(button("Edit rules"));
+    await click(dialogButton("Polygon"));
+    await fill(vertices(), "37.5, 127.0\n37.5 127.001\nnot a point");
+    expect(openDialog()!.textContent).toContain(`Line 3 isn't a "lat, lon" point.`);
+    expect(dialogButton("Save").disabled).toBe(true);
+
+    await fill(vertices(), "37.5, 127.0\n\n37.5, 127.001\n37.501, 127.001\n");
+    expect(openDialog()!.textContent).not.toContain("isn't a");
+    await click(dialogButton("Save"));
+    expect(posted).toHaveLength(1);
+    expect(posted[0].polygon).toEqual([
+      [127, 37.5],
+      [127.001, 37.5],
+      [127.001, 37.501],
+      [127, 37.5],
+    ]);
+    expect(posted[0]).not.toHaveProperty("lat");
+    expect(posted[0]).not.toHaveProperty("radiusM");
+  });
+
+  it("turns a polygon place into a circle around its centroid", async () => {
+    const posted = servePlaces([OFFICE_PLACE]);
+    await open("#places");
+    await click(button("Edit rules"));
+    await click(dialogButton("Circle"));
+    expect(inputLabelled("Latitude").value).toBe("37.5685");
+    await click(dialogButton("Save"));
+    expect(posted[0]).toMatchObject({ name: "office", lat: 37.5685, lon: 127.0134, radiusM: 120 });
+    expect(posted[0]).not.toHaveProperty("polygon");
+  });
+
+  it("keeps the dialog open with the server's reason when a save fails", async () => {
+    route("GET /v1/places", () => ({ status: 200, body: { places: [OFFICE_PLACE] } }));
+    route("POST /v1/places", () => ({ status: 400, body: { error: "invalid place", detail: ["polygon: polygon edges must not cross or touch"] } }));
+    await open("#places");
+    await click(button("Edit rules"));
+    await click(dialogButton("Save"));
+    expect(openDialog()!.textContent).toContain("polygon: polygon edges must not cross or touch");
+    expect(dialogButton("Save").disabled).toBe(false);
+  });
+
+  it("titles a refused save in the page's language and shows the server's words below", async () => {
+    Object.defineProperty(navigator, "language", { configurable: true, value: "ko-KR" });
+    try {
+      route("GET /v1/places", () => ({ status: 200, body: { places: [GYM] } }));
+      route("POST /v1/places", () => ({ status: 409, body: { error: "place limit reached (100)" } }));
+      await open("#places");
+      await click(button("규칙 편집"));
+      await click(dialogButton("저장"));
+      expect(openDialog()!.textContent).toContain("문제가 생겼어요. 다시 시도해 주세요.");
+      expect(openDialog()!.textContent).toContain("place limit reached (100)");
+    } finally {
+      delete (navigator as { language?: string }).language;
+    }
+  });
+
+  const NYC = { name: "nyc", type: "custom", lat: 40.7, lon: -74.0, radiusM: 100 };
+
+  it("reads a typed outline's centre back and warns, without blocking, when it lands far from the place", async () => {
+    const posted = servePlaces([NYC]);
+    await open("#places");
+    await click(button("Edit rules"));
+    await click(dialogButton("Polygon"));
+    await fill(vertices(), "40.70, -74.00\n40.71, -74.00\n40.71, -74.01");
+    expect(openDialog()!.textContent).toContain("Centre ≈ lat 40.7067, lon -74.0033");
+    expect(openDialog()!.textContent).not.toContain("swap");
+
+    await fill(vertices(), "-74.00, 40.70\n-74.00, 40.71\n-74.01, 40.71");
+    expect(openDialog()!.textContent).toContain("Centre ≈ lat -74.0033, lon 40.7067");
+    expect(openDialog()!.textContent).toMatch(/about [\d,]+ km from where the place is now\. If you typed "lon, lat", swap/);
+    expect(dialogButton("Save").disabled).toBe(false);
+    await click(dialogButton("Save"));
+    expect(posted).toHaveLength(1);
+  });
+
+  it("says why Save is off: a repeated point names its line, an empty polygon asks for 3 points", async () => {
+    servePlaces([GYM]);
+    await open("#places");
+    await click(button("Edit rules"));
+    await click(dialogButton("Polygon"));
+    expect(vertices().value).toBe("");
+    expect(openDialog()!.textContent).toContain("Enter at least 3 points.");
+    expect(dialogButton("Save").disabled).toBe(true);
+
+    await fill(vertices(), "37.5, 127.0\n37.5, 127.0\n37.501, 127.001");
+    expect(openDialog()!.textContent).toContain("Line 2 repeats the point before it.");
+    expect(dialogButton("Save").disabled).toBe(true);
+  });
+
+  async function pressEscape() {
+    await act(async () => {
+      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    await settle();
+  }
+
+  it("discards the draft on Escape", async () => {
+    const posted = servePlaces([GYM]);
+    await open("#places");
+    await click(button("Edit rules"));
+    await fill(inputLabelled("Count an arrival after"), "5");
+    await pressEscape();
+    expect(openDialog()).toBeUndefined();
+    expect(posted).toEqual([]);
+
+    await click(button("Edit rules"));
+    expect(inputLabelled("Count an arrival after").value).toBe("0");
+  });
+
+  it("stays open while a save is in flight, whatever asks it to close, and closes once it lands", async () => {
+    let land!: () => void;
+    const posted: unknown[] = [];
+    route("GET /v1/places", () => ({ status: 200, body: { places: [GYM] } }));
+    route("POST /v1/places", (b) => {
+      posted.push(b);
+      return new Promise<Reply>((resolve) => (land = () => resolve({ status: 201, body: { place: b } })));
+    });
+    const reloads = () => calls.filter((c) => c === "GET /v1/places").length;
+    await open("#places");
+    await click(button("Edit rules"));
+    const before = reloads();
+    await click(dialogButton("Save"));
+    expect(posted).toHaveLength(1);
+
+    expect(dialogButton("Cancel").disabled).toBe(true);
+    await click(dialogButton("Cancel"));
+    await pressEscape();
+    await click(openDialog()!.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!);
+    expect(openDialog()!.textContent).toContain("Rules for gym");
+    expect(reloads()).toBe(before);
+
+    await act(async () => land());
+    await settle();
+    expect(openDialog()).toBeUndefined();
+    expect(reloads()).toBe(before + 1);
+    expect(posted).toHaveLength(1);
+  });
+
+  const placeItem = (name: string) =>
+    [...openDialog()!.querySelectorAll("li")].find((li) => li.textContent?.startsWith(name))!.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+
+  function serveHooks(places: unknown[], hooks: unknown[] = []) {
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: hooks } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
+    route("GET /v1/places", () => ({ status: 200, body: { places } }));
+  }
+
+  it("creates a webhook for chosen places only", async () => {
+    let created: any;
+    serveHooks([{ name: "home", type: "home", lat: 37, lon: 127, radiusM: 150 }, GYM]);
+    route("POST /v1/webhooks", (body) => ((created = body), { status: 201, body: { webhook: { id: "h2" } } }));
+    await open("#webhooks");
+    await click(button("Add webhook"));
+    expect(openDialog()!.textContent).toContain("All places");
+    await click(placeItem("gym"));
+    await fill(openDialog()!.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
+    await click(dialogButton("Add"));
+    expect(created).toEqual({ url: "https://n8n.example/hook", events: ["presence.entered_place", "presence.left_place"], places: ["gym"] });
+    expect(openDialog()).toBeUndefined();
+  });
+
+  it("will not save a hook with no place picked, and says why", async () => {
+    const hooks = [{ id: "h1", url: "https://ha.example/hook", events: ["*"], active: true }];
+    let patched: any;
+    serveHooks([GYM], hooks);
+    route("PATCH /v1/webhooks/h1", (body) => ((patched = body), { status: 200, body: { webhook: hooks[0] } }));
+    await open("#webhooks");
+    await click(button("Add webhook"));
+    await fill(openDialog()!.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
+    await click(placeItem("All places"));
+    expect(dialogButton("Add").disabled).toBe(true);
+    expect(openDialog()!.textContent).toContain("Pick at least one place, or All places.");
+    await click(dialogButton("Cancel"));
+
+    await click(button("Edit"));
+    await click(placeItem("All places"));
+    expect(dialogButton("Save").disabled).toBe(true);
+    await click(dialogButton("Save"));
+    expect(patched).toBeUndefined();
+  });
+
+  it("tells a place named * apart from all places", async () => {
+    let created: any;
+    serveHooks([{ name: "*", type: "custom", lat: 37, lon: 127, radiusM: 150 }, GYM]);
+    route("POST /v1/webhooks", (body) => ((created = body), { status: 201, body: { webhook: { id: "h2" } } }));
+    await open("#webhooks");
+    await click(button("Add webhook"));
+    await click(placeItem("*"));
+    expect(placeItem("*").checked).toBe(true);
+    expect(placeItem("gym").checked).toBe(false);
+    await fill(openDialog()!.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
+    await click(dialogButton("Add"));
+    expect(created).toEqual({ url: "https://n8n.example/hook", events: ["presence.entered_place", "presence.left_place"], places: ["*"] });
   });
 });

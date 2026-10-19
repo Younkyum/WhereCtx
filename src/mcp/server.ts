@@ -18,14 +18,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { RouteContext, UserScope } from "../app/context.js";
 import type { McpPrincipal } from "../auth/principal.js";
-import { haversineMeters } from "../geofence/distance.js";
+import { measurePlace } from "../geofence/shape.js";
 import {
   accessAtLeast,
   agentEventView,
   authorizePrecise,
   buildPreciseView,
 } from "../privacy/policy.js";
-import { toPresenceContext } from "../store/presenceStore.js";
+import { dwellOf, toPresenceContext, type StoredPresence } from "../store/presenceStore.js";
+import { pendingTransition } from "../geofence/dwell.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   isJSONRPCErrorResponse,
@@ -35,7 +36,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { accessRecorder, type AccessRecorder } from "../activity/record.js";
 import type { AccessAction, AccessDecision } from "../activity/types.js";
-import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
+import { DEFAULT_PLACE_RADIUS_M, MAX_PLACES, sanitizePlace, type Place, type PlaceType } from "../types.js";
 import { credentialOf } from "../activity/record.js";
 import type { AgentCaller } from "../geo/service.js";
 import { candidateViews, pickCandidate } from "../geo/service.js";
@@ -44,9 +45,6 @@ import { ROUTE_AVOID, ROUTE_MODES } from "../geo/types.js";
 
 /** Cap on active location reminders, to bound writes from read-scoped tokens. */
 const MAX_ACTIVE_REMINDERS = 100;
-
-/** Cap on registered places, to bound writes from read-scoped tokens. */
-const MAX_PLACES = 100;
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
@@ -135,6 +133,25 @@ function recordToolCalls(
   };
 }
 
+/**
+ * An enter or leave waiting out its dwell time, as an agent may see it: the
+ * kind, the place's type and how long it has been pending; never its name.
+ */
+function transitionOf(
+  stored: StoredPresence,
+  places: readonly Place[],
+  now: Date,
+): { kind: "entering" | "leaving"; placeType: PlaceType; forSec: number } | undefined {
+  const pending = pendingTransition(dwellOf(stored));
+  const place = pending && places.find((p) => p.name === pending.name);
+  if (!pending || !place) return undefined;
+  return {
+    kind: pending.kind,
+    placeType: place.type,
+    forSec: Math.max(0, Math.floor((now.getTime() - Date.parse(pending.since)) / 1000)),
+  };
+}
+
 export function buildMcpServer(
   scope: UserScope,
   principal: McpPrincipal,
@@ -192,21 +209,21 @@ export function buildMcpServer(
     "get_presence",
     {
       description:
-        "Get the user's current coarse presence: status, label, motion, freshness, seconds since the last report and since they last moved, and the neighbourhood when the user allows it. No raw GPS. Returns hidden if policy withholds presence. freshness says how far to trust it: 'live' (reported recently, not at rest), 'stationary' (at rest; the phone reports only when it moves, so a quiet phone is normal: treat as still at the last place), 'offline' (the phone has sent nothing for far longer than a phone at rest stays quiet), 'unknown' (the phone went quiet while on the move, or an old manual or Shortcut reading). stale is true for offline and for an old manual or Shortcut reading.",
+        "Get the user's current coarse presence: status, label, motion, freshness, seconds since the last report and since they last moved, and the neighbourhood when the user allows it. No raw GPS. Returns hidden if policy withholds presence. Status follows the confirmed place: a place can ask for a few minutes inside before an arrival counts, or outside before a departure counts; while one is waiting, transition says entering or leaving, the place type, and for how many seconds. freshness says how far to trust it: 'live' (reported recently, not at rest), 'stationary' (at rest; the phone reports only when it moves, so a quiet phone is normal: treat as still at the last place), 'offline' (the phone has sent nothing for far longer than a phone at rest stays quiet), 'unknown' (the phone went quiet while on the move, or an old manual or Shortcut reading). stale is true for offline and for an old manual or Shortcut reading.",
       inputSchema: {},
     },
     async () => {
       const stored = await scope.presence.getCurrent();
       if (!stored) return ok({ status: "unknown", note: "no presence recorded yet" });
       const settings = await scope.settings.getOrSeed();
-      if (!isAdmin) {
-        const view = ctx.views.agentCoarse(toPresenceContext(stored), settings);
-        if (!view) return hidden({ status: "hidden", privacy: "hidden" });
-        return ok(view);
-      }
       // Admin sees the coarse summary using the live mode.
-      const view = ctx.views.agentCoarse(toPresenceContext(stored), { ...settings, defaultAgentAccess: "coarse" });
-      return ok(view);
+      const view = ctx.views.agentCoarse(
+        toPresenceContext(stored),
+        isAdmin ? { ...settings, defaultAgentAccess: "coarse" } : settings,
+      );
+      if (!view) return hidden({ status: "hidden", privacy: "hidden" });
+      const transition = transitionOf(stored, await scope.places.list(), ctx.clock());
+      return ok(transition ? { ...view, transition } : view);
     },
   );
 
@@ -238,7 +255,7 @@ export function buildMcpServer(
     "is_near_place",
     {
       description:
-        "Check whether the user is inside or near a registered place by name (e.g. 'home', 'work'), as of their last report, with that report's freshness. Returns booleans only, never coordinates. A 'stationary' freshness means they are still there.",
+        "Check whether the user is inside or near a registered place by name (e.g. 'home', 'work'), as of their last report, with that report's freshness. Returns booleans only, never coordinates. A 'stationary' freshness means they are still there. inside is where the last report is; confirmed is whether the user's presence counts them at this place (a place can ask for a few minutes inside before an arrival counts, or outside before a departure counts), and pending says 'entering' or 'leaving' while that wait is on, else null.",
       inputSchema: { name: z.string().min(1).max(64).describe("The place name to check") },
     },
     async ({ name }) => {
@@ -247,16 +264,18 @@ export function buildMcpServer(
       if (!place) return none(`no place named "${name}"`);
       const stored = await scope.presence.getCurrent();
       if (!stored?.precise) return ok({ name, near: false, inside: false, note: "no location" });
-      const d = haversineMeters(
+      const { inside, near } = measurePlace(
+        place,
         stored.precise.lat,
         stored.precise.lon,
-        place.lat,
-        place.lon,
+        ctx.config.geofence.nearRadiusMultiplier,
       );
-      const inside = d <= place.radiusM;
-      const near = d <= place.radiusM * ctx.config.geofence.nearRadiusMultiplier;
+      const dwell = dwellOf(stored);
+      const transition = pendingTransition(dwell);
+      const pending = transition?.name === name ? transition.kind : dwell.candidate?.name === name ? "entering" : null;
+      const confirmed = dwell.current === name;
       const { freshness, lastReportAgoSec } = ctx.views.freshness(toPresenceContext(stored));
-      return ok({ name, inside, near, freshness, lastReportAgoSec });
+      return ok({ name, inside, near, confirmed, pending, freshness, lastReportAgoSec });
     },
   );
 
@@ -264,7 +283,7 @@ export function buildMcpServer(
     "list_places",
     {
       description:
-        "List the user's registered place names and types (no coordinates). Tokens that can manage places additionally receive coordinates and radius.",
+        "List the user's registered place names and types (no coordinates). Tokens that can manage places additionally receive coordinates, radius, a polygon place's outline and each place's rules.",
       inputSchema: {},
     },
     async () => {
@@ -294,7 +313,7 @@ export function buildMcpServer(
     "list_recent_presence_events",
     {
       description:
-        "List recent presence events (updated / entered_place / left_place / became_stale / privacy_changed). Place names are omitted for non-admin tokens.",
+        "List recent presence events (updated / entered_place / left_place / approaching_place / became_stale / privacy_changed). entered_place and left_place mark confirmed arrivals and departures; approaching_place fires once as the user heads toward a place that watches for it. Place names are omitted for non-admin tokens.",
       inputSchema: { limit: z.number().int().min(1).max(200).optional() },
     },
     async ({ limit }) => {
@@ -400,16 +419,17 @@ export function buildMcpServer(
    * the home geofence and mislead the home-coordinate privacy protections.
    * Returns an error message or null.
    */
-  const homeWriteDenied = async (
-    name: string,
-    requestedType: PlaceType,
-  ): Promise<string | null> => {
+  /** Why these tools may not write a circle place called `name`, or null. */
+  const placeWriteDenied = async (name: string, requestedType: PlaceType): Promise<string | null> => {
+    const existing = await scope.places.get(name);
+    if (existing?.polygon) {
+      return `place "${name}" is a polygon place; these tools would make it a circle, so change it over REST (POST /v1/places) or in the dashboard`;
+    }
     if (canManagePlaces) return null;
     if (!(await scope.settings.getOrSeed()).protectHomePlace) return null;
     if (requestedType === "home") {
       return "creating or changing a 'home' place requires the manage_places scope (home place protection is enabled)";
     }
-    const existing = await scope.places.get(name);
     if (existing?.type === "home") {
       return `place "${name}" is the protected home place; modifying it requires the manage_places scope`;
     }
@@ -436,7 +456,7 @@ export function buildMcpServer(
       if (byPoint === (address !== undefined) || (lat === undefined) !== (lon === undefined)) {
         return err("give either lat and lon, or address");
       }
-      const denied = await homeWriteDenied(name, type);
+      const denied = await placeWriteDenied(name, type);
       if (denied) return err(denied);
       if ((await scope.places.count()) >= MAX_PLACES) {
         return err(`place limit reached (${MAX_PLACES})`);
@@ -486,7 +506,7 @@ export function buildMcpServer(
       },
     },
     async ({ name, type, radiusM }) => {
-      const denied = await homeWriteDenied(name, type ?? "custom");
+      const denied = await placeWriteDenied(name, type ?? "custom");
       if (denied) return err(denied);
       if ((await scope.places.count()) >= MAX_PLACES) {
         return err(`place limit reached (${MAX_PLACES})`);

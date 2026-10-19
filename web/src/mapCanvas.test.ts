@@ -31,6 +31,7 @@ afterEach(() => {
 const SCENE: MapScene = {
   markers: [{ id: "me", at: { lat: 37.5, lon: 127 }, title: "<img src=x onerror=alert(1)>" }],
   circles: [{ id: "place:home", at: { lat: 37.51, lon: 127.01 }, radiusM: 150, title: "home" }],
+  polygons: [{ id: "place:park", ring: [{ lat: 37.52, lon: 127.02 }, { lat: 37.52, lon: 127.03 }, { lat: 37.53, lon: 127.03 }, { lat: 37.52, lon: 127.02 }], title: "park" }],
   lines: [{ id: "track", points: [{ lat: 37.5, lon: 127 }, { lat: 37.52, lon: 127.03 }] }],
 };
 
@@ -51,16 +52,16 @@ describe("a map canvas", () => {
     expect(link.rel).toBe("noopener noreferrer");
   });
 
-  it("draws a scene's markers, circles and lines, and a redraw replaces them", () => {
+  it("draws a scene's markers, circles, polygons and lines, and a redraw replaces them", () => {
     canvas.draw(SCENE, false);
-    expect(el.querySelectorAll("path")).toHaveLength(3);
-    canvas.draw({ markers: [], circles: [], lines: [] }, false);
+    expect(el.querySelectorAll("path")).toHaveLength(4);
+    canvas.draw({ markers: [], circles: [], polygons: [], lines: [] }, false);
     expect(el.querySelectorAll("path")).toHaveLength(0);
   });
 
   it("draws a dashed line for a stretch on foot, solid otherwise", () => {
     const [a, b, c] = [{ lat: 37.5, lon: 127 }, { lat: 37.51, lon: 127.01 }, { lat: 37.52, lon: 127.03 }];
-    canvas.draw({ markers: [], circles: [], lines: [{ id: "leg:0", points: [a, b], dashed: true }, { id: "leg:1", points: [b, c] }] }, false);
+    canvas.draw({ markers: [], circles: [], polygons: [], lines: [{ id: "leg:0", points: [a, b], dashed: true }, { id: "leg:1", points: [b, c] }] }, false);
     expect([...el.querySelectorAll("path")].map((p) => p.getAttribute("stroke-dasharray"))).toEqual(["4 8", null]);
   });
 

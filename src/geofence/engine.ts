@@ -4,16 +4,21 @@
  * applied separately by the presence service.
  *
  * Status rules (plan section 9.5):
- *   - inside a place (distance <= radiusM): home -> home, work -> work,
- *     custom -> custom. Closest containing place wins.
- *   - near a home/work place (distance <= radiusM * nearMultiplier): near_home
- *     / near_work. Custom places have no "near" variant.
+ *   - inside a place (shape.ts `measurePlace`): home -> home, work -> work,
+ *     custom -> custom. The containing place with the closest anchor wins.
+ *   - near a home/work place (its near band): near_home / near_work. Custom
+ *     places have no "near" variant.
  *   - otherwise, with a valid location: away.
  *   - no places registered or no location: unknown.
+ *
+ * The containing place is the raw verdict. Dwell rules (dwell.ts) decide when
+ * it becomes the confirmed place, and `statusFor` gives the status of
+ * whatever is confirmed.
  */
 
 import type { Place, PresenceStatus } from "../types.js";
 import { haversineMeters, isValidCoordinate } from "./distance.js";
+import { insidePlace, measurePlace } from "./shape.js";
 
 export interface GeofenceResult {
   status: PresenceStatus;
@@ -21,6 +26,8 @@ export interface GeofenceResult {
   label: string;
   /** The place the user is currently inside, if any. */
   matchedPlace?: Place;
+  /** The status as if the point were inside no place: near_home, near_work, away or unknown. */
+  outside: { status: PresenceStatus; label: string };
   /** Closest place (inside or not) and its distance. */
   nearestPlace?: Place;
   nearestDistanceM?: number;
@@ -42,74 +49,48 @@ export function labelForStatus(status: PresenceStatus): string {
   return STATUS_LABELS[status];
 }
 
-interface Ranked {
-  place: Place;
-  distanceM: number;
-  inside: boolean;
-  near: boolean;
-}
-
 export function computeGeofence(
   lat: number,
   lon: number,
   places: Place[],
   nearMultiplier: number,
 ): GeofenceResult {
-  if (!isValidCoordinate(lat, lon)) {
-    return { status: "unknown", label: STATUS_LABELS.unknown };
-  }
-  if (places.length === 0) {
-    return { status: "unknown", label: STATUS_LABELS.unknown };
+  const unknown = { status: "unknown" as const, label: STATUS_LABELS.unknown };
+  if (!isValidCoordinate(lat, lon) || places.length === 0) {
+    return { ...unknown, outside: unknown };
   }
 
-  const ranked: Ranked[] = places
-    .map((place) => {
-      const distanceM = haversineMeters(lat, lon, place.lat, place.lon);
-      return {
-        place,
-        distanceM,
-        inside: distanceM <= place.radiusM,
-        near: distanceM <= place.radiusM * nearMultiplier,
-      };
-    })
-    .sort((a, b) => a.distanceM - b.distanceM);
+  // Only home and work places have a near status, so a custom place is asked only whether the point is in it.
+  const ranked = places
+    .map((place) =>
+      place.type === "custom"
+        ? { place, inside: insidePlace(place, lat, lon), near: false, anchorDistanceM: haversineMeters(lat, lon, place.lat, place.lon) }
+        : { place, ...measurePlace(place, lat, lon, nearMultiplier) },
+    )
+    .sort((a, b) => a.anchorDistanceM - b.anchorDistanceM);
 
   // ranked[0] exists because places.length > 0.
-  const nearest = ranked[0]!;
+  const nearest = { nearestPlace: ranked[0]!.place, nearestDistanceM: ranked[0]!.anchorDistanceM };
+
+  const near = ranked.find((r) => r.near);
+  const outsideStatus: PresenceStatus = near ? (near.place.type === "home" ? "near_home" : "near_work") : "away";
+  const outside = { status: outsideStatus, label: STATUS_LABELS[outsideStatus] };
 
   const inside = ranked.find((r) => r.inside);
   if (inside) {
-    const status = insideStatus(inside.place);
-    return {
-      status,
-      label: placeLabel(inside.place, status),
-      matchedPlace: inside.place,
-      nearestPlace: nearest.place,
-      nearestDistanceM: nearest.distanceM,
-    };
+    return { ...statusFor(inside.place, outside), matchedPlace: inside.place, outside, ...nearest };
   }
+  return { ...outside, outside, ...nearest };
+}
 
-  // Not inside anything: consider "near" for home/work places only.
-  const near = ranked.find(
-    (r) => r.near && (r.place.type === "home" || r.place.type === "work"),
-  );
-  if (near) {
-    const status: PresenceStatus =
-      near.place.type === "home" ? "near_home" : "near_work";
-    return {
-      status,
-      label: STATUS_LABELS[status],
-      nearestPlace: nearest.place,
-      nearestDistanceM: nearest.distanceM,
-    };
-  }
-
-  return {
-    status: "away",
-    label: STATUS_LABELS.away,
-    nearestPlace: nearest.place,
-    nearestDistanceM: nearest.distanceM,
-  };
+/** The status and label of being in `confirmed`, or `outside` with no confirmed place. */
+export function statusFor(
+  confirmed: Place | undefined,
+  outside: GeofenceResult["outside"],
+): { status: PresenceStatus; label: string } {
+  if (!confirmed) return outside;
+  const status = insideStatus(confirmed);
+  return { status, label: placeLabel(confirmed, status) };
 }
 
 function insideStatus(place: Place): PresenceStatus {

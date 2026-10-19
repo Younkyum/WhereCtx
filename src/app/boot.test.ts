@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { clearLogs, recentLogs } from "../util/log.js";
 import { testConfig } from "../testing/accounts.js";
+import { asUserId } from "../types.js";
 import { startServer, type Running } from "./boot.js";
 
 let stdout: string[];
@@ -40,4 +41,27 @@ it("prints the setup code and the generated admin token to stdout only, never to
 
   const res = await fetch(`http://127.0.0.1:${running.port}/healthz`);
   expect(await res.json()).toEqual({ status: "ok" });
+});
+
+it("warns at boot about hooks whose auth header is stored unencrypted, which are not delivered", async () => {
+  const { mkdtemp } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const databaseUrl = `file:${join(await mkdtemp(join(tmpdir(), "wherectx-boot-")), "db.sqlite")}`;
+  const webhooks = { allowPrivateTargets: false, encryptionKey: "boot-test-key" };
+  running = await startServer(testConfig({ port: 0, databaseUrl, webhooks }));
+  const hook = await running.ctx.system.webhooks.create(asUserId(running.ctx.config.defaultUserId), { url: "https://example.test/hook", events: ["*"] });
+  await running.ctx.handle.client.execute({
+    sql: "UPDATE webhooks SET auth_header = ? WHERE id = ?",
+    args: [JSON.stringify({ name: "Authorization", value: "Bearer legacy-plaintext-credential" }), hook.id],
+  });
+  await running.close();
+  clearLogs();
+
+  running = await startServer(testConfig({ port: 0, databaseUrl, webhooks }));
+  const warning = recentLogs({ limit: 1000 }).find((l) => JSON.stringify(l).includes("stored unencrypted"));
+  expect(warning).toBeDefined();
+  expect(JSON.stringify(warning)).toContain('"count":1');
+  expect(JSON.stringify(recentLogs({ limit: 1000 }))).not.toContain("legacy-plaintext-credential");
+  expect(await running.ctx.system.webhooks.listActive()).toEqual([]);
 });

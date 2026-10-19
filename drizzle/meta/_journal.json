@@ -85,6 +85,20 @@
       "when": 1792384077601,
       "tag": "0011_presence_freshness_area",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1792387907888,
+      "tag": "0012_geofence_rules",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1792393849356,
+      "tag": "0013_webhook_auth_header",
+      "breakpoints": true
     }
   ]
 }

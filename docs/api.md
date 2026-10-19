@@ -503,12 +503,58 @@ The operator is the person whose id is `USER_ID`; `GET /v1/me` says
 redacted when they are written, and the boot banners (setup code, generated
 admin token) are never kept.
 
+## Places (admin)
+
+```
+GET    /v1/places          # read_presence: [{name, type}]; manage_places: full places
+POST   /v1/places          # manage_places: create or replace by name
+DELETE /v1/places/:name    # manage_places
+```
+A person has at most 100 places; creating one more is refused with 409
+(changing an existing place still works). MCP `create_place` and
+`remember_current_place` share the limit.
+
+A place is a circle or a polygon, never both:
+
+```json
+{ "name":"office", "type":"work", "polygon":[[127.0123,37.5678],[127.0145,37.5678],[127.0145,37.5691],[127.0123,37.5691]],
+  "enterAfterSec":180, "exitAfterSec":300, "approachM":500,
+  "emits":["presence.entered_place","presence.left_place","presence.approaching_place"],
+  "notifyWebhooks":true, "notifyReminders":true }
+```
+- Circle: `lat`/`lon` (or `useCurrentLocation`) and `radiusM` (default 150,
+  at most 100000).
+- Polygon: a GeoJSON-style ring of `[lon, lat]`, open or closed (the server
+  closes it). 3 to 200 vertices, no zero-length edge, no edges that cross
+  or touch, a longitude span under 180° (no antimeridian), at least
+  100 m², and within 100 km of its centroid. Each broken rule is a `400`
+  naming it. The stored place's `lat`, `lon` and `radiusM` are the
+  polygon's centroid and circumradius.
+- `enterAfterSec` / `exitAfterSec` (0..86400, default 0): how long readings
+  must stay inside before the arrival counts, or outside before the
+  departure counts. They are checked on every reading and once a minute, so
+  a wait can run up to a minute long. An arrival with a wait is never
+  confirmed while the latest reading is driving, in transit or over 3 m/s.
+- `approachM` (10..50000, or null for off, the default): fire
+  `presence.approaching_place` once when readings head toward the place
+  within this many meters of its boundary.
+- `emits` (default all three): the place event types recorded for this
+  place. A type left out is not recorded at all; presence still moves.
+- `notifyWebhooks` (default true): false records the place's events (and
+  `presence.updated` while inside it) without ever delivering them.
+- `notifyReminders` (default true): false keeps arrivals here from
+  triggering reminders.
+
+`POST` replaces the shape and label; a rule it leaves out keeps the value
+the place has (the default for a new place). Saving a place re-checks the
+current presence against it right away.
+
 ## Webhooks (admin)
 
 ```
-GET    /v1/webhooks                 # manage_privacy — secrets stripped
-POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "secret":"…" }
-PATCH  /v1/webhooks/:id             # { "events"?: [...], "active"?: bool }
+GET    /v1/webhooks                 # manage_privacy — secrets stripped, auth header as name + hint, plus capabilities
+POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "places"?: ["home"], "secret"?:"…", "authHeader"?:{ "name"?:"…", "value":"…" } }
+PATCH  /v1/webhooks/:id             # { "events"?: [...], "places"?: [...] | null, "active"?: bool, "authHeader"?: {…} | null }
 GET    /v1/webhooks/dead-letters    # undeliverable events
 DELETE /v1/webhooks/:id
 ```
@@ -522,11 +568,81 @@ a delivery was in flight across the pause. A delivery in flight when the
 selection changes is the last one sent under the old selection.
 The dashboard creates hooks for `presence.entered_place` and
 `presence.left_place` unless the person picks otherwise.
+`places` (1 to 50 names) limits every event that names a place to those
+places: `entered_place`, `left_place`, `approaching_place`, and
+`presence.updated` while inside a place. An event that names no place
+(`presence.updated` outside every place, `became_stale`,
+`privacy_changed`) is delivered as before. Leaving it out, or `PATCH` with
+`null`, delivers every place. Events of a place with `notifyWebhooks` off are never
+delivered, whatever the hook selects.
 `POST` answers `400` when the URL's host does not resolve, or resolves to a
 private or reserved IP (SSRF guard) unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`.
-The delivery re-checks the address each time. Each user may have 20 webhooks
-(`409` beyond that). Secrets are encrypted at rest when
-`WEBHOOK_ENCRYPTION_KEY` is set.
+IPv6 is judged by its bytes, and an IPv6 address that carries an IPv4 one
+(IPv4-mapped, IPv4-compatible, NAT64, 6to4, Teredo) by that IPv4 address.
+Each delivery checks again, at connect time: the connection resolves the
+host, judges every address, and connects only to one it judged, so a name
+that answers differently the second time (DNS rebinding) gets nothing.
+Each user may have 20 webhooks (`409` beyond that). Signing secrets are
+encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set; auth headers need it.
+
+`GET /v1/webhooks` answers `{ "webhooks": [...], "capabilities": {
+"authHeader": bool, "authHeaderRequiresHttps": bool } }`: whether this server
+can take an auth header (it has `WEBHOOK_ENCRYPTION_KEY`) and whether one
+needs an `https` URL (it does unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`).
+A hook whose stored credentials do not open (the key changed, or the stored
+value was copied from another row or damaged) is listed with
+`"credentialsUnreadable": true` and no `authHeader`. It is not delivered; it
+still counts toward the 20, and `PATCH` (to replace its auth header or pause
+it) and `DELETE` work on it. `PATCH` answers with the hook as stored after the
+change.
+
+### Auth header
+
+A receiver that checks a credential in a request header (n8n Header Auth, an
+internal API behind a Bearer token) needs more than a signature: the
+signature lets the receiver verify the body, the auth header lets it check a
+credential. A hook can carry one header, sent on every delivery to that
+hook's URL and to no other:
+
+```
+POST /v1/webhooks
+{ "url":"https://n8n.example/webhook/…", "events":["*"],
+  "authHeader":{ "name":"Authorization", "value":"Bearer <token>" } }
+```
+
+- The server must have `WEBHOOK_ENCRYPTION_KEY`: an auth header is only ever
+  stored encrypted. Without it `POST` and `PATCH` with one answer `400`
+  ("set WEBHOOK_ENCRYPTION_KEY to use auth headers").
+- The URL must be `https`, unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` (a LAN
+  receiver often has no certificate). Otherwise `POST`, and `PATCH` adding one
+  to an `http` hook, answer `400`, and the dispatcher does not send one over
+  `http`.
+- `name` defaults to `Authorization`. It is letters, digits and hyphens, at
+  most 64 characters, and one of: `Authorization`, `Api-Key`, `X-Api-Key`, or
+  an `X-` name ending in `-Token`, `-Key`, `-Api-Key`, `-Auth`,
+  `-Authorization`, `-Secret` or `-Signature` (such as `X-N8N-Auth` or
+  `X-Auth-Token`), but not `X-WhereCtx-*`. Case does not matter. Anything
+  else, including `Cookie`, `Host`, `Forwarded`, `X-Forwarded-*` and
+  `X-Real-IP`, answers `400` with this rule.
+- `value` is 1 to 1024 printable ASCII characters (spaces allowed, no line
+  breaks or other control characters); surrounding spaces are trimmed.
+- A refused header answers `400` without quoting the value.
+- `PATCH` with `authHeader` replaces it, and `"authHeader": null` removes it.
+- No response returns the value. A hook with a header lists it as
+  `"authHeader": { "name":"Authorization", "hint":"…9f3k" }`. The hint is
+  taken from the token after an optional scheme (`Bearer `): its last four
+  characters when the token is at least 20 long, otherwise `"…"` alone, and
+  always `"…"` alone for `Basic`.
+- Replacing or removing the header stops a delivery run in progress, so
+  nothing more goes out with the old value, and failed attempts start
+  counting again under the new one.
+- Redirects are not followed (a `3xx` counts as a failed delivery), so the
+  header never reaches another URL. A failed delivery's error, in the server
+  log and in the dead letters, is one of `timeout`, `connect_error`,
+  `tls_error`, `request_failed`, `status <n>` or the SSRF guard's reason,
+  never the request error's own text.
+- It works alongside `secret`: a delivery can be both signed and carry the
+  header.
 
 ### Delivery signature
 
@@ -563,7 +679,10 @@ ok = fresh && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.head
 ```
 
 Events: `presence.updated`, `presence.entered_place`, `presence.left_place`,
-`presence.became_stale`, `presence.privacy_changed`. `presence.became_stale`
+`presence.approaching_place`, `presence.became_stale`,
+`presence.privacy_changed`. `entered_place` and `left_place` fire when the
+arrival or departure is confirmed, after the place's `enterAfterSec` or
+`exitAfterSec`. `presence.became_stale`
 means the device appears offline (see `freshness` above); it does not fire
 for a phone that is only quiet at rest. Location sharing is not
 delivered by webhook; its audit is at `GET /v1/shares/audit`.

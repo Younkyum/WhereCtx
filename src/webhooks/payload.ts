@@ -6,6 +6,7 @@
  */
 
 import type { PresenceEvent, PresenceEventType } from "../types.js";
+import type { WebhookAuthHeaderView } from "./authHeader.js";
 
 export const WEBHOOK_HEADERS = {
   event: "x-wherectx-event",
@@ -31,14 +32,20 @@ const EXAMPLE_EVENTS: Record<PresenceEventType, Omit<PresenceEvent, "id" | "type
   "presence.updated": { status: "away", source: "owntracks" },
   "presence.entered_place": { placeName: "home", status: "home", source: "owntracks" },
   "presence.left_place": { placeName: "home", status: "away", source: "owntracks" },
+  "presence.approaching_place": { placeName: "home", status: "away", source: "owntracks" },
   "presence.became_stale": { status: "home", source: "owntracks" },
   "presence.privacy_changed": { status: "home" },
 };
 
-/** An illustrative delivery of `type`, as the dispatcher would send it. */
+/** How an example shows an auth header's value: masked, with its hint. */
+export function maskedAuthValue(view: WebhookAuthHeaderView): string {
+  return `••••••••${view.hint.slice(1)}`;
+}
+
+/** An illustrative delivery of `type`, as the dispatcher would send it, the auth header's value masked. */
 export function exampleDelivery(
   type: PresenceEventType,
-  signed: boolean,
+  options: { signed: boolean; authHeader?: WebhookAuthHeaderView },
 ): { headers: Record<string, string>; body: Record<string, unknown> } {
   const body = eventPayload({
     id: "3f9c2a7e5b1d4c6a8e0f2b4d6a8c0e1f",
@@ -51,9 +58,10 @@ export function exampleDelivery(
     [WEBHOOK_HEADERS.event]: type,
     "user-agent": WEBHOOK_USER_AGENT,
   };
-  if (signed) {
+  if (options.signed) {
     headers[WEBHOOK_HEADERS.timestamp] = "1792315800";
     headers[WEBHOOK_HEADERS.signature] = "sha256=<hex HMAC of timestamp.body>";
   }
+  if (options.authHeader) headers[options.authHeader.name] = maskedAuthValue(options.authHeader);
   return { headers, body };
 }

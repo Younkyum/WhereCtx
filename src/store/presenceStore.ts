@@ -1,14 +1,16 @@
 /**
  * Presence repository: maps the single current `presence` row to/from the
- * domain `PresenceContext`, plus two internal fields the service needs but
- * agents never see: `currentPlaceName` (enter/leave diffing) and
+ * domain `PresenceContext`, plus internal fields the service needs but
+ * agents never see: the dwell state (`currentPlaceName`, the confirmed place,
+ * and the pending enter or leave), the approached places, and
  * `staleEventFired` (so `presence.became_stale` fires once per reading).
  */
 
-import { eq } from "drizzle-orm";
+import { eq, isNotNull, or } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { presence } from "../db/schema.js";
 import type { LatLon } from "../geo/types.js";
+import { NO_DWELL, type DwellState } from "../geofence/dwell.js";
 import {
   asUserId,
   type CoarsePlaceType,
@@ -22,7 +24,14 @@ import {
 
 /** Domain presence plus internal bookkeeping fields. */
 export interface StoredPresence extends PresenceContext {
+  /** The confirmed place (dwell.ts `current`). */
   currentPlaceName?: string;
+  /** Since when readings have been outside the confirmed place (its leave is pending). */
+  pendingExitSince?: string;
+  /** The place whose enter is pending, and since when. */
+  pendingPlace?: { name: string; since: string };
+  /** Places approaching fired for that have not re-armed (approach.ts). */
+  approachedPlaces?: string[];
   staleEventFired: boolean;
   /** Where the person arrived at `movedAt` (freshness.ts `arrivalFor`). */
   movedFrom?: LatLon;
@@ -55,6 +64,11 @@ interface PresenceRow {
   privacyMode: PrivacyMode;
   allowPreciseToAgents: boolean;
   currentPlaceName: string | null;
+  pendingExitSince: string | null;
+  pendingPlaceName: string | null;
+  pendingPlaceSince: string | null;
+  approachedPlaces: string[] | null;
+  atOrNearHome: boolean;
   staleEventFired: boolean;
   updatedAt: string;
   receivedAt: string;
@@ -99,10 +113,16 @@ function rowToStored(row: PresenceRow): StoredPresence {
     updatedAt: row.updatedAt,
     receivedAt: row.receivedAt,
     ...(row.movedAt ? { movedAt: row.movedAt } : {}),
+    atOrNearHome: row.atOrNearHome,
     ...(row.movedLat !== null && row.movedLon !== null ? { movedFrom: { lat: row.movedLat, lon: row.movedLon } } : {}),
     ...(row.areaLat !== null && row.areaLon !== null ? { areaFor: { lat: row.areaLat, lon: row.areaLon } } : {}),
     staleAfterSec: row.staleAfterSec,
     currentPlaceName: row.currentPlaceName ?? undefined,
+    ...(row.pendingExitSince ? { pendingExitSince: row.pendingExitSince } : {}),
+    ...(row.pendingPlaceName && row.pendingPlaceSince
+      ? { pendingPlace: { name: row.pendingPlaceName, since: row.pendingPlaceSince } }
+      : {}),
+    ...(row.approachedPlaces?.length ? { approachedPlaces: row.approachedPlaces } : {}),
     staleEventFired: row.staleEventFired,
   };
 }
@@ -131,6 +151,11 @@ function storedToRow(p: StoredPresence): PresenceRow {
     privacyMode: p.privacy.mode,
     allowPreciseToAgents: p.privacy.allowPreciseToAgents,
     currentPlaceName: p.currentPlaceName ?? null,
+    pendingExitSince: p.pendingExitSince ?? null,
+    pendingPlaceName: p.pendingPlace?.name ?? null,
+    pendingPlaceSince: p.pendingPlace?.since ?? null,
+    approachedPlaces: p.approachedPlaces?.length ? p.approachedPlaces : null,
+    atOrNearHome: p.atOrNearHome,
     staleEventFired: p.staleEventFired,
     updatedAt: p.updatedAt,
     receivedAt: p.receivedAt,
@@ -143,8 +168,39 @@ function storedToRow(p: StoredPresence): PresenceRow {
 
 /** Drop internal bookkeeping fields for external (API/MCP) consumers. */
 export function toPresenceContext(stored: StoredPresence): PresenceContext {
-  const { currentPlaceName: _c, staleEventFired: _s, movedFrom: _m, areaFor: _a, staleAfterSec: _w, ...ctx } = stored;
+  const {
+    currentPlaceName: _c,
+    pendingExitSince: _pe,
+    pendingPlace: _pp,
+    approachedPlaces: _ap,
+    staleEventFired: _s,
+    movedFrom: _m,
+    areaFor: _a,
+    staleAfterSec: _w,
+    ...ctx
+  } = stored;
   return ctx;
+}
+
+/** The dwell state a stored presence carries; none before the first reading. */
+export function dwellOf(stored: StoredPresence | null): DwellState {
+  if (!stored) return NO_DWELL;
+  return {
+    current: stored.currentPlaceName ?? null,
+    exitSince: stored.pendingExitSince ?? null,
+    candidate: stored.pendingPlace ?? null,
+  };
+}
+
+/** The stored fields that hold `state`, every one set so a spread replaces the old ones. */
+export function dwellFields(
+  state: DwellState,
+): Pick<StoredPresence, "currentPlaceName" | "pendingExitSince" | "pendingPlace"> {
+  return {
+    currentPlaceName: state.current ?? undefined,
+    pendingExitSince: state.exitSince ?? undefined,
+    pendingPlace: state.candidate ?? undefined,
+  };
 }
 
 /** A `presence` row selected by another store's join, as a PresenceContext. */
@@ -165,6 +221,18 @@ export class PresenceStore {
       .from(presence)
       .where(eq(presence.staleEventFired, false));
     return rows.map((r) => ({ ...r, userId: asUserId(r.userId) }));
+  }
+
+  /**
+   * Users with an enter or a leave pending, for the periodic dwell sweep.
+   * Cross-user: system handle only.
+   */
+  async listPendingDwell(): Promise<UserId[]> {
+    const rows = await this.db
+      .select({ userId: presence.userId })
+      .from(presence)
+      .where(or(isNotNull(presence.pendingExitSince), isNotNull(presence.pendingPlaceName)));
+    return rows.map((r) => asUserId(r.userId));
   }
 
   async getCurrent(userId: UserId): Promise<StoredPresence | null> {

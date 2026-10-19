@@ -22,7 +22,7 @@
  */
 
 import { haversineMeters } from "../geofence/distance.js";
-import type { Place, PresenceStatus } from "../types.js";
+import type { PresenceStatus } from "../types.js";
 import type { FreshnessView } from "../presence/freshness.js";
 import { mainRoads } from "./roads.js";
 import type { LatLon, RouteResult, TransitLeg } from "./types.js";
@@ -45,17 +45,6 @@ const INSIDE_PLACE: ReadonlySet<PresenceStatus> = new Set(["home", "work", "cust
  */
 export function freshEnoughToRoute(fresh: FreshnessView, status: PresenceStatus): boolean {
   return fresh.freshness === "live" || (fresh.freshness === "stationary" && INSIDE_PLACE.has(status));
-}
-
-/** The home place the point is at or near (within its radius times `nearMultiplier`), nearest first. */
-export function nearHomePlace(point: LatLon, places: readonly Place[], nearMultiplier: number): Place | null {
-  let best: { place: Place; d: number } | null = null;
-  for (const place of places) {
-    if (place.type !== "home") continue;
-    const d = haversineMeters(point.lat, point.lon, place.lat, place.lon);
-    if (d <= place.radiusM * nearMultiplier && (!best || d < best.d)) best = { place, d };
-  }
-  return best?.place ?? null;
 }
 
 /** Whether a stretch has geometry and every point of it is farther than AGENT_ROAD_CLEARANCE_M from every point in `avoid`. */

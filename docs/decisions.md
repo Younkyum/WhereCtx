@@ -574,6 +574,134 @@ The owner asked to see things on a map. Agents still get none.
   precise alike; hidden mode used to refuse the owner's coarse read while
   the map placed them exactly.
 
+## 2026-10-19: webhook auth headers after a two-model review
+
+A hook can carry one credential header for receivers such as n8n Header
+Auth. A review by two models found the first version too trusting; this is
+what changed and why.
+
+- **No plaintext, not even as a fallback.** Signing secrets may be stored in
+  the clear without `WEBHOOK_ENCRYPTION_KEY`, for compatibility with v0.1.
+  Auth headers are new, so they never are: no key, no auth header (`400`,
+  and the dashboard hides the fields and says why, from a capability on
+  `GET /v1/webhooks`). A plaintext value found with a key is refused, not
+  sealed at boot, because sealing would bind a value of unknown origin to
+  whatever row it sits in.
+- **An allow-list of names, not a blocklist.** The blocklist missed
+  `Forwarded`, `X-Forwarded-*`, `X-Real-IP`, `X-HTTP-Method-Override` and
+  others that steer a proxy or the receiver. The allow-list (`Authorization`,
+  `Api-Key`, `X-Api-Key`, `X-*-Token|Key|Auth|Authorization|Secret|Signature`)
+  covers the receivers we know and fails closed for the rest. Headers go out
+  through `Headers`, so no name can fall onto an object prototype.
+- **Check the address the socket connects to.** Checking a name's addresses
+  and then letting `fetch` resolve again let a rebinding answer through.
+  Delivery now uses `node:http(s)` with a `lookup` that resolves, judges and
+  returns only judged addresses (no new dependency: Node's bundled undici
+  does not expose its `Agent`). IPv6 is parsed to bytes, so `[::ffff:7f00:1]`
+  is loopback like `::ffff:127.0.0.1`, and NAT64, 6to4 and Teredo are judged
+  by their embedded IPv4.
+- **https for a credential**, unless private targets are allowed, where LAN
+  receivers often have no certificate.
+- **One bad row fails one hook.** Opening a row parses and re-validates the
+  header; any failure marks that hook unreadable (logged once per hook and
+  reason), skips it for delivery, and shows it to its owner to replace or
+  delete, instead of throwing out of the dispatcher's list for everyone.
+- **The ciphertext is the version.** Every write seals with a fresh IV, so a
+  drain's cursor write also requires the stored ciphertext it read; a header
+  replaced mid-drain stops the drain, and attempt counts are kept per
+  credential version so failures under an old value never dead-letter under
+  the new one.
+- **Fixed failure categories.** A request error can quote headers in forms an
+  exact-substring cut misses, so a hook with an auth header records only
+  `timeout`, `connect_error`, `tls_error`, `request_failed` or `status <n>`.
+- **The hint is for long tokens only.** Four characters of an 8-character
+  token is half of it; the hint skips the scheme, shows nothing for `Basic`,
+  and shows four characters only of a token of 20 or more.
+
+## 2026-10-19: polygon places, dwell, approach, quiet places
+
+- **One spatial primitive.** `measurePlace` (`src/geofence/shape.ts`)
+  answers inside, near, edge distance and anchor distance for a circle or a
+  polygon, and every point-against-place check calls it. A place keeps
+  `lat`/`lon`/`radiusM` as its anchor (a polygon's centroid and
+  circumradius, computed at save, never accepted from the caller), so code
+  that only needs a point, such as the maps road clearance and an ETA
+  destination, keeps working off the anchor. Ranking among overlapping
+  places stays by anchor distance, unchanged for circles.
+- **Measuring stays cheap at the place limit.** A polygon is projected once
+  per ring and reused (a WeakMap keyed by the ring), ray casting runs
+  before any edge distance, and a caller that asks only "inside?"
+  (history's labels, custom places in the engine) skips the distance and
+  rejects a point outside the bounding box at once. 100 places per person
+  (REST and MCP) bounds the rest: 5000 history points against 100
+  200-vertex polygons went from about 3 s to 0.2 s, all inside, and to
+  about 12 ms all outside.
+- **A polygon's near band** is the band an equal-area circle gets,
+  measured outward from the boundary: `edge <= (nearMultiplier - 1) *
+  sqrt(area / pi)`.
+- **Validation in one pure function.** `validatePolygon` closes an open
+  ring and rejects, each with its own message: a bad coordinate, a
+  zero-length edge, fewer than 3 or more than 200 vertices, a longitude
+  span of 180° or more, edges that cross or touch (collinear overlap and an
+  edge folding back included), under 100 m², over 100 km from the
+  centroid. The projection is local equirectangular around the centroid,
+  good at that size.
+- **Dwell is a reducer with one confirmed place.** `step(state, position,
+  now, delaysFor)` keeps the singular current place. Delays count from the
+  first reading inside or outside; a reading back in the confirmed place
+  cancels. While the point is still inside the confirmed place no leave is
+  pending, so a place within a place takes over directly once its own enter
+  is confirmed, instead of passing through "near home". A deleted place
+  leaves at once and is never entered. The status follows the confirmed
+  place, so all-zero delays reproduce the old geofence exactly.
+- **Dwell resolves to the sweep.** `sweepDwell` runs on the existing
+  one-minute stale sweep; no per-user timers to lose on restart. The pending
+  fields live on the presence row.
+- **One drive-by rule.** An enter with a delay is confirmed only by a step
+  whose latest reading is not driving, in transit or over 3 m/s: a reading,
+  a sweep and a place change alike. Such a reading may start the wait. A
+  place with no enter delay is entered at once, driving or not, as before.
+  A leave is confirmed either way.
+- **Every step measures the latest point against the places as they are.**
+  A sweep or a place change has no new reading, so it measures the stored
+  point; nothing replays an earlier verdict, so a moved or deleted
+  candidate simply stops being one.
+- **Approach fires once per approach.** Inside the ring, closer than the
+  last reading by at least 25 m or either fix's accuracy, that last reading
+  received within 10 minutes, the new one not `stationary`, not inside, not
+  the confirmed or pending place. GPS jitter at rest and a jump from a
+  reading hours old are not heading in. It re-arms past the ring plus 10%
+  of it, and at least 50 m, so a narrow ring does not re-fire on jitter at
+  its edge. Readings only; never a sweep or a place change.
+- **A rule left out of POST /v1/places keeps its value.** The shape and
+  label are replaced as before; `enterAfterSec`, `exitAfterSec`,
+  `approachM`, `emits`, `notifyWebhooks` and `notifyReminders` merge. An
+  older client (or an agent re-creating a place through MCP) cannot reset
+  rules it does not know about. The dashboard sends the whole place.
+- **A quiet place's name never reaches a webhook.** `notifyWebhooks: false`
+  stores the place's events, and `presence.updated` while inside it (it
+  names the place too), with `webhook = 0`; the dispatcher filters in SQL.
+  A place that no longer exists is quiet too, and leaves at once: its
+  `left_place` is stored with `webhook = 0` whatever it used to emit, since
+  the rules that said otherwise are gone.
+- **Webhook place filter is one pure match.** `wants(hook, event)`: the
+  event type filter as before, and an event that carries a place name must
+  name one in `places` when set; `presence.updated` inside a place counts,
+  since it names the place too. An event with no place name passes. Changing the place filter stops an in-flight drain, as
+  changing the events does.
+- **Home protection is measured, not read off the status.** With dwell
+  times the status follows the confirmed place, which can still say "café"
+  while the point stands at home. Every step stores `atOrNearHome` from
+  `nearHomePlace` (the stored point against the home places, near band
+  included), and every precise gate reads that flag. The migration
+  backfills it from the status, which before dwell was the same verdict.
+- **`emits` drops the event, not the transition.** A type a place does not
+  emit is not recorded at all; presence still moves.
+- **Agents see transitions, not rules.** `is_near_place` always answers
+  `confirmed` and `pending` (null when nothing waits), so the shape of the
+  reply never tells an agent whether a place has a dwell time set;
+  `get_presence` adds `transition` with the place type, never the name.
+
 ## 2026-10-19: dashboard maps on open tiles, and key tests that say why
 
 In production the Kakao map showed only "the map script failed" and the

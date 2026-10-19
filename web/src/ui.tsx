@@ -1,8 +1,8 @@
 /**
  * Shared building blocks for the screens: data loading with its three states,
- * actions that report failures as toasts, the confirm dialog, the dialog
- * every create or edit form opens in, page and panel headings, one-time
- * secrets and recovery codes.
+ * actions that report failures as toasts, the confirm dialog, the dialog every
+ * create or edit form opens in, page and panel headings, one-time secrets and
+ * recovery codes.
  */
 
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
@@ -15,13 +15,13 @@ import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Divider } from "@astryxdesign/core/Divider";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Heading } from "@astryxdesign/core/Heading";
-import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
+import { HStack, Layout, LayoutContent, LayoutFooter, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { Section } from "@astryxdesign/core/Section";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
-import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, api, isHandled } from "./api";
 import { useApp } from "./context";
 import type { Lang, Translate } from "./i18n";
@@ -351,51 +351,117 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   );
 }
 
+/** Set by a DialogForm while its submit runs, so its FormDialog ignores Escape until the request settles. */
+const SubmittingContext = createContext<{ current: boolean } | null>(null);
+
 /**
- * A create or edit form in a dialog, opened by a button on the page. Submit
- * runs `onSubmit` while `canSubmit`; the dialog closes when it succeeds and
- * stays open (its failure shown as a toast) when it throws.
+ * The lightbox a create or edit form opens in. Its body mounts only while
+ * open, so Cancel, Escape and the close button all discard the draft.
  */
-export function FormDialog({
-  isOpen,
-  onOpenChange,
+export function FormDialog({ isOpen, onClose, children }: { isOpen: boolean; onClose: () => void; children: ReactNode }) {
+  const submitting = useRef(false);
+  return (
+    <Dialog
+      isOpen={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !submitting.current) onClose();
+      }}
+      purpose="form"
+      width={600}
+    >
+      <SubmittingContext.Provider value={submitting}>{isOpen ? children : null}</SubmittingContext.Provider>
+    </Dialog>
+  );
+}
+
+/** A refused submit as a localized title over the server's own words, which are often English. */
+function failureText(e: unknown, t: Translate): { title: string; detail: string } {
+  if (e instanceof ApiError) {
+    const key = errorKey(e);
+    return { title: t(key ?? "err.generic"), detail: [...(key ? [] : [e.message]), ...e.detail].join("; ") };
+  }
+  return { title: t("err.generic"), detail: e instanceof Error ? e.message : "" };
+}
+
+/**
+ * A FormDialog's content: title, fields, Cancel and submit. A submit that
+ * succeeds closes the dialog; one that fails keeps it open with the server's
+ * answer under the fields. While it runs, nothing closes the dialog.
+ */
+export function DialogForm({
   title,
+  subtitle,
   submitLabel,
   canSubmit,
   onSubmit,
+  onClose,
   children,
 }: {
-  isOpen: boolean;
-  onOpenChange: (open: boolean) => void;
   title: string;
+  subtitle?: ReactNode;
   submitLabel: string;
   canSubmit: boolean;
   onSubmit: () => Promise<void>;
+  onClose: () => void;
   children: ReactNode;
 }) {
   const { t } = useApp();
-  const [busy, run] = useAction(async () => {
-    await onSubmit();
-    onOpenChange(false);
-  });
+  const formId = useId();
+  const ownRunning = useRef(false);
+  const running = useContext(SubmittingContext) ?? ownRunning;
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<unknown>(null);
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit || running.current) return;
+    running.current = true;
+    setBusy(true);
+    setFailure(null);
+    try {
+      await onSubmit();
+    } catch (err) {
+      running.current = false;
+      setBusy(false);
+      if (!isHandled(err)) setFailure(err);
+      return;
+    }
+    running.current = false;
+    onClose();
+  };
+  const close = () => {
+    if (!running.current) onClose();
+  };
+  const shown = failure ? failureText(failure, t) : null;
   return (
-    <Dialog isOpen={isOpen} onOpenChange={onOpenChange} purpose="form" width={520}>
-      <DialogHeader title={title} onOpenChange={onOpenChange} />
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (canSubmit && !busy) void run();
-        }}
-      >
-        <VStack gap={4}>
-          {children}
-          <HStack gap={2} hAlign="end">
-            <Button label={t("common.cancel")} onClick={() => onOpenChange(false)} />
-            <Button type="submit" label={submitLabel} variant="primary" isLoading={busy} isDisabled={!canSubmit} />
-          </HStack>
-        </VStack>
-      </form>
-    </Dialog>
+    <Layout
+      header={
+        <DialogHeader
+          title={title}
+          subtitle={subtitle}
+          onOpenChange={(open) => {
+            if (!open) close();
+          }}
+        />
+      }
+      content={
+        <LayoutContent>
+          <form id={formId} onSubmit={submit}>
+            <VStack gap={4}>{children}</VStack>
+          </form>
+        </LayoutContent>
+      }
+      footer={
+        <LayoutFooter hasDivider>
+          <VStack gap={3}>
+            {shown ? <Banner status="error" title={shown.title} description={shown.detail || undefined} /> : null}
+            <HStack gap={2} hAlign="end" wrap="wrap">
+              <Button label={t("common.cancel")} onClick={close} isDisabled={busy} />
+              <Button type="submit" form={formId} label={submitLabel} variant="primary" isLoading={busy} isDisabled={!canSubmit} />
+            </HStack>
+          </VStack>
+        </LayoutFooter>
+      }
+    />
   );
 }
 

@@ -24,7 +24,11 @@ The default agent-facing view (`GET /v1/presence`, MCP `get_presence`) is:
 ```
 
 No latitude, longitude, geohash, accuracy, or place coordinates. Place lists
-returned to agents contain only `name` + `type`.
+returned to agents contain only `name` + `type`: never a polygon's outline,
+a radius, a label, or a place's rules (dwell times, approach distance,
+recorded events, notify switches). While an arrival or departure waits out
+its dwell time, `get_presence` says `entering` or `leaving`, the place type
+and for how long, never the place's name.
 
 Each person has their own presence, places, and privacy settings. A token
 belongs to the person who made it and reads only that person's data. The
@@ -62,8 +66,13 @@ when **all** hold:
 When `hideHomeExactCoordinates` is on (default) and you are at or near a `home`
 place, precise location is **denied outright** — not rounded or blurred.
 Coordinate rounding is not home-address anonymization, so WhereCtx refuses
-instead. Disable `HIDE_HOME_EXACT_COORDINATES` if you want home coordinates
-exposed to authorized agents.
+instead. "At or near" is measured: your last point is inside a home place
+or within its near band, whatever your status says. A place with a dwell
+time can leave your status at a café for a few minutes after you are home;
+your coordinates are protected from the first reading at home all the same.
+The same check covers agents, REST, precise shares and the dashboard map.
+Disable `HIDE_HOME_EXACT_COORDINATES` if you want home coordinates exposed to
+authorized agents.
 
 ### Home *place* protection
 
@@ -388,15 +397,66 @@ code (README, "Recover access").
 
 ## Webhooks & SSRF
 
+A place with `notifyWebhooks` off keeps its name and its own events away
+from every webhook: its events, and `presence.updated` while inside it, are
+stored with `webhook = 0` and the dispatcher reads only `webhook = 1` rows,
+in SQL. They still appear in the person's own history and to their agents.
+It does not hide your status: other events, such as
+`presence.became_stale` or `presence.privacy_changed` while you are there,
+still carry `status`, so a quiet `home` place still shows as `"home"` in
+them. A place
+that no longer exists counts as quiet: its rules went with it, so leaving a
+deleted place is recorded and never delivered. A hook's place filter
+narrows place events further.
+
 Webhook delivery is a server-side outbound request to an operator-supplied URL.
 WhereCtx blocks targets that resolve to private/reserved addresses (loopback,
-`169.254.0.0/16` cloud metadata, RFC1918, ULA, link-local) at both create and
-delivery time, and uses `redirect: "manual"`. Set
+`169.254.0.0/16` cloud metadata, RFC1918, CGNAT, ULA, link-local, multicast,
+and IPv6 forms that carry one of those IPv4 addresses: IPv4-mapped,
+IPv4-compatible, NAT64, 6to4, Teredo) at create time, and at delivery time
+inside the connection's own DNS lookup, so the address connected to is the
+one checked. Redirects are never followed. Set
 `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` only to deliberately reach a LAN service
 (e.g. a local Home Assistant). Webhook bodies are HMAC-SHA256 signed over
 `"<timestamp>.<body>"` (`X-WhereCtx-Signature`, `X-WhereCtx-Timestamp` — see
 docs/api.md for verification) when the subscription has a secret, and signing
 secrets are encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set.
+
+A webhook's auth header (a credential such as `Authorization: Bearer …` that
+the receiver checks) is a secret of the same kind, held to more:
+
+- **Never stored in the clear.** It is AES-256-GCM encrypted with
+  `WEBHOOK_ENCRYPTION_KEY`; without the key the server refuses one. A stored
+  value that is not encrypted (written before this rule, or by hand) is not
+  sent and not encrypted in place; boot warns with how many there are, and
+  the owner replaces or removes each.
+- **Bound to its hook.** The ciphertext is authenticated with its owner's id
+  and its hook's id, so a value copied onto another hook, the same person's
+  or someone else's, or a row moved to another owner, does not open.
+- **Sent only to its own hook's URL, over https.** Not over `http` unless
+  `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`; never to a redirect's `Location`;
+  only to an address the SSRF guard judged at connect time. Its name must be
+  an auth-style name (docs/api.md), so it cannot pose as a forwarding,
+  method-override or host header.
+- **Never shown back.** The API and dashboard show its name and at most the
+  last four characters of a token of 20 or more (nothing of a shorter token
+  or of `Basic` credentials). The dashboard asks browsers and password
+  managers not to save the field.
+- **Not in logs or dead letters.** A failed delivery is recorded as a fixed
+  category (`timeout`, `connect_error`, `tls_error`, `request_failed`,
+  `status <n>`), not the error's text; the exact value is also cut out of
+  whatever is recorded.
+- **Fails closed, one hook at a time.** A hook whose secret or auth header
+  does not open (a changed or missing key, a copied or damaged value) is not
+  delivered at all rather than delivered without its credential; it is
+  logged once, other hooks keep delivering, and its owner sees it marked
+  unreadable so it can be replaced or deleted. Replacing or removing the
+  header stops a delivery run already in progress.
+
+What this does not cover: the key lives in the server's environment, so
+anyone who can read it and the database can open the values; the receiver
+sees the value on every delivery; and a hint shows four characters of a
+long token.
 
 ## Accounts and sessions
 
