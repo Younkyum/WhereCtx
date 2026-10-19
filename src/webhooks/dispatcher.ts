@@ -70,8 +70,15 @@ export function failureCategory(e: unknown): string {
   return "request_failed";
 }
 
-function subscribed(hook: Webhook, type: string): boolean {
-  return hook.events.includes("*") || hook.events.includes(type);
+/**
+ * Whether a hook wants an event: the event type is selected, and with a
+ * place filter, an event that names a place (presence.updated inside one
+ * included) names one of the hook's places. An event naming no place passes
+ * the place filter.
+ */
+export function wants(hook: Pick<Webhook, "events" | "places">, ev: Pick<PresenceEvent, "type" | "placeName">): boolean {
+  if (!hook.events.includes("*") && !hook.events.includes(ev.type)) return false;
+  return !hook.places || ev.placeName === undefined || hook.places.includes(ev.placeName);
 }
 
 export class WebhookDispatcher {
@@ -227,15 +234,16 @@ export class WebhookDispatcher {
       // Out of budget: the persisted cursor is where the next tick resumes.
       if (this.opts.clock().getTime() - startedAt >= this.drainBudgetMs) return;
       // Each advance also checks the hook is still as this drain read it; when
-      // it is not (paused, resumed, re-subscribed, its auth header replaced or
-      // removed), stop, forget its attempts, and let the next tick start from
-      // the stored hook, so nothing more goes out with the old credential.
+      // it is not (paused, resumed, re-subscribed, its place filter changed,
+      // its auth header replaced or removed), stop, forget its attempts, and
+      // let the next tick start from the stored hook, so nothing more goes out
+      // with the old credential or selection.
       const advance = async () => {
         if (await this.opts.webhooksStore.setCursor(hook, ev.createdAt, ev.id)) return true;
         this.attempts.delete(hook.id);
         return false;
       };
-      if (!subscribed(hook, ev.type)) {
+      if (!wants(hook, ev)) {
         if (!(await advance())) return;
         continue;
       }

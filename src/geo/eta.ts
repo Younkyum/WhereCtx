@@ -40,17 +40,6 @@ export function freshEnoughToRoute(fresh: FreshnessView, status: PresenceStatus)
   return fresh.freshness === "live" || (fresh.freshness === "stationary" && INSIDE_PLACE.has(status));
 }
 
-/** The home place the point is at or near (within its radius times `nearMultiplier`), nearest first. */
-export function nearHomePlace(point: LatLon, places: readonly Place[], nearMultiplier: number): Place | null {
-  let best: { place: Place; d: number } | null = null;
-  for (const place of places) {
-    if (place.type !== "home") continue;
-    const d = haversineMeters(point.lat, point.lon, place.lat, place.lon);
-    if (d <= place.radiusM * nearMultiplier && (!best || d < best.d)) best = { place, d };
-  }
-  return best?.place ?? null;
-}
-
 /** Whether every point of the road is farther than AGENT_ROAD_CLEARANCE_M from every point in `avoid`. */
 function clearOf(road: RouteRoad, avoid: readonly LatLon[]): boolean {
   return (

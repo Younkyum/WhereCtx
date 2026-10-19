@@ -578,3 +578,59 @@ describe("WebhookDispatcher auth header", () => {
     }
   });
 });
+
+describe("quiet places and place filters", () => {
+  const delivered = async (): Promise<Array<{ event: string; place?: string }>> => {
+    const bodies: Array<{ event: string; place?: string }> = [];
+    const fetchFn = vi.fn(async (_url: string, init: any) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response(null, { status: 200 });
+    });
+    await makeDispatcher({ fetchFn: fetchFn as any }).tick();
+    return bodies.map(({ event, place }) => ({ event, ...(place ? { place } : {}) }));
+  };
+
+  it("stores an event recorded with webhook off but never delivers it", async () => {
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"] });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.entered_place", placeName: "clinic", webhook: false });
+    nowMs += 1;
+    await events.append(USER, { type: "presence.entered_place", placeName: "home" });
+
+    expect(await delivered()).toEqual([{ event: "presence.entered_place", place: "home" }]);
+    expect((await events.listRecent(USER)).map((e) => e.placeName)).toEqual(["home", "clinic"]);
+    expect(await delivered()).toEqual([]);
+  });
+
+  it("delivers place events only for the hook's places, and other events regardless", async () => {
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], places: ["gym"] });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.entered_place", placeName: "home" });
+    nowMs += 1;
+    await events.append(USER, { type: "presence.approaching_place", placeName: "gym" });
+    nowMs += 1;
+    await events.append(USER, { type: "presence.left_place", placeName: "work" });
+    nowMs += 1;
+    await events.append(USER, { type: "presence.became_stale", status: "away" });
+
+    expect(await delivered()).toEqual([
+      { event: "presence.approaching_place", place: "gym" },
+      { event: "presence.became_stale" },
+    ]);
+  });
+
+  it("filters every event that names a place, presence.updated included, and passes those that name none", async () => {
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], places: ["gym"] });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home", placeName: "home" });
+    nowMs += 1;
+    await events.append(USER, { type: "presence.updated", status: "custom", placeName: "gym" });
+    nowMs += 1;
+    await events.append(USER, { type: "presence.updated", status: "away" });
+
+    expect(await delivered()).toEqual([
+      { event: "presence.updated", place: "gym" },
+      { event: "presence.updated" },
+    ]);
+  });
+});

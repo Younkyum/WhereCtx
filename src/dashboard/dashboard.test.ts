@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createAppContext } from "../app/context.js";
 import { buildApp } from "../app/server.js";
 import { TestClock, bootApp, setupOwner, signUpByInvite, testConfig, type Enrolled } from "../testing/accounts.js";
-import { MAP_FRAME_PATH, STRICT_POLICY } from "../app/securityHeaders.js";
+import { pagePolicy } from "../app/securityHeaders.js";
 import { loadDashboardFiles } from "./router.js";
 
 const WEB = fileURLToPath(new URL("../../web/", import.meta.url));
@@ -96,40 +96,34 @@ describe("dashboard router (serving a real build)", () => {
     expect((await bare.request("/dashboard/assets/x.js")).status).toBe(404);
   });
 
-  it("keeps the CSP: scripts and images only from this origin", async () => {
+  it("keeps the CSP: scripts from this origin only, images from this origin and the tile server", async () => {
     const res = await app.request("/dashboard/");
     const csp = res.headers.get("content-security-policy")!;
     expect(csp).toContain("default-src 'self'");
     expect(csp).toMatch(/script-src 'self';/);
-    expect(csp).toMatch(/img-src 'self';/);
+    expect(csp).toMatch(/img-src 'self' https:\/\/tile\.openstreetmap\.org;/);
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("x-frame-options")).toBe("DENY");
   });
 });
 
-describe("one strict page for everyone, and one map frame that allows the providers", () => {
+describe("one strict policy for every response, opened only to the tile server", () => {
   const STRICT =
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
-  let mapped: Hono;
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://tile.openstreetmap.org; connect-src 'self'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
   let owner: Enrolled;
-
-  const directive = (csp: string, name: string) => csp.split("; ").find((d) => d.startsWith(`${name} `));
+  let served: Hono;
 
   beforeAll(async () => {
     const booted = await bootApp(new TestClock(), {}, { dashboardDir: dir });
-    mapped = booted.app;
-    owner = await setupOwner(mapped, booted.setupCode);
-    await owner.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true, geoProvider: null } });
-    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: "0123456789abcdef0123456789abcdef" } });
-    expect((await owner.browser.json("/v1/geo/map-config")).provider).toBe("kakao");
+    served = booted.app;
+    owner = await setupOwner(served, booted.setupCode);
   });
 
-  it("serves the page with the strict policy and the same cacheable answer, whoever asks", async () => {
-    expect(STRICT_POLICY["content-security-policy"]).toBe(STRICT);
+  it("serves the page with the same strict, cacheable answer, whoever asks", async () => {
     const answers = [
-      await mapped.request("/dashboard/"),
-      await mapped.request("/dashboard"),
-      await mapped.request("/dashboard/", { headers: { cookie: "wctx_session=forged" } }),
+      await served.request("/dashboard/"),
+      await served.request("/dashboard"),
+      await served.request("/dashboard/", { headers: { cookie: "wctx_session=forged" } }),
       await owner.browser.send("/dashboard/"),
       await owner.browser.send("/dashboard"),
     ];
@@ -145,32 +139,27 @@ describe("one strict page for everyone, and one map frame that allows the provid
     }
   });
 
-  it("serves the map frame with both providers' map hosts, framed only by this origin, sending only the origin", async () => {
-    for (const res of [await mapped.request(MAP_FRAME_PATH), await owner.browser.send(MAP_FRAME_PATH)]) {
-      expect(res.status).toBe(200);
-      const csp = res.headers.get("content-security-policy")!;
-      expect(directive(csp, "script-src")).toBe(
-        "script-src 'self' https://dapi.kakao.com https://t1.kakaocdn.net https://oapi.map.naver.com https://nrbe.pstatic.net",
-      );
-      expect(directive(csp, "img-src")).toBe("img-src 'self' https://mts.kakaocdn.net https://t1.kakaocdn.net https://nrbe.pstatic.net https://ssl.pstatic.net");
-      expect(directive(csp, "connect-src")).toBe("connect-src 'self' https://nrbe.pstatic.net");
-      expect(directive(csp, "default-src")).toBe("default-src 'self'");
-      expect(directive(csp, "frame-src")).toBe("frame-src 'none'");
-      expect(directive(csp, "frame-ancestors")).toBe("frame-ancestors 'self'");
-      expect(csp).not.toMatch(/unsafe-eval|\*/);
-      expect(res.headers.get("referrer-policy")).toBe("strict-origin");
-      expect(res.headers.get("x-frame-options")).toBe("SAMEORIGIN");
-      expect(res.headers.get("cache-control")).toBe("no-cache");
-      expect(res.headers.get("set-cookie")).toBeNull();
-    }
-  });
-
-  it("keeps the strict policy on every other response", async () => {
-    for (const path of ["/dashboard/assets/none.js", "/dashboard/map.html/x", "/dashboard/MAP.html", "/v1/geo", "/v1/geo/map-config", "/healthz"]) {
+  it("keeps the same policy on every other response, and the old map frame is gone", async () => {
+    for (const path of ["/dashboard/assets/none.js", "/dashboard/map.html", "/v1/geo", "/v1/geo/map-config", "/healthz"]) {
       const res = await owner.browser.send(path);
       expect(res.headers.get("content-security-policy"), path).toBe(STRICT);
       expect(res.headers.get("x-frame-options"), path).toBe("DENY");
     }
+    expect((await served.request("/dashboard/map.html")).status).toBe(404);
+  });
+
+  it("opens img-src to exactly the configured tile origin, and to none when maps are off", async () => {
+    const self = { attribution: "x", attributionUrl: null };
+    const imgSrc = (tiles: Parameters<typeof pagePolicy>[0]) =>
+      pagePolicy(tiles)["content-security-policy"].split("; ").find((d) => d.startsWith("img-src "));
+    expect(imgSrc({ ...self, url: "https://tiles.example.org:8443/{z}/{x}/{y}.png", origin: "https://tiles.example.org:8443" })).toBe(
+      "img-src 'self' https://tiles.example.org:8443",
+    );
+    expect(imgSrc(null)).toBe("img-src 'self'");
+    const booted = await bootApp(new TestClock(), { mapTiles: null }, { dashboardDir: dir });
+    const res = await booted.app.request("/dashboard/");
+    expect(res.headers.get("content-security-policy")).toContain("img-src 'self';");
+    expect(res.headers.get("content-security-policy")).not.toContain("openstreetmap");
   });
 });
 
@@ -182,15 +171,6 @@ describe("the built page", () => {
     expect(scripts[0]![2]).toBe("");
     expect(index).not.toMatch(/\son[a-z]+\s*=/i);
     expect(index).not.toMatch(/<style\b/i);
-  });
-
-  it("the map frame loads one module script and runs nothing inline", () => {
-    const frame = readFileSync(join(dir, "map.html"), "utf8");
-    const scripts = [...frame.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/g)];
-    expect(scripts).toHaveLength(1);
-    expect(scripts[0]![1]).toMatch(/type="module"[^>]*src="\/dashboard\/assets\/map-[\w-]+\.js"/);
-    expect(scripts[0]![2]).toBe("");
-    expect(frame).not.toMatch(/\son[a-z]+\s*=|<style\b/i);
   });
 
   it("references only files that exist in the build, including fonts from the stylesheet", () => {
@@ -208,8 +188,8 @@ describe("the built page", () => {
       expect(body, file).not.toMatch(/url\(\s*["']?data:/i);
       expect(body, file).not.toMatch(/@import\s+url\(\s*["']?https?:/i);
       expect(body, file).not.toContain("fonts.googleapis.com");
-      // A map script's URL comes only from GET /v1/geo/map-config; the bundle names only the origins it may come from.
-      expect(body, file).not.toMatch(/kakaocdn\.net|pstatic\.net|appkey=|ncpKeyId=/);
+      // No provider's map script: maps are the bundled Leaflet on tiles whose URL comes from GET /v1/geo/map-config.
+      expect(body, file).not.toMatch(/dapi\.kakao\.com|kakaocdn\.net|pstatic\.net|oapi\.map\.naver|appkey=|ncpKeyId=/);
     }
   });
 });
@@ -225,6 +205,12 @@ describe("web source lints", () => {
   it("never inserts markup: no dangerouslySetInnerHTML, innerHTML or insertAdjacentHTML", () => {
     for (const [file, body] of webSource()) {
       expect(body, file).not.toMatch(/dangerouslySetInnerHTML|\.innerHTML\b|outerHTML|insertAdjacentHTML|document\.write/);
+    }
+  });
+
+  it("loads no script and frames no page: maps are drawn in the page by the bundled Leaflet", () => {
+    for (const [file, body] of webSource()) {
+      expect(body, file).not.toMatch(/createElement\(\s*["'](script|iframe)["']|<iframe\b/);
     }
   });
 

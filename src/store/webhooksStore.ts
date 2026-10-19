@@ -30,6 +30,11 @@ export function formatCursor(createdAt: string, eventId: string): string {
   return `${createdAt}|${eventId}`;
 }
 
+/** A place filter: null for every place, otherwise each name once, in order. */
+export function normalizePlaces(places: readonly string[] | null | undefined): string[] | null {
+  return places && places.length > 0 ? [...new Set(places)] : null;
+}
+
 /** One spelling per selection: ["*"] when it includes "*" or is empty, otherwise each type once, in order. */
 export function normalizeEvents(events: readonly string[]): string[] {
   if (events.length === 0 || events.includes("*")) return ["*"];
@@ -50,6 +55,8 @@ export interface Webhook {
   userId: UserId;
   url: string;
   events: string[];
+  /** Place names a place event must name to be delivered; absent: every place. */
+  places?: string[];
   secret?: string;
   authHeader?: WebhookAuthHeader;
   /**
@@ -92,6 +99,7 @@ interface WebhookRow {
   userId: string;
   url: string;
   events: string[];
+  places: string[] | null;
   secret: string | null;
   authHeader: string | null;
   active: boolean;
@@ -178,6 +186,7 @@ export class WebhooksStore {
       userId: asUserId(row.userId),
       url: row.url,
       events: row.events,
+      ...(row.places ? { places: row.places } : {}),
       active: row.active,
       cursor: row.cursor ?? undefined,
       createdAt: row.createdAt,
@@ -203,6 +212,7 @@ export class WebhooksStore {
     input: {
       url: string;
       events: string[];
+      places?: string[] | null;
       secret?: string;
       authHeader?: WebhookAuthHeader;
     },
@@ -216,6 +226,7 @@ export class WebhooksStore {
       userId,
       url: input.url,
       events: normalizeEvents(input.events),
+      places: normalizePlaces(input.places),
       secret: input.secret === undefined ? null : this.seal(input.secret),
       authHeader: input.authHeader ? this.sealAuthHeader({ id, userId }, input.authHeader) : null,
       active: true,
@@ -231,6 +242,7 @@ export class WebhooksStore {
       userId,
       url: record.url,
       events: record.events,
+      ...(record.places ? { places: record.places } : {}),
       secret: input.secret,
       authHeader: input.authHeader,
       authHeaderSealed: record.authHeader,
@@ -284,14 +296,14 @@ export class WebhooksStore {
 
   /**
    * Advance a drain's hook to the composite cursor (createdAt, eventId), only
-   * forward, only while the hook is active, and only while its event
-   * selection and stored auth header are the ones the drain read. False means
-   * the hook was paused, resumed (which moves the cursor to then),
+   * forward, only while the hook is active, and only while its event and
+   * place selections and stored auth header are the ones the drain read.
+   * False means the hook was paused, resumed (which moves the cursor to then),
    * re-subscribed, given another auth header or none, or rewound since, and
    * the drain must stop: its copy of the hook is stale.
    */
   async setCursor(
-    hook: Pick<Webhook, "id" | "events" | "authHeaderSealed">,
+    hook: Pick<Webhook, "id" | "events" | "places" | "authHeaderSealed">,
     createdAt: string,
     eventId: string,
   ): Promise<boolean> {
@@ -304,6 +316,7 @@ export class WebhooksStore {
           eq(webhooks.id, hook.id),
           eq(webhooks.active, true),
           eq(webhooks.events, hook.events),
+          hook.places ? eq(webhooks.places, hook.places) : isNull(webhooks.places),
           hook.authHeaderSealed === null ? isNull(webhooks.authHeader) : eq(webhooks.authHeader, hook.authHeaderSealed),
           or(isNull(webhooks.cursor), lt(webhooks.cursor, cursor)),
         ),
@@ -403,16 +416,17 @@ export class WebhooksStore {
   }
 
   /**
-   * Change an owned hook's event selection, pause it, or replace or remove
-   * (null) its auth header. Turning a paused hook back on moves its cursor to
-   * now, so it does not replay what happened while it was off. Returns the
-   * hook as stored after the write (unreadable when its credentials still do
-   * not open), or null when the user has no such hook.
+   * Change an owned hook's event or place selection (null: every place),
+   * pause it, or replace or remove (null) its auth header. Turning a paused
+   * hook back on moves its cursor to now, so it does not replay what happened
+   * while it was off. Returns the hook as stored after the write (unreadable
+   * when its credentials still do not open), or null when the user has no
+   * such hook.
    */
   async update(
     userId: UserId,
     id: string,
-    patch: { events?: string[]; active?: boolean; authHeader?: WebhookAuthHeader | null },
+    patch: { events?: string[]; places?: string[] | null; active?: boolean; authHeader?: WebhookAuthHeader | null },
   ): Promise<WebhookListing | null> {
     const owned = and(eq(webhooks.userId, userId), eq(webhooks.id, id));
     const fresh = formatCursor(nowIso(this.clock), MAX_ID);
@@ -420,6 +434,7 @@ export class WebhooksStore {
       .update(webhooks)
       .set({
         ...(patch.events ? { events: normalizeEvents(patch.events) } : {}),
+        ...(patch.places === undefined ? {} : { places: normalizePlaces(patch.places) }),
         ...(patch.active === undefined ? {} : { active: patch.active }),
         ...(patch.authHeader === undefined
           ? {}

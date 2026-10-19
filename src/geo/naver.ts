@@ -15,7 +15,8 @@
  */
 
 import { z } from "zod";
-import { errorForStatus, getJson, malformed, providerText } from "./http.js";
+import { getJson, malformed, providerText } from "./http.js";
+import { naverFailure } from "./problems.js";
 import {
   GeoError,
   type GeocodeCandidate,
@@ -112,6 +113,10 @@ export class NaverProvider implements GeoProvider {
     });
   }
 
+  private failure(status: number, body: unknown) {
+    return naverFailure(status, body, [this.options.clientId, this.options.clientSecret]);
+  }
+
   private parse<T>(schema: z.ZodType<T>, body: unknown): T {
     const parsed = schema.safeParse(body);
     if (!parsed.success) throw malformed();
@@ -120,7 +125,7 @@ export class NaverProvider implements GeoProvider {
 
   async geocode(query: string): Promise<GeocodeCandidate[]> {
     const { status, body } = await this.request("/map-geocode/v2/geocode", { query, count: "10" });
-    if (status !== 200) throw errorForStatus(status);
+    if (status !== 200) throw this.failure(status, body);
     const res = this.parse(Geocode, body);
     if (res.status !== "OK") throw new GeoError("bad_request", "Naver rejected the search");
     return res.addresses.map((a) => ({
@@ -139,7 +144,7 @@ export class NaverProvider implements GeoProvider {
       orders: "admcode",
       output: "json",
     });
-    if (status !== 200) throw errorForStatus(status);
+    if (status !== 200) throw this.failure(status, body);
     const res = this.parse(Reverse, body);
     if (res.status.code === 3) return null;
     if (res.status.code !== 0) throw new GeoError("upstream", `Naver could not convert the point (code ${res.status.code})`);
@@ -170,7 +175,7 @@ export class NaverProvider implements GeoProvider {
         throw new GeoError("no_route", `Naver found no route (code ${failure.data.code})`);
       }
     }
-    if (status !== 200) throw errorForStatus(status);
+    if (status !== 200) throw this.failure(status, body);
     const res = this.parse(Directions, body);
     const route = res.route?.[option]?.[0];
     if (res.code !== 0 || !route) throw new GeoError("no_route", `Naver found no route (code ${res.code})`);

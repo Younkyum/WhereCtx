@@ -2,48 +2,37 @@
  * The security headers every response carries (review finding D3): the Hono
  * app sets them through `secureHeaders` and `pageSecurity`, and the OAuth
  * server's responses, which bypass Hono, get the same values from
- * `SECURITY_HEADERS`.
+ * `securityHeaders`.
  *
- * Every response gets the same strict policy but one static file: the
- * dashboard's map frame (/dashboard/map.html), the only document that loads
- * a provider's map script. Its CSP allows both providers' map hosts
- * (geo/mapSdk.ts), it may be framed by this origin only, and it sends the
- * providers its origin, never its path. The policy depends on the path alone,
- * never on who asks, so any cache may keep it.
+ * One strict policy for every response. Its only opening is img-src for the
+ * map tile origin (MAP_TILE_URL, dashboard/mapTiles.ts): the map code is
+ * bundled with the dashboard, so scripts stay 'self'. The page sends no
+ * Referer; the map's tile images ask for the origin alone themselves, which
+ * OpenStreetMap's tile policy requires. The policy depends on the
+ * configuration alone, never on the request, so any cache may keep it.
  */
 
 import type { MiddlewareHandler } from "hono";
 import type { secureHeaders } from "hono/secure-headers";
-import { MAP_SDKS } from "../geo/mapSdk.js";
-import { GEO_PROVIDERS } from "../geo/types.js";
+import type { MapTiles } from "../dashboard/mapTiles.js";
 
 type SecureHeadersOptions = NonNullable<Parameters<typeof secureHeaders>[0]>;
 
-const CSP = {
-  defaultSrc: ["'self'"],
-  scriptSrc: ["'self'"], // dashboard JS is a built file under /dashboard/assets/ (M5)
-  // The design system adds a few <style> elements at runtime (overlay
-  // motion, code highlighting), so inline styles stay allowed.
-  styleSrc: ["'self'", "'unsafe-inline'"],
-  imgSrc: ["'self'"],
-  connectSrc: ["'self'"],
-  // The dashboard frames its own map page and nothing else.
-  frameSrc: ["'self'"],
-  frameAncestors: ["'none'"],
-  baseUri: ["'none'"],
-  formAction: ["'self'"],
-} as const satisfies Record<string, readonly string[]>;
-
-const hostsOf = (directive: "scriptSrc" | "imgSrc" | "connectSrc") => [...new Set(GEO_PROVIDERS.flatMap((p) => MAP_SDKS[p][directive]))];
-
-const MAP_FRAME_CSP = {
-  ...CSP,
-  scriptSrc: [...CSP.scriptSrc, ...hostsOf("scriptSrc")],
-  imgSrc: [...CSP.imgSrc, ...hostsOf("imgSrc")],
-  connectSrc: [...CSP.connectSrc, ...hostsOf("connectSrc")],
-  frameSrc: ["'none'"],
-  frameAncestors: ["'self'"],
-} satisfies Record<keyof typeof CSP, readonly string[]>;
+function csp(tiles: MapTiles | null) {
+  return {
+    defaultSrc: ["'self'"],
+    scriptSrc: ["'self'"], // dashboard JS is a built file under /dashboard/assets/ (M5)
+    // The design system adds a few <style> elements at runtime (overlay
+    // motion, code highlighting), so inline styles stay allowed.
+    styleSrc: ["'self'", "'unsafe-inline'"],
+    imgSrc: tiles ? ["'self'", tiles.origin] : ["'self'"],
+    connectSrc: ["'self'"],
+    frameSrc: ["'none'"],
+    frameAncestors: ["'none'"],
+    baseUri: ["'none'"],
+    formAction: ["'self'"],
+  } satisfies Record<string, readonly string[]>;
+}
 
 const kebab = (name: string) => name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
 const serialize = (directives: Record<string, readonly string[]>) =>
@@ -51,27 +40,19 @@ const serialize = (directives: Record<string, readonly string[]>) =>
     .map(([directive, sources]) => `${kebab(directive)} ${sources.join(" ")}`)
     .join("; ");
 
-/** The one page that loads a provider's map script (web/map.html). */
-export const MAP_FRAME_PATH = "/dashboard/map.html";
-
 interface PagePolicy {
   "content-security-policy": string;
   "referrer-policy": string;
   "x-frame-options": string;
 }
 
-export const STRICT_POLICY: Readonly<PagePolicy> = {
-  "content-security-policy": serialize(CSP),
-  "referrer-policy": "no-referrer",
-  "x-frame-options": "DENY",
-};
-
-/** Kakao checks a map key's registered site domain against the Referer, so the frame sends its origin. */
-export const MAP_FRAME_POLICY: Readonly<PagePolicy> = {
-  "content-security-policy": serialize(MAP_FRAME_CSP),
-  "referrer-policy": "strict-origin",
-  "x-frame-options": "SAMEORIGIN",
-};
+export function pagePolicy(tiles: MapTiles | null): Readonly<PagePolicy> {
+  return {
+    "content-security-policy": serialize(csp(tiles)),
+    "referrer-policy": "no-referrer",
+    "x-frame-options": "DENY",
+  };
+}
 
 /** Everything but the CSP, the referrer policy and framing, which `pageSecurity` sets. */
 export const SECURE_HEADERS_OPTIONS = {
@@ -80,16 +61,21 @@ export const SECURE_HEADERS_OPTIONS = {
   xContentTypeOptions: "nosniff",
 } satisfies SecureHeadersOptions;
 
-/** The only writer of the CSP, the referrer policy and framing: by path, the map frame's or the strict one. */
-export const pageSecurity: MiddlewareHandler = async (c, next) => {
-  await next();
-  const policy = c.req.path === MAP_FRAME_PATH ? MAP_FRAME_POLICY : STRICT_POLICY;
-  for (const [name, value] of Object.entries(policy)) c.res.headers.set(name, value);
-};
+/** The only writer of the CSP, the referrer policy and framing. */
+export function pageSecurity(tiles: MapTiles | null): MiddlewareHandler {
+  const policy = pagePolicy(tiles);
+  return async (c, next) => {
+    await next();
+    for (const [name, value] of Object.entries(policy)) c.res.headers.set(name, value);
+  };
+}
 
-export const SECURITY_HEADERS: Readonly<Record<string, string>> = {
-  "Content-Security-Policy": STRICT_POLICY["content-security-policy"],
-  "X-Frame-Options": STRICT_POLICY["x-frame-options"],
-  "X-Content-Type-Options": SECURE_HEADERS_OPTIONS.xContentTypeOptions,
-  "Referrer-Policy": STRICT_POLICY["referrer-policy"],
-};
+export function securityHeaders(tiles: MapTiles | null): Readonly<Record<string, string>> {
+  const policy = pagePolicy(tiles);
+  return {
+    "Content-Security-Policy": policy["content-security-policy"],
+    "X-Frame-Options": policy["x-frame-options"],
+    "X-Content-Type-Options": SECURE_HEADERS_OPTIONS.xContentTypeOptions,
+    "Referrer-Policy": policy["referrer-policy"],
+  };
+}

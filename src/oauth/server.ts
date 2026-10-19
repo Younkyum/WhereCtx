@@ -20,7 +20,7 @@ import type { IncomingMessage, RequestListener, ServerResponse } from "node:http
 import Provider, { errors, type Configuration, type Grant, type Interaction } from "oidc-provider";
 import type { WhereCtxConfig } from "../config.js";
 import { fail, hasFreshAuth, ok, type Actor, type Result } from "../accounts/types.js";
-import { SECURITY_HEADERS } from "../app/securityHeaders.js";
+import { securityHeaders } from "../app/securityHeaders.js";
 import type { Clock } from "../util/time.js";
 import type { OAuthKeys } from "../accounts/serverSecretsStore.js";
 import type { UsersStore } from "../accounts/usersStore.js";
@@ -212,8 +212,9 @@ export class OAuthServer {
     this.provider.proxy = true;
     // The provider catches its own failures and reports them only as this event.
     this.provider.on("server_error", (_ctx, err) => log.error("oauth server error", err));
+    const headers = securityHeaders(deps.config.mapTiles);
     this.provider.use(async (ctx, next) => {
-      ctx.set(SECURITY_HEADERS);
+      ctx.set(headers);
       await next();
     });
     const callback = this.provider.callback();

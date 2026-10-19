@@ -16,23 +16,22 @@ import { geoCredentials } from "../db/schema.js";
 import type { UserId } from "../types.js";
 import { nowIso, systemClock, type Clock } from "../util/time.js";
 import { isEncryptedSecret, type SecretBox } from "../webhooks/secretBox.js";
-import { MAP_SDKS } from "./mapSdk.js";
-import { HINTED_KINDS, restCredentials, type GeoKeyBag, type GeoProviderName } from "./types.js";
+import { GEO_KEY_KINDS, HINTED_KINDS, restCredentials, type GeoCredentials, type GeoKeyBag, type GeoProviderName } from "./types.js";
 
 /**
- * ok: the keys open and hold what the REST calls or the map need. unusable:
- * the row cannot be opened (another install's key, a corrupted or tampered
- * row) or holds neither; calls skip it, and saving or removing it still works.
+ * ok: the keys open and hold what the REST calls need. unusable: the row
+ * cannot be opened (another install's key, a corrupted or tampered row);
+ * calls skip it, and saving or removing it still works.
+ *
+ * Rows saved before maps were drawn on open tiles may also hold a map key
+ * (jsKey, mapKeyId). It is ignored, a row holding only that is not listed,
+ * and the next save or removal drops it.
  */
 export type GeoCredentialStatus = "ok" | "unusable";
 
 export interface StoredGeoCredential {
   provider: GeoProviderName;
   status: GeoCredentialStatus;
-  /** The row holds every REST kind the provider's calls need. */
-  rest: boolean;
-  /** The row holds a map key (mapSdk.ts). */
-  map: boolean;
   /** The kinds held, each with its last four characters when it is not itself a secret, else "". */
   kinds: Record<string, string>;
   createdAt: string;
@@ -56,6 +55,12 @@ function hintsOf(keys: GeoKeyBag): Record<string, string> {
 
 type Row = typeof geoCredentials.$inferSelect;
 
+/** Only the kinds a provider takes now (GEO_KEY_KINDS). */
+function known(provider: GeoProviderName, bag: Record<string, string>): Record<string, string> {
+  const kinds: readonly string[] = GEO_KEY_KINDS[provider];
+  return Object.fromEntries(Object.entries(bag).filter(([kind]) => kinds.includes(kind)));
+}
+
 export class GeoCredentialsStore {
   constructor(
     private readonly db: Database,
@@ -71,26 +76,26 @@ export class GeoCredentialsStore {
     return `${userId}|${provider}`;
   }
 
-  /** The row's keys, or null when it cannot be opened or holds neither a REST credential nor a map key. */
-  private unseal(row: Pick<Row, "userId" | "provider" | "secret">): GeoKeyBag | null {
-    if (!isEncryptedSecret(row.secret)) return null;
+  /** The row's keys of the kinds a provider takes, or "unopenable" when it cannot be opened. */
+  private unseal(row: Pick<Row, "userId" | "provider" | "secret">): GeoKeyBag | "unopenable" {
+    if (!isEncryptedSecret(row.secret)) return "unopenable";
     try {
       const bag = KeyBag.safeParse(JSON.parse(this.box.decrypt(row.secret, GeoCredentialsStore.aad(row.userId as UserId, row.provider))));
-      return bag.success && (restCredentials(row.provider, bag.data) || bag.data[MAP_SDKS[row.provider].keyKind]) ? bag.data : null;
+      return bag.success ? known(row.provider, bag.data) : "unopenable";
     } catch {
-      return null;
+      return "unopenable";
     }
   }
 
-  private toStored(row: Row): StoredGeoCredential {
+  /** The row as listed; null for a row that opens but holds no REST keys (a map key alone). */
+  private toStored(row: Row): StoredGeoCredential | null {
     const keys = this.unseal(row);
-    const usable = keys !== null;
+    const usable = keys !== "unopenable";
+    if (usable && !restCredentials(row.provider, keys)) return null;
     return {
       provider: row.provider,
       status: usable ? "ok" : "unusable",
-      rest: keys !== null && restCredentials(row.provider, keys) !== null,
-      map: Boolean(keys?.[MAP_SDKS[row.provider].keyKind]),
-      kinds: row.hints,
+      kinds: known(row.provider, row.hints),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       lastUsedAt: row.lastUsedAt,
@@ -100,25 +105,26 @@ export class GeoCredentialsStore {
 
   async list(userId: UserId): Promise<StoredGeoCredential[]> {
     const rows = await this.db.select().from(geoCredentials).where(eq(geoCredentials.userId, userId));
-    return rows.map((r) => this.toStored(r)).sort((a, b) => a.provider.localeCompare(b.provider));
+    return rows
+      .map((r) => this.toStored(r))
+      .filter((c) => c !== null)
+      .sort((a, b) => a.provider.localeCompare(b.provider));
   }
 
-  /** The opened keys, for a provider call; null when none are saved or the row is unusable. */
+  /** The opened keys, for a provider call; null when none are saved, they hold no REST credential, or the row is unusable. */
   async open(userId: UserId, provider: GeoProviderName): Promise<GeoKeyBag | null> {
     const rows = await this.db
       .select({ userId: geoCredentials.userId, provider: geoCredentials.provider, secret: geoCredentials.secret })
       .from(geoCredentials)
       .where(this.where(userId, provider))
       .limit(1);
-    return rows[0] ? this.unseal(rows[0]) : null;
+    const keys = rows[0] ? this.unseal(rows[0]) : "unopenable";
+    return keys !== "unopenable" && restCredentials(provider, keys) ? keys : null;
   }
 
-  /**
-   * Save a provider's whole key bag, replacing whatever was saved for it
-   * before. `resetUse`: forget how the REST keys last fared, for new REST
-   * keys; a map key change keeps it.
-   */
-  async put(userId: UserId, provider: GeoProviderName, keys: GeoKeyBag, { resetUse }: { resetUse: boolean }): Promise<StoredGeoCredential> {
+  /** Save a provider's REST keys, replacing whatever was saved for it before and forgetting how those fared. */
+  async put(userId: UserId, credentials: GeoCredentials): Promise<StoredGeoCredential> {
+    const { provider, ...keys } = credentials;
     const now = nowIso(this.clock);
     const sealed = this.box.encrypt(JSON.stringify(keys), GeoCredentialsStore.aad(userId, provider));
     const hints = hintsOf(keys);
@@ -127,10 +133,10 @@ export class GeoCredentialsStore {
       .values({ userId, provider, secret: sealed, hints, createdAt: now, updatedAt: now })
       .onConflictDoUpdate({
         target: [geoCredentials.userId, geoCredentials.provider],
-        set: { secret: sealed, hints, updatedAt: now, ...(resetUse ? { lastUsedAt: null, lastError: null } : {}) },
+        set: { secret: sealed, hints, updatedAt: now, lastUsedAt: null, lastError: null },
       })
       .returning();
-    return this.toStored(row!);
+    return this.toStored(row!)!;
   }
 
   async delete(userId: UserId, provider: GeoProviderName): Promise<boolean> {

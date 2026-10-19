@@ -2,7 +2,7 @@
  * Webhook subscription management API (plan section 9.7/9.8).
  *   GET    /v1/webhooks      -> list, with what this server can do (manage_privacy)
  *   POST   /v1/webhooks      -> create (manage_privacy)
- *   PATCH  /v1/webhooks/:id  -> change {events?, active?, authHeader?} (manage_privacy)
+ *   PATCH  /v1/webhooks/:id  -> change {events?, places?, active?, authHeader?} (manage_privacy)
  *   DELETE /v1/webhooks/:id  -> delete with its dead letters (manage_privacy)
  *
  * Delivery itself is handled by the dispatcher in Phase 4. A response never
@@ -24,6 +24,9 @@ import { parseLimit, zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
 
 const EVENT_TYPES = [...PRESENCE_EVENT_TYPES, "*"] as const;
+
+/** Place names a hook's place events must name; null on PATCH clears the filter. */
+const PlacesFilter = z.array(z.string().min(1).max(64)).min(1).max(50);
 
 /** Per-user cap: each hook is drained on every dispatcher tick. */
 const MAX_WEBHOOKS = 20;
@@ -56,6 +59,7 @@ function publicWebhook(hook: WebhookListing) {
     userId: hook.userId,
     url: hook.url,
     events: hook.events,
+    ...(hook.places ? { places: hook.places } : {}),
     active: hook.active,
     cursor: hook.cursor,
     createdAt: hook.createdAt,
@@ -72,6 +76,7 @@ const WebhookSchema = z.object({
       message: "url must be http(s)",
     }),
   events: z.array(z.enum(EVENT_TYPES)).optional(),
+  places: PlacesFilter.optional(),
   secret: z.string().min(8).max(256).optional(),
   authHeader: AuthHeaderSchema.nullish(),
 });
@@ -79,12 +84,13 @@ const WebhookSchema = z.object({
 const PatchSchema = z
   .object({
     events: z.array(z.enum(EVENT_TYPES)).min(1).optional(),
+    places: PlacesFilter.nullable().optional(),
     active: z.boolean().optional(),
     authHeader: AuthHeaderSchema.nullable().optional(),
   })
   .strict()
-  .refine((p) => p.events !== undefined || p.active !== undefined || p.authHeader !== undefined, {
-    message: "nothing to change (events, active or authHeader)",
+  .refine((p) => p.events !== undefined || p.places !== undefined || p.active !== undefined || p.authHeader !== undefined, {
+    message: "nothing to change (events, places, active or authHeader)",
   });
 
 export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
@@ -129,6 +135,7 @@ export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
     const created = await scope.webhooks.create({
       url: parsed.data.url,
       events: parsed.data.events ?? ["*"],
+      places: parsed.data.places,
       secret: parsed.data.secret,
       authHeader: parsed.data.authHeader ?? undefined,
     });

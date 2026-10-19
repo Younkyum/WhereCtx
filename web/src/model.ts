@@ -7,6 +7,7 @@
 import type { WorkspaceRole } from "../../src/accounts/types";
 import type { AccessEntry as ServerAccessEntry } from "../../src/activity/types";
 import type { GeoProviderName } from "../../src/geo/types";
+import type { PlaceRules } from "../../src/types";
 
 export type { WorkspaceRole };
 export {
@@ -100,10 +101,6 @@ export interface GeoCredential {
   provider: GeoProviderName;
   /** unusable: the saved row cannot be opened; save the key again. */
   status: "ok" | "unusable";
-  /** The REST keys are saved. */
-  rest: boolean;
-  /** The map key is saved. */
-  map: boolean;
   /** Each key kind held, with its last four characters ("" for a secret). */
   kinds: Record<string, string>;
   updatedAt: string;
@@ -111,13 +108,26 @@ export interface GeoCredential {
   lastError: string | null;
 }
 
+/** What fails a key test asks the person to fix (src/geo/types.ts KEY_PROBLEMS). */
+export type KeyProblem =
+  | "key_invalid"
+  | "map_service_disabled"
+  | "service_not_enabled"
+  | "review_required"
+  | "quota"
+  | "rejected"
+  | "timeout"
+  | "upstream";
+
+/** POST /v1/geo/credentials/:provider/test. A provider's refusal says which API, what to fix, and the provider's words. */
+export type KeyTest =
+  | { ok: true; label: string }
+  | { ok: false; error: string; message: string; api?: "geocoding" | "directions"; code?: KeyProblem; providerMessage?: string };
+
 export interface GeoStatus {
   active: { provider: GeoProviderName; source: "own" | "operator" } | null;
-  /** The provider whose map this dashboard loads, and whose key. */
-  map: { provider: GeoProviderName; source: "own" | "operator" } | null;
   credentials: GeoCredential[];
   operator: GeoProviderName[];
-  operatorMap: GeoProviderName[];
 }
 
 export interface GeoCandidate {
@@ -212,12 +222,16 @@ export interface InvitePreview {
   expiresAt: string;
 }
 
-export interface Place {
+export interface Place extends Partial<PlaceRules> {
   name: string;
   type: PlaceType;
+  label?: string;
   lat: number;
   lon: number;
   radiusM: number;
+  /** A polygon place's closed [lon, lat] ring; lat/lon/radiusM are then its centroid and circumradius. */
+  polygon?: Array<[number, number]>;
+  updatedAt?: string;
 }
 
 export interface PresenceEvent {
@@ -231,6 +245,8 @@ export interface Webhook {
   id: string;
   url: string;
   events: string[];
+  /** Place names a place event must name; absent: every place. */
+  places?: string[];
   active: boolean;
   /** Never the value: its name and last characters only. */
   authHeader?: { name: string; hint: string };

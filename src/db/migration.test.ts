@@ -256,7 +256,8 @@ describe("migration 0009 on an install that ran the activity logs", () => {
       "0009_oauth_store",
       "0010_geo",
       "0011_presence_freshness_area",
-      "0012_webhook_auth_header",
+      "0012_geofence_rules",
+      "0013_webhook_auth_header",
     ]);
   });
 
@@ -278,17 +279,61 @@ describe("migration 0009 on an install that ran the activity logs", () => {
   });
 });
 
-describe("migration 0012 on an install with webhooks", () => {
+describe("migration 0012 on an install with places and events", () => {
+  const BEFORE_GEOFENCE_RULES = 12;
+
+  it("gives existing places plain-geofence rules and keeps their events deliverable", async () => {
+    const handle = createDb(dbUrl);
+    await migrate(handle.db, { migrationsFolder: firstMigrations(BEFORE_GEOFENCE_RULES) });
+    const now = new Date().toISOString();
+    await handle.client.batch(
+      [
+        {
+          sql: "INSERT INTO places (id, user_id, name, label, lat, lon, radius_m, type, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          args: ["pl1", "alice", "home", null, 37.0, 127.0, 150, "home", now, now],
+        },
+        {
+          sql: "INSERT INTO presence_events (id, user_id, type, place_name, status, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          args: ["ev1", "alice", "presence.entered_place", "home", "home", "owntracks", now],
+        },
+      ],
+      "write",
+    );
+    handle.client.close();
+
+    const { ctx } = await boot("alice");
+    const alice = asUserId("alice");
+    const home = await ctx.system.places.get(alice, "home");
+    expect(home).toMatchObject({
+      lat: 37.0,
+      lon: 127.0,
+      radiusM: 150,
+      enterAfterSec: 0,
+      exitAfterSec: 0,
+      approachM: null,
+      emits: ["presence.entered_place", "presence.left_place", "presence.approaching_place"],
+      notifyWebhooks: true,
+      notifyReminders: true,
+    });
+    expect(home).not.toHaveProperty("polygon");
+    const deliverable = await ctx.system.events.listSince(alice, null);
+    expect(deliverable.map((e) => e.id)).toEqual(["ev1"]);
+  });
+});
+
+describe("migration 0013 on an install with webhooks", () => {
+  const BEFORE_WEBHOOK_AUTH_HEADER = 13;
+
   it("keeps each hook and its signing secret, with no auth header", async () => {
     const handle = createDb(dbUrl);
-    await migrate(handle.db, { migrationsFolder: firstMigrations(12) });
+    await migrate(handle.db, { migrationsFolder: firstMigrations(BEFORE_WEBHOOK_AUTH_HEADER) });
     await handle.client.execute({
       sql: "INSERT INTO webhooks (id, user_id, url, events, secret, active, cursor, created_at) VALUES (?, ?, ?, ?, ?, 1, NULL, ?)",
       args: ["h1", "default", "https://example.test/hook", '["*"]', "legacy-secret", new Date().toISOString()],
     });
     await migrate(handle.db, { migrationsFolder: migrationsFolder() });
-    const rows = await handle.client.execute("SELECT secret, auth_header FROM webhooks WHERE id = 'h1'");
-    expect(rows.rows[0]).toMatchObject({ secret: "legacy-secret", auth_header: null });
+    const rows = await handle.client.execute("SELECT secret, places, auth_header FROM webhooks WHERE id = 'h1'");
+    expect(rows.rows[0]).toMatchObject({ secret: "legacy-secret", places: null, auth_header: null });
     handle.client.close();
   });
 });

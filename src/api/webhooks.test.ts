@@ -66,6 +66,16 @@ describe("PATCH /v1/webhooks/:id", () => {
     expect((await patch(owner.browser, hookId, { events: [] })).status).toBe(400);
   });
 
+  it("sets and clears a place filter", async () => {
+    const set = await patch(owner.browser, hookId, { places: ["gym", "home", "gym"] });
+    expect(set.status).toBe(200);
+    expect(((await set.json()) as any).webhook.places).toEqual(["gym", "home"]);
+    const cleared = await patch(owner.browser, hookId, { places: null });
+    expect(((await cleared.json()) as any).webhook).not.toHaveProperty("places");
+    expect((await patch(owner.browser, hookId, { places: [] })).status).toBe(400);
+    expect((await patch(owner.browser, hookId, { places: ["x".repeat(65)] })).status).toBe(400);
+  });
+
   it("answers 404 for another person's hook and leaves it alone", async () => {
     expect((await patch(mina, hookId, { events: ["*"], active: false })).status).toBe(404);
     const [hook] = (await owner.browser.json("/v1/webhooks")).webhooks;

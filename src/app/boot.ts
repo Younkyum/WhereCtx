@@ -100,14 +100,20 @@ ${RULE}
   ctx.onEvents = () => dispatcher.nudge();
   dispatcher.start(WEBHOOK_TICK_MS);
 
-  // Periodic stale sweep: fires became_stale even with no reads.
+  // Periodic sweeps: became_stale fires even with no reads, and a pending
+  // enter or leave is confirmed once its dwell time passes with no new reading.
   const staleSweep = setInterval(() => {
+    const nudgeOn = (events: unknown[]) => {
+      if (events.length > 0) dispatcher.nudge();
+    };
     ctx.system.service
       .sweepStale()
-      .then((events) => {
-        if (events.length > 0) dispatcher.nudge();
-      })
+      .then(nudgeOn)
       .catch((e) => log.error("stale sweep failed", e));
+    ctx.system.service
+      .sweepDwell()
+      .then(nudgeOn)
+      .catch((e) => log.error("dwell sweep failed", e));
   }, STALE_SWEEP_MS);
   staleSweep.unref?.();
 

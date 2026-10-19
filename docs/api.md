@@ -96,13 +96,11 @@ what leaves the server. The switches are privacy settings (`geoEnabled`,
 
 ```
 GET    /v1/geo                               # session only: provider in use, my keys' hints, operator fallbacks
-GET    /v1/geo/map-config                    # session only, no-store: the map script (key in its URL) my dashboard loads
+GET    /v1/geo/map-config                    # session only: the tiles the dashboard draws its maps on
 PUT    /v1/geo/credentials/kakao             # session, step-up: { "restKey":"…" }
 PUT    /v1/geo/credentials/naver             # session, step-up: { "clientId":"…", "clientSecret":"…" }
-DELETE /v1/geo/credentials/:provider         # session, step-up: the REST keys; the map key stays
-PUT    /v1/geo/credentials/:provider/map     # session, step-up: { "key":"…" } the map key
-DELETE /v1/geo/credentials/:provider/map     # session: the map key only; none saved changes nothing
-POST   /v1/geo/credentials/:provider/test    # session: looks up Seoul City Hall with the saved key
+DELETE /v1/geo/credentials/:provider         # session, step-up: forget my keys for it
+POST   /v1/geo/credentials/:provider/test    # session: looks up Seoul City Hall, then times a route to Seoul Station, with the saved key
 GET    /v1/geo/search?q=                     # manage_places, maps on: address or place search, with coordinates
 GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
                                              # read_presence: drive time from my current location
@@ -112,38 +110,52 @@ GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
 
 ```json
 { "active": { "provider":"kakao", "source":"own" },
-  "map": { "provider":"kakao", "source":"own" },
-  "credentials": [{ "provider":"kakao", "status":"ok", "rest":true, "map":true, "kinds":{ "restKey":"cdef", "jsKey":"9a1b" },
+  "credentials": [{ "provider":"kakao", "status":"ok", "kinds":{ "restKey":"cdef" },
     "createdAt":"…", "updatedAt":"…", "lastUsedAt":"…", "lastError":null }],
-  "operator": [], "operatorMap": [] }
+  "operator": [] }
 ```
 
 A key is never returned here; `kinds` names each key kind held with its last
-four characters, and `rest` and `map` say whether the REST keys and the map
-key are saved. Saving the REST keys replaces them and keeps the map key;
-saving or removing the map key keeps the REST keys and how they last fared
-(`lastUsedAt`, `lastError`). Removing the REST keys keeps the map key, and
-answers `404` when there are none. Changes to one provider's keys run one at
-a time.
+four characters (none for a secret). Saving replaces a provider's keys and
+forgets how the old ones fared; removing answers `404` when none are saved.
+REST keys resolve own before operator (`KAKAO_REST_API_KEY`,
+`NAVER_MAPS_CLIENT_ID`/`_SECRET`, for `USER_ID` only unless
+`GEO_OPERATOR_KEY_FOR_ALL`). A row saved before maps moved to open tiles
+may still hold a map key (`jsKey`, `mapKeyId`); it is ignored, a row holding
+only that is not listed, and the next save or removal drops it. `status` is
+`unusable` (with `lastError`) when the saved row cannot be opened; calls skip
+it, and it can still be replaced or removed. The key test counts against the
+maps limits.
 
-The map key draws the interactive maps in the dashboard: a Kakao JavaScript
-key (`jsKey`) or a Naver Maps Client ID (`mapKeyId`, the `ncpKeyId` the v3
-script takes). It is 8 to 128 letters, digits, `-` or `_`. The map is the
-chosen `geoProvider`'s, else the first provider with a map key; the
-person's own map key for any provider comes before an operator's
-(`KAKAO_JS_KEY`, `NAVER_MAPS_KEY_ID`, for `USER_ID` only unless
-`GEO_OPERATOR_MAP_KEY_FOR_ALL`). REST keys resolve the same way, own before
-operator. `GET /v1/geo/map-config` answers it while maps are on:
+`GET /v1/geo/map-config` names the tiles the dashboard draws its maps on,
+maps on or off; there is no key in it:
 
 ```json
-{ "provider":"kakao", "sdkUrl":"https://dapi.kakao.com/v2/maps/sdk.js?appkey=…&autoload=false" }
+{ "tiles": { "url":"https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  "attribution":"© OpenStreetMap contributors",
+  "attributionUrl":"https://www.openstreetmap.org/copyright" } }
 ```
 
-and `{ "provider": null }` otherwise. It is the one answer that holds a key:
-a browser key the provider restricts to registered domains, sent only to the
-signed-in owner. A token gets `403` (`geo.map_config` in the access log). `status` is `unusable` (with
-`lastError`) when the saved row cannot be opened; calls skip it, and it can
-still be replaced or removed. The key test counts against the maps limits.
+and `{ "tiles": null }` when `MAP_TILE_URL=off`. A token gets `403`
+(`geo.map_config` in the access log).
+
+The key test tries the address API (Kakao Local, Naver Reverse Geocoding),
+then the route API (Kakao Mobility, Naver Directions 5), and stops at the
+first that fails. A refusal says which and what to fix:
+
+```json
+{ "test": { "ok": false, "error": "auth", "api": "geocoding", "code": "map_service_disabled",
+  "providerMessage": "App(…) disabled OPEN_MAP_AND_LOCAL service.",
+  "message": "Kakao Map is turned off for this app" } }
+```
+
+`code` is one of `key_invalid`, `map_service_disabled` (Kakao's 카카오맵
+product is off for the app), `service_not_enabled` (the API is not enabled or
+selected for the app; Naver answers this as `429 Quota Exceeded`),
+`review_required`, `quota`, `rejected`, `timeout`, `upstream`.
+`providerMessage` is the provider's own error text with every key masked
+(Kakao repeats the key it was sent), at most 300 characters; the dashboard
+shows it beside a fix for the `code`. Success is `{ "ok": true, "label": "…" }`.
 
 `GET /v1/geo/search` needs maps on (`403` otherwise); a token also needs a
 presence it may see.
@@ -459,12 +471,58 @@ The operator is the person whose id is `USER_ID`; `GET /v1/me` says
 redacted when they are written, and the boot banners (setup code, generated
 admin token) are never kept.
 
+## Places (admin)
+
+```
+GET    /v1/places          # read_presence: [{name, type}]; manage_places: full places
+POST   /v1/places          # manage_places: create or replace by name
+DELETE /v1/places/:name    # manage_places
+```
+A person has at most 100 places; creating one more is refused with 409
+(changing an existing place still works). MCP `create_place` and
+`remember_current_place` share the limit.
+
+A place is a circle or a polygon, never both:
+
+```json
+{ "name":"office", "type":"work", "polygon":[[127.0123,37.5678],[127.0145,37.5678],[127.0145,37.5691],[127.0123,37.5691]],
+  "enterAfterSec":180, "exitAfterSec":300, "approachM":500,
+  "emits":["presence.entered_place","presence.left_place","presence.approaching_place"],
+  "notifyWebhooks":true, "notifyReminders":true }
+```
+- Circle: `lat`/`lon` (or `useCurrentLocation`) and `radiusM` (default 150,
+  at most 100000).
+- Polygon: a GeoJSON-style ring of `[lon, lat]`, open or closed (the server
+  closes it). 3 to 200 vertices, no zero-length edge, no edges that cross
+  or touch, a longitude span under 180° (no antimeridian), at least
+  100 m², and within 100 km of its centroid. Each broken rule is a `400`
+  naming it. The stored place's `lat`, `lon` and `radiusM` are the
+  polygon's centroid and circumradius.
+- `enterAfterSec` / `exitAfterSec` (0..86400, default 0): how long readings
+  must stay inside before the arrival counts, or outside before the
+  departure counts. They are checked on every reading and once a minute, so
+  a wait can run up to a minute long. An arrival with a wait is never
+  confirmed while the latest reading is driving, in transit or over 3 m/s.
+- `approachM` (10..50000, or null for off, the default): fire
+  `presence.approaching_place` once when readings head toward the place
+  within this many meters of its boundary.
+- `emits` (default all three): the place event types recorded for this
+  place. A type left out is not recorded at all; presence still moves.
+- `notifyWebhooks` (default true): false records the place's events (and
+  `presence.updated` while inside it) without ever delivering them.
+- `notifyReminders` (default true): false keeps arrivals here from
+  triggering reminders.
+
+`POST` replaces the shape and label; a rule it leaves out keeps the value
+the place has (the default for a new place). Saving a place re-checks the
+current presence against it right away.
+
 ## Webhooks (admin)
 
 ```
 GET    /v1/webhooks                 # manage_privacy — secrets stripped, auth header as name + hint, plus capabilities
-POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "secret"?:"…", "authHeader"?:{ "name"?:"…", "value":"…" } }
-PATCH  /v1/webhooks/:id             # { "events"?: [...], "active"?: bool, "authHeader"?: {…} | null }
+POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "places"?: ["home"], "secret"?:"…", "authHeader"?:{ "name"?:"…", "value":"…" } }
+PATCH  /v1/webhooks/:id             # { "events"?: [...], "places"?: [...] | null, "active"?: bool, "authHeader"?: {…} | null }
 GET    /v1/webhooks/dead-letters    # undeliverable events
 DELETE /v1/webhooks/:id
 ```
@@ -478,6 +536,13 @@ a delivery was in flight across the pause. A delivery in flight when the
 selection changes is the last one sent under the old selection.
 The dashboard creates hooks for `presence.entered_place` and
 `presence.left_place` unless the person picks otherwise.
+`places` (1 to 50 names) limits every event that names a place to those
+places: `entered_place`, `left_place`, `approaching_place`, and
+`presence.updated` while inside a place. An event that names no place
+(`presence.updated` outside every place, `became_stale`,
+`privacy_changed`) is delivered as before. Leaving it out, or `PATCH` with
+`null`, delivers every place. Events of a place with `notifyWebhooks` off are never
+delivered, whatever the hook selects.
 `POST` answers `400` when the URL's host does not resolve, or resolves to a
 private or reserved IP (SSRF guard) unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`.
 IPv6 is judged by its bytes, and an IPv6 address that carries an IPv4 one
@@ -582,7 +647,10 @@ ok = fresh && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(req.head
 ```
 
 Events: `presence.updated`, `presence.entered_place`, `presence.left_place`,
-`presence.became_stale`, `presence.privacy_changed`. `presence.became_stale`
+`presence.approaching_place`, `presence.became_stale`,
+`presence.privacy_changed`. `entered_place` and `left_place` fire when the
+arrival or departure is confirmed, after the place's `enterAfterSec` or
+`exitAfterSec`. `presence.became_stale`
 means the device appears offline (see `freshness` above); it does not fire
 for a phone that is only quiet at rest. Location sharing is not
 delivered by webhook; its audit is at `GET /v1/shares/audit`.

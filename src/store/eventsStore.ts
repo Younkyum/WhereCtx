@@ -16,6 +16,8 @@ export interface NewPresenceEvent {
   placeName?: string;
   status?: string;
   source?: string;
+  /** False: recorded but never delivered to webhooks (a place with notifyWebhooks off). Default true. */
+  webhook?: boolean;
 }
 
 interface EventRow {
@@ -25,6 +27,7 @@ interface EventRow {
   placeName: string | null;
   status: string | null;
   source: string | null;
+  webhook: boolean;
   createdAt: string;
 }
 
@@ -68,6 +71,7 @@ export class EventsStore {
       placeName: event.placeName ?? null,
       status: event.status ?? null,
       source: event.source ?? null,
+      webhook: event.webhook ?? true,
       createdAt,
     }));
     await this.db.insert(presenceEvents).values(records);
@@ -97,8 +101,10 @@ export class EventsStore {
   }
 
   /**
-   * Events after the composite cursor `"<createdAt>|<id>"`, oldest-first, for
-   * webhook delivery. Uses a keyset predicate so events sharing a millisecond
+   * Deliverable events after the composite cursor `"<createdAt>|<id>"`,
+   * oldest-first, for webhook delivery. An event recorded with webhook off
+   * (a place with notifyWebhooks off) is left out here, in SQL, so no
+   * delivery path ever sees it. Uses a keyset predicate so events sharing a millisecond
    * createdAt are NOT skipped when the cursor lands mid-cluster (review H2):
    *   createdAt > ts  OR  (createdAt = ts AND id > id)
    * A null cursor returns the oldest events. A legacy cursor without an id part
@@ -111,7 +117,7 @@ export class EventsStore {
     limit = 100,
   ): Promise<PresenceEvent[]> {
     const capped = Math.max(1, Math.min(limit, 500));
-    const owner = eq(presenceEvents.userId, userId);
+    const owner = and(eq(presenceEvents.userId, userId), eq(presenceEvents.webhook, true))!;
     let where = owner;
     if (cursor) {
       const sep = cursor.indexOf("|");

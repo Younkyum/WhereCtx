@@ -1,25 +1,40 @@
 // @vitest-environment happy-dom
-// @vitest-environment-options {"settings":{"disableJavaScriptFileLoading":true,"disableIframePageLoading":true}}
 //
-// The dashboard side of a map: what it asks the server, which frame it makes,
-// and what it tells that frame. The frame itself (map.html) is a stand-in
-// here: each <iframe>'s window records what the dashboard posts to it, and a
-// test answers as the frame would (mapFrame.test.ts holds the real frame to
-// the same messages).
+// The dashboard side of a map: what it asks the server and what it draws.
+// The Leaflet canvas (mapCanvas.ts) is a recorder here: each map made keeps
+// its tiles and every scene drawn on it, and a test can click it or fail a
+// tile as Leaflet would (mapCanvas.test.ts holds the real canvas to that).
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FromFrame, MapScene, ToFrame } from "./mapScene";
+import type { LatLon, MapScene } from "./mapScene";
+import type { MapTiles } from "./mapCanvas";
 
 type Reply = { status: number; body?: unknown };
 
 const ME = { user: { id: "u1", displayName: "Me" }, workspaces: [{ id: "w1", name: "Home", role: "owner" }], passkeys: [], sessions: [] };
-const KAKAO = { provider: "kakao", sdkUrl: "https://dapi.kakao.com/v2/maps/sdk.js?appkey=testkey12345&autoload=false" };
-const NAVER = { provider: "naver", sdkUrl: "https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=naverkey123" };
+const TILES: MapTiles = { url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", attribution: "© OpenStreetMap contributors", attributionUrl: "https://www.openstreetmap.org/copyright" };
 const PLACES = [{ name: "home", type: "home", lat: 37.5, lon: 127, radiusM: 100 }];
 const POINTS = [
   { id: "p1", recordedAt: "2026-10-18T01:00:00.000Z", lat: 37.5, lon: 127 },
   { id: "p2", recordedAt: "2026-10-18T01:05:00.000Z", lat: 37.52, lon: 127.03 },
 ];
+
+interface Canvas {
+  tiles: MapTiles;
+  draws: { scene: MapScene; pickable: boolean }[];
+  pick: (at: LatLon) => void;
+  tileError: () => void;
+  destroyed: boolean;
+}
+const canvases: Canvas[] = [];
+
+vi.mock("./mapCanvas", () => ({
+  createMapCanvas(_el: HTMLElement, tiles: MapTiles, pick: (at: LatLon) => void, tileError: () => void) {
+    const canvas: Canvas = { tiles, draws: [], pick, tileError, destroyed: false };
+    canvases.push(canvas);
+    return { draw: (scene: MapScene, pickable: boolean) => canvas.draws.push({ scene, pickable }), destroy: () => (canvas.destroyed = true) };
+  },
+}));
 
 let routes: Map<string, () => Reply>;
 let calls: string[];
@@ -27,30 +42,11 @@ let host: HTMLElement;
 let root: Root;
 let act: typeof import("react").act;
 
-/** What the dashboard posted to each frame window, by frame. */
-const frameWindows = new WeakMap<HTMLIFrameElement, { posted: ToFrame[] }>();
-const frames = () => [...host.querySelectorAll("iframe")];
-const posted = (frame = frames()[0]!) => (frame.contentWindow as unknown as { posted: ToFrame[] }).posted;
-const scenes = (frame?: HTMLIFrameElement) => posted(frame).flatMap((m) => (m.type === "draw" ? [m.scene] : []));
-const lastScene = (frame?: HTMLIFrameElement): MapScene => scenes(frame).at(-1)!;
+const live = () => canvases.filter((c) => !c.destroyed);
+const lastScene = (): MapScene => live().at(-1)!.draws.at(-1)!.scene;
 const scripts = () => [...document.querySelectorAll("script[src]")] as HTMLScriptElement[];
-
-/** The frame says something to the dashboard; by default as itself, from this origin. */
-async function frameSays(message: FromFrame | unknown, opts: { frame?: HTMLIFrameElement; source?: unknown; origin?: string } = {}) {
-  const frame = opts.frame ?? frames()[0]!;
-  await act(async () => {
-    window.dispatchEvent(
-      new MessageEvent("message", { data: message, source: (opts.source ?? frame.contentWindow) as Window, origin: opts.origin ?? location.origin }),
-    );
-  });
-  await settle();
-}
-
-/** The frame comes up, loads the map it is told to, and is ready to draw. */
-async function frameReady(frame?: HTMLIFrameElement) {
-  await frameSays({ type: "hello" }, { frame });
-  await frameSays({ type: "ready" }, { frame });
-}
+const withTiles = () => routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { tiles: TILES } }));
+const noTiles = () => routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { tiles: null } }));
 
 async function settle() {
   for (let i = 0; i < 6; i++) {
@@ -99,16 +95,7 @@ beforeEach(() => {
     const out = (routes.get(key) ?? routes.get(key.split("?")[0]!))?.() ?? { status: 404, body: { error: "not found" } };
     return new Response(out.body === undefined ? "" : JSON.stringify(out.body), { status: out.status });
   });
-  Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
-    configurable: true,
-    get(this: HTMLIFrameElement) {
-      if (!frameWindows.has(this)) {
-        const record = { posted: [] as ToFrame[], postMessage: (m: ToFrame) => record.posted.push(m) };
-        frameWindows.set(this, record);
-      }
-      return frameWindows.get(this);
-    },
-  });
+  canvases.length = 0;
   host = document.createElement("div");
   document.body.appendChild(host);
 });
@@ -121,91 +108,53 @@ afterEach(async () => {
 });
 
 describe("maps in the dashboard", () => {
-  it("without a map key, draws History from the points alone and makes no frame", async () => {
-    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { provider: null } }));
+  it("without tiles, draws History from the points alone and makes no map", async () => {
+    noTiles();
     await open("#history");
     expect(calls).toContain("GET /v1/geo/map-config");
     expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
-    expect(frames()).toEqual([]);
-    expect(host.textContent).not.toContain("The map could not load");
+    expect(canvases).toEqual([]);
   });
 
-  it("when the map config cannot be read, also falls back with no frame", async () => {
+  it("when the map config cannot be read, also falls back with no map", async () => {
     await open("#history");
     expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
-    expect(frames()).toEqual([]);
+    expect(canvases).toEqual([]);
   });
 
-  it("with a map key, frames the map page, tells it which script to load, and draws History in it; the dashboard itself loads no script", async () => {
-    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+  it("with tiles, draws History on a map in the page, from the server's tiles, loading no script and no frame", async () => {
+    withTiles();
     await open("#history");
-    expect(frames().map((f) => f.getAttribute("src"))).toEqual(["/map.html"]);
-    expect(posted()).toEqual([]);
-    await frameReady();
-    expect(posted()[0]).toEqual({ type: "load", map: KAKAO });
+    expect(live().map((c) => c.tiles)).toEqual([TILES]);
     expect(lastScene()).toEqual({
       markers: [{ id: "latest", at: { lat: 37.52, lon: 127.03 }, title: "Latest point" }],
       circles: [{ id: "place:home", at: { lat: 37.5, lon: 127 }, radiusM: 100, title: "home" }],
+      polygons: [],
       lines: [{ id: "track", points: [{ lat: 37.5, lon: 127 }, { lat: 37.52, lon: 127.03 }] }],
     });
-    expect(posted().filter((m) => m.type === "draw").every((m) => m.type === "draw" && !m.pickable)).toBe(true);
+    expect(live()[0]!.draws.every((d) => !d.pickable)).toBe(true);
     expect(host.querySelector('svg[role="img"]')).toBeNull();
     expect(scripts()).toEqual([]);
+    expect(document.querySelectorAll("iframe")).toHaveLength(0);
     expect(host.textContent).toContain("2026");
   });
 
-  it("listens only to its own frame at this origin, and only to well-formed messages", async () => {
-    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+  it("says when tiles fail to load, naming the tile host, and keeps the map", async () => {
+    withTiles();
     await open("#history");
-    await frameSays({ type: "hello" }, { source: window });
-    await frameSays({ type: "hello" }, { origin: "https://evil.example" });
-    await frameSays({ type: "failed", why: "because" });
-    await frameSays({ type: "pick", at: { lat: 100, lon: 0 } });
-    expect(posted()).toEqual([]);
-    await frameSays({ type: "ready" }, { origin: "https://evil.example" });
-    expect(frames()[0]!.getAttribute("aria-busy")).toBe("true");
-    expect(host.textContent).not.toContain("The map could not load");
+    await act(async () => live()[0]!.tileError());
+    await settle();
+    expect(host.textContent).toContain("Some map tiles could not load from tile.openstreetmap.org.");
+    expect(live()).toHaveLength(1);
   });
 
-  it("names no frame for a script outside the provider's origin, and says why", async () => {
-    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { provider: "kakao", sdkUrl: "https://evil.example/sdk.js" } }));
+  it("makes a fresh map per page and lets go of the last one", async () => {
+    withTiles();
     await open("#history");
-    expect(frames()).toEqual([]);
-    expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
-    expect(host.textContent).toContain("security policy blocked");
-  });
-
-  it("falls back to the drawn track and says the script failed when the frame could not load it", async () => {
-    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
-    await open("#history");
-    await frameSays({ type: "hello" });
-    await frameSays({ type: "failed", why: "load" });
-    expect(frames()).toEqual([]);
-    expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
-    expect(host.textContent).toContain("Kakao's map script failed or did not answer");
-  });
-
-  it("tells a blocked map apart from a key problem", async () => {
-    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
-    await open("#history");
-    await frameReady();
-    await frameSays({ type: "failed", why: "blocked" });
-    expect(host.textContent).toContain("That is a problem with this server, not with your map key.");
-    expect(host.textContent).not.toContain("refused the map key");
-  });
-
-  it("remembers that Naver refused the key, so the next map on the page falls back without a frame", async () => {
-    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: NAVER }));
-    await open("#history");
-    await frameReady();
-    await frameSays({ type: "failed", why: "refused" });
-    expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
-    expect(host.textContent).toContain("Naver refused the map key");
-
     await go("#places");
-    expect(calls.filter((c) => c === "GET /v1/geo/map-config")).toHaveLength(2);
-    expect(frames()).toEqual([]);
-    expect(host.textContent).toContain("Naver refused the map key");
+    expect(canvases).toHaveLength(2);
+    expect(canvases[0]!.destroyed).toBe(true);
+    expect(live()).toHaveLength(1);
   });
 
   describe("Home", () => {
@@ -228,17 +177,23 @@ describe("maps in the dashboard", () => {
     }
 
     it("without a map, never reads my point", async () => {
-      routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { provider: null } }));
+      noTiles();
       await open("#home");
       expect(calls).toContain("GET /v1/geo/map-config");
       expect(calls).not.toContain("GET /v1/presence/precise");
-      expect(frames()).toEqual([]);
+      expect(canvases).toEqual([]);
+    });
+
+    it("draws the map with maps (geoEnabled) off: no provider key is involved", async () => {
+      withTiles();
+      routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: false } } }));
+      await open("#home");
+      expect(lastScene().markers.map((m) => m.title)).toEqual(["You"]);
     });
 
     it("places me, and a person only after their exact location is opened (the audited read), with its age", async () => {
-      routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+      withTiles();
       await open("#home");
-      await frameReady();
       expect(markers()).toEqual([["You", 37.4, 127.1]]);
       expect(calls).not.toContain("GET /v1/people/u2");
 
@@ -251,26 +206,24 @@ describe("maps in the dashboard", () => {
     });
 
     it("near home, while the provider is kept away from there, shows my home place and not my point", async () => {
-      routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+      withTiles();
       routes.set("GET /v1/presence/precise", () => ({
         status: 200,
         body: { lat: 37.5004, lon: 127.0003, updatedAgoSec: 60, nearHome: { name: "home", lat: 37.5, lon: 127, radiusM: 100 } },
       }));
       await open("#home");
-      await frameReady();
       expect(lastScene().markers).toEqual([]);
       expect(lastScene().circles).toEqual([{ id: "place:home", at: { lat: 37.5, lon: 127 }, radiusM: 100, title: "home" }]);
-      expect(JSON.stringify(scenes())).not.toContain("37.5004");
+      expect(JSON.stringify(live()[0]!.draws)).not.toContain("37.5004");
       expect(host.textContent).toContain("You are near home, so the map shows that place, not your position.");
     });
 
     it("drops an opened person when the list stops saying their exact location is available, and after five minutes", async () => {
       vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
       try {
-        routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+        withTiles();
         await open("#home");
-        await frameReady();
-        await openMina();
+          await openMina();
         expect(markers().map((m) => m[0])).toEqual(["You", "Mina · 3 min ago"]);
         const preciseReads = () => calls.filter((c) => c === "GET /v1/presence/precise").length;
         const before = preciseReads();
@@ -303,7 +256,7 @@ describe("maps in the dashboard", () => {
     });
 
     it("reads my status even while agents are kept from it, and says they are", async () => {
-      routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { provider: null } }));
+      noTiles();
       routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true, defaultAgentAccess: "hidden" } } }));
       await open("#home");
       expect(host.textContent).toContain("hidden from agents");
@@ -311,55 +264,58 @@ describe("maps in the dashboard", () => {
     });
   });
 
-  it("Places draws each place's circle, and a click in the frame fills in the new place's coordinates", async () => {
-    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+  it("Places draws each place's circle, and a click on the map opens Add by coordinates with the point filled in", async () => {
+    withTiles();
     await open("#places");
-    await frameReady();
     expect(lastScene().circles.map((c) => [c.at.lat, c.at.lon, c.radiusM])).toEqual([[37.5, 127, 100]]);
-    expect(posted().at(-1)).toMatchObject({ type: "draw", pickable: true });
-    await frameSays({ type: "pick", at: { lat: 37.1234567, lon: 127.7654321 } });
-    const values = [...host.querySelectorAll("input")].map((i) => i.value);
+    expect(live()[0]!.draws.at(-1)!.pickable).toBe(true);
+    await act(async () => live()[0]!.pick({ lat: 37.1234567, lon: 127.7654321 }));
+    await settle();
+    expect(document.querySelector("dialog[open]")?.textContent).toContain("Add by coordinates");
+    const values = [...document.querySelectorAll("dialog[open] input")].map((i) => (i as HTMLInputElement).value);
     expect(values).toContain("37.123457");
     expect(values).toContain("127.765432");
     expect(lastScene().markers.map((m) => [m.at.lat, m.at.lon])).toEqual([[37.1234567, 127.7654321]]);
   });
 
-  describe("Maps & routes keys", () => {
-    const row = (over: Record<string, unknown>) => ({ provider: "kakao", status: "ok", rest: false, map: false, kinds: {}, updatedAt: "", lastUsedAt: null, lastError: null, ...over });
-    const geo = (credentials: unknown[]) => () => ({ status: 200, body: { active: null, map: null, credentials, operator: [], operatorMap: [] } });
+  it("Places draws a polygon place along its outline, not as the circle around it", async () => {
+    withTiles();
+    const ring: Array<[number, number]> = [[127, 37.5], [127.002, 37.5], [127.002, 37.502], [127, 37.5]];
+    routes.set("GET /v1/places", () => ({
+      status: 200,
+      body: { places: [...PLACES, { name: "park", type: "custom", lat: 37.5007, lon: 127.0013, radiusM: 180, polygon: ring }] },
+    }));
+    await open("#places");
+    expect(lastScene().circles.map((c) => c.title)).toEqual(["home"]);
+    expect(lastScene().polygons).toEqual([
+      { id: "place:park", ring: ring.map(([lon, lat]) => ({ lat, lon })), title: "park" },
+    ]);
+  });
 
+  describe("Maps & routes", () => {
     beforeEach(() => {
-      routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { provider: null } }));
       routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: false, geoProvider: null } } }));
+      routes.set("GET /v1/geo", () => ({ status: 200, body: { active: null, credentials: [], operator: [] } }));
     });
 
-    it("a provider with only a map key shows no saved REST key, and its map key in the map panel", async () => {
-      routes.set("GET /v1/geo", geo([row({ map: true, kinds: { jsKey: "c123" } })]));
+    it("says maps need no key, and what the tile server sees", async () => {
+      withTiles();
       await open("#maps");
-      expect(host.textContent).toContain("Map key ••••c123");
-      expect(host.textContent).not.toContain("Saved key");
-      expect([...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Test")).toEqual([]);
+      expect(host.textContent).toContain("Maps here need no maps key and work with maps off.");
+      expect(host.textContent).toContain("map tiles from tile.openstreetmap.org");
+      expect(host.textContent).not.toMatch(/map key|JavaScript key/i);
     });
 
-    it("a REST key alone shows no map key", async () => {
-      routes.set("GET /v1/geo", geo([row({ rest: true, kinds: { restKey: "cdef" } })]));
+    it("says when the server draws no maps", async () => {
+      noTiles();
       await open("#maps");
-      expect(host.textContent).toContain("Saved key ••••cdef");
-      expect(host.textContent).not.toContain("Map key ••••");
-    });
-
-    it("deleting the REST key says the map key stays", async () => {
-      routes.set("GET /v1/geo", geo([row({ rest: true, map: true, kinds: { restKey: "cdef", jsKey: "c123" } })]));
-      await open("#maps");
-      await act(async () => button("Delete").click());
-      await settle();
-      expect(document.body.textContent).toContain("Remove your Kakao REST key? Your map key stays.");
+      expect(host.textContent).toContain("This server draws no maps (MAP_TILE_URL is off).");
     });
   });
 
   it("the route tester draws the owner's route", async () => {
-    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
-    routes.set("GET /v1/geo", () => ({ status: 200, body: { active: { provider: "kakao", source: "own" }, map: { provider: "kakao", source: "own" }, credentials: [], operator: [], operatorMap: [] } }));
+    withTiles();
+    routes.set("GET /v1/geo", () => ({ status: 200, body: { active: { provider: "kakao", source: "own" }, credentials: [], operator: [] } }));
     routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true, geoProvider: null } } }));
     const path = [
       { lat: 37.4, lon: 127.1 },
@@ -371,7 +327,6 @@ describe("maps in the dashboard", () => {
       body: { eta: { destination: { label: "home", kind: "place" }, origin: "current_location", precision: "exact", durationMin: 12, distanceKm: 6.1, traffic: "live", arriveAt: "2026-10-19T01:00:00Z", summary: [], path, provider: "kakao" } },
     }));
     await open("#maps");
-    expect(host.textContent).toContain(`register this site domain: ${location.origin}`);
     const to = [...host.querySelectorAll("label")].find((l) => l.textContent?.trim() === "To a place name or an address")!;
     const input = (document.getElementById(to.htmlFor) ?? to.parentElement!.querySelector("input")) as HTMLInputElement;
     await act(async () => {
@@ -380,7 +335,6 @@ describe("maps in the dashboard", () => {
     });
     await act(async () => button("Get ETA").click());
     await settle();
-    await frameReady();
     expect(lastScene().lines.map((l) => l.points)).toEqual([path]);
     expect(lastScene().markers.map((m) => m.title)).toEqual(["Start", "home"]);
   });

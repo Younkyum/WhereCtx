@@ -21,6 +21,7 @@ import type { PasskeyCeremony } from "../accounts/passkeys.js";
 import type { StoredPasskey } from "../accounts/passkeysStore.js";
 import type { RegistrationSubject } from "../accounts/usersStore.js";
 import { asUserId } from "../types.js";
+import { OSM_ATTRIBUTION, OSM_ATTRIBUTION_URL, OSM_TILE_URL } from "../dashboard/mapTiles.js";
 
 export const BASE_URL = "http://localhost:8787";
 /** A BASE_URL a phone could reach, for tests that pair devices. */
@@ -52,7 +53,8 @@ export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxCon
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
     oauth: { dynamicRegistration: false },
-    geo: { operatorMapKeys: {}, operatorKeys: {}, operatorKeyForAll: false, operatorMapKeyForAll: false, operatorDailyCap: 200, fake: false },
+    mapTiles: { url: OSM_TILE_URL, origin: "https://tile.openstreetmap.org", attribution: OSM_ATTRIBUTION, attributionUrl: OSM_ATTRIBUTION_URL },
+    geo: { operatorKeys: {}, operatorKeyForAll: false, operatorDailyCap: 200, fake: false },
     activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
     ...overrides,
   };
