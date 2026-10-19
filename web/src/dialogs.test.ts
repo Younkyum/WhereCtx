@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
  * components and finds every form field that could render outside one.
  */
 
-const SRC = join(import.meta.dirname);
+const SRC = import.meta.dirname;
 const FILES = ["App.tsx", "MapView.tsx", "ui.tsx", ...readdirSync(join(SRC, "views")).map((f) => `views/${f}`)].filter((f) => f.endsWith(".tsx"));
 
 /** Tags that make a form. Switches are not here: a single on/off switch may stay on the page. */
