@@ -142,6 +142,18 @@ describe("POST /v1/places with a polygon", () => {
   });
 });
 
+describe("MCP writes to a polygon place", () => {
+  it("refuses to turn it into a circle, from create_place or remember_current_place", async () => {
+    await postPlace({ name: "office", type: "custom", polygon: OFFICE });
+    await readInside();
+    const call = await agentMcp();
+    expect(await call("create_place", { name: "office", type: "custom", lat: 37.5, lon: 127.0 })).toMatch(/polygon/);
+    expect(await call("remember_current_place", { name: "office" })).toMatch(/polygon/);
+    const { places } = (await (await req("/v1/places", { token: ADMIN })).json()) as any;
+    expect(places[0].polygon).toEqual([...OFFICE, OFFICE[0]]);
+  });
+});
+
 describe("the place limit", () => {
   it("refuses a new place past the limit and still lets an existing one change", async () => {
     for (let i = 0; i < MAX_PLACES; i++) {

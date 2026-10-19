@@ -414,16 +414,17 @@ export function buildMcpServer(
    * the home geofence and mislead the home-coordinate privacy protections.
    * Returns an error message or null.
    */
-  const homeWriteDenied = async (
-    name: string,
-    requestedType: PlaceType,
-  ): Promise<string | null> => {
+  /** Why these tools may not write a circle place called `name`, or null. */
+  const placeWriteDenied = async (name: string, requestedType: PlaceType): Promise<string | null> => {
+    const existing = await scope.places.get(name);
+    if (existing?.polygon) {
+      return `place "${name}" is a polygon place; these tools would make it a circle, so change it over REST (POST /v1/places) or in the dashboard`;
+    }
     if (canManagePlaces) return null;
     if (!(await scope.settings.getOrSeed()).protectHomePlace) return null;
     if (requestedType === "home") {
       return "creating or changing a 'home' place requires the manage_places scope (home place protection is enabled)";
     }
-    const existing = await scope.places.get(name);
     if (existing?.type === "home") {
       return `place "${name}" is the protected home place; modifying it requires the manage_places scope`;
     }
@@ -450,7 +451,7 @@ export function buildMcpServer(
       if (byPoint === (address !== undefined) || (lat === undefined) !== (lon === undefined)) {
         return err("give either lat and lon, or address");
       }
-      const denied = await homeWriteDenied(name, type);
+      const denied = await placeWriteDenied(name, type);
       if (denied) return err(denied);
       if ((await scope.places.count()) >= MAX_PLACES) {
         return err(`place limit reached (${MAX_PLACES})`);
@@ -500,7 +501,7 @@ export function buildMcpServer(
       },
     },
     async ({ name, type, radiusM }) => {
-      const denied = await homeWriteDenied(name, type ?? "custom");
+      const denied = await placeWriteDenied(name, type ?? "custom");
       if (denied) return err(denied);
       if ((await scope.places.count()) >= MAX_PLACES) {
         return err(`place limit reached (${MAX_PLACES})`);

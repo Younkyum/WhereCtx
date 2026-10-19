@@ -202,6 +202,10 @@ unless the credential carries the `manage_places` scope (an admin token). This s
 from moving the home geofence, which would mislead the home-coordinate privacy
 protections. Non-home places stay writable by agent tokens.
 
+Both tools write circles, so they refuse to overwrite a polygon place for any
+credential: it would silently lose its outline. A polygon place is changed
+over REST (`POST /v1/places`) or in the dashboard.
+
 Every `tools/call` request is recorded in the owner's access log (the token
 name, or the connected app's name for an OAuth client; tool; outcome; and the reason given for `get_precise_location`), one
 row per call, including calls refused before a tool runs: arguments that
