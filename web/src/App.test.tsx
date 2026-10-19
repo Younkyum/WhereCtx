@@ -1194,3 +1194,80 @@ describe("place rules and webhook places", () => {
     expect(created).toEqual({ url: "https://n8n.example/hook", events: ["presence.entered_place", "presence.left_place"], places: ["*"] });
   });
 });
+
+describe("create and edit dialogs", () => {
+  async function open(hash: string, me: unknown = ME) {
+    route("GET /v1/me", () => ({ status: 200, body: me }));
+    location.hash = hash;
+    await act(async () => root.render(<App />));
+    await settle();
+  }
+
+  async function click(target: HTMLElement) {
+    await act(async () => target.click());
+    await settle();
+  }
+
+  /** Enter in a field submits its form, as the browser does for a form with a submit button. */
+  async function pressEnterIn(input: HTMLInputElement) {
+    await act(async () => input.form!.requestSubmit());
+    await settle();
+  }
+
+  async function pressEscape() {
+    await act(async () => {
+      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    await settle();
+  }
+
+  const dialog = () => {
+    const d = openDialog();
+    if (!d) throw new Error(`no open dialog in: ${host.textContent}`);
+    return d;
+  };
+
+  afterEach(() => {
+    location.hash = "";
+  });
+
+  it("Agents creates a token in a dialog and shows its secret there once, then lists it", async () => {
+    let tokens: unknown[] = [];
+    let posted: unknown;
+    route("GET /v1/tokens", () => ({ status: 200, body: { tokens } }));
+    route("GET /v1/oauth/grants", () => ({ status: 200, body: { grants: [] } }));
+    route("POST /v1/tokens", (b) => {
+      posted = b;
+      tokens = [{ id: "k1", name: "Claude Desktop", role: "agent", lastUsedAt: null }];
+      return { status: 201, body: { secret: "wctx_agent_secret", mcpConfig: { mcpServers: {} } } };
+    });
+    await open("#agents");
+    expect(host.querySelector("form")).toBeNull();
+
+    await click(button("New agent token"));
+    await fill(inputLabelled(dialog(), "Name"), "Claude Desktop");
+    await pressEnterIn(inputLabelled(dialog(), "Name"));
+    expect(posted).toEqual({ name: "Claude Desktop", role: "agent" });
+    expect(dialog().textContent).toContain("wctx_agent_secret");
+    expect(dialog().textContent).toContain("MCP config");
+    expect(host.textContent).toContain("Claude Desktop");
+
+    await click(dialogButton("Done"));
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).not.toContain("wctx_agent_secret");
+  });
+
+  it("Agents shows a refused create inside the dialog and keeps the name", async () => {
+    route("GET /v1/tokens", () => ({ status: 200, body: { tokens: [] } }));
+    route("GET /v1/oauth/grants", () => ({ status: 200, body: { grants: [] } }));
+    route("POST /v1/tokens", () => ({ status: 400, body: { error: "name too long" } }));
+    await open("#agents");
+    await click(button("New agent token"));
+    await fill(inputLabelled(dialog(), "Name"), "x");
+    await click(dialogButton("Create token"));
+    expect(dialog().textContent).toContain("Some of the values aren't valid.");
+    expect(inputLabelled(dialog(), "Name").value).toBe("x");
+    await pressEscape();
+    expect(openDialog()).toBeUndefined();
+  });
+});

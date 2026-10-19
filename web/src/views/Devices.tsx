@@ -20,7 +20,7 @@ import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import { hostOf, qrFromSvg } from "../lib";
 import type { ApiToken, ConnectedApp, DeviceSummary, IngestEntry, IngestOutcome, Pairing } from "../model";
-import { BearerHeader, Empty, Hint, Loaded, Page, Panel, Row, Rows, Secret, download, useAction, useConfirm, useFormat, useLoad, useNotify, usePaged } from "../ui";
+import { BearerHeader, DialogForm, DialogResult, Empty, FormDialog, Hint, Loaded, Page, Panel, Row, Rows, Secret, download, useAction, useConfirm, useFormat, useLoad, useNotify, usePaged } from "../ui";
 
 function useTokens(keep: (k: ApiToken) => boolean) {
   return useLoad(() => api<{ tokens: ApiToken[] }>("/v1/tokens").then((r) => (r.tokens ?? []).filter(keep)), []);
@@ -347,56 +347,55 @@ function ConnectedApps() {
   );
 }
 
-export function AgentsView() {
+function CreateAgentToken({ onClose, onCreated }: { onClose: () => void; onCreated: () => Promise<void> }) {
   const { t } = useApp();
-  const [tokens, reload] = useTokens((k) => k.role !== "device");
   const [name, setName] = useState("");
   const [created, setCreated] = useState<{ secret: string; mcp: string } | null>(null);
-  const [busy, create] = useAction(async () => {
+  const create = async () => {
     const r = await api<{ secret: string; mcpConfig: unknown }>("/v1/tokens", { body: { name: name.trim(), role: "agent" } });
     setCreated({ secret: r.secret, mcp: JSON.stringify(r.mcpConfig, null, 2) });
-    setName("");
-    await reload();
-  });
+    await onCreated();
+  };
+  if (created) {
+    return (
+      <DialogResult title={t("agents.createdTitle")} onClose={onClose}>
+        <Banner status="success" title={t("agents.created")} />
+        <Secret label={t("agents.token")} value={created.secret} />
+        <BearerHeader token={created.secret} hint={t("header.agentHint")} />
+        <Secret label={t("agents.mcpConfig")} value={created.mcp} language="json" />
+        <Hint>{t("agents.mcpHint")}</Hint>
+        <Hint>{t("devices.secretOnce")}</Hint>
+      </DialogResult>
+    );
+  }
   return (
-    <Page title={t("agents.title")} description={t("agents.desc")}>
-      <Panel title={t("agents.create")}>
-        <VStack gap={4}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (name.trim()) void create();
-            }}
-          >
-            <HStack gap={2} wrap="wrap" vAlign="end">
-              <TextInput
-                label={t("tokens.name")}
-                placeholder={t("agents.namePlaceholder")}
-                value={name}
-                onChange={setName}
-                isRequired
-                width={280}
-              />
-              <Button type="submit" label={t("agents.createButton")} variant="primary" isLoading={busy} isDisabled={!name.trim()} />
-            </HStack>
-          </form>
-          {created ? (
-            <VStack gap={3}>
-              <Banner status="success" title={t("agents.created")} />
-              <Secret label={t("agents.token")} value={created.secret} />
-              <BearerHeader token={created.secret} hint={t("header.agentHint")} />
-              <Secret label={t("agents.mcpConfig")} value={created.mcp} language="json" />
-              <Hint>{t("agents.mcpHint")}</Hint>
-              <Hint>{t("devices.secretOnce")}</Hint>
-            </VStack>
-          ) : null}
-        </VStack>
-      </Panel>
-      <ConnectedApps />
-      <Panel title={t("agents.list")}>
-        <Loaded state={tokens}>{(list) => <TokenTable tokens={list} emptyText={t("agents.empty")} onChanged={reload} />}</Loaded>
-      </Panel>
-    </Page>
+    <DialogForm
+      title={t("agents.create")}
+      submitLabel={t("agents.createButton")}
+      canSubmit={name.trim() !== ""}
+      keepOpen
+      onSubmit={create}
+      onClose={onClose}
+    >
+      <TextInput label={t("tokens.name")} placeholder={t("agents.namePlaceholder")} value={name} onChange={setName} isRequired />
+    </DialogForm>
   );
 }
 
+export function AgentsView() {
+  const { t } = useApp();
+  const [tokens, reload] = useTokens((k) => k.role !== "device");
+  const [creating, setCreating] = useState(false);
+  const close = () => setCreating(false);
+  return (
+    <Page title={t("agents.title")} description={t("agents.desc")}>
+      <Panel title={t("agents.list")} actions={<Button label={t("agents.create")} variant="primary" onClick={() => setCreating(true)} />}>
+        <Loaded state={tokens}>{(list) => <TokenTable tokens={list} emptyText={t("agents.empty")} onChanged={reload} />}</Loaded>
+      </Panel>
+      <ConnectedApps />
+      <FormDialog isOpen={creating} onClose={close}>
+        <CreateAgentToken onClose={close} onCreated={reload} />
+      </FormDialog>
+    </Page>
+  );
+}

@@ -718,4 +718,6 @@ export const KO: Record<I18nKey, string> = {
   "map.picked": "새 장소",
   "places.map": "지도",
   "places.mapHint": "지도를 클릭하면 그 지점 좌표가 채워진 ‘좌표로 추가’ 창이 열려요.",
+  "common.done": "완료",
+  "agents.createdTitle": "에이전트 토큰을 만들었어요",
 };

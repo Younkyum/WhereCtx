@@ -716,6 +716,8 @@ export const EN = {
   "map.picked": "New place",
   "places.map": "Map",
   "places.mapHint": "Click the map to add a place there: it opens Add by coordinates with the point filled in.",
+  "common.done": "Done",
+  "agents.createdTitle": "Agent token created",
 } as const;
 
 export type I18nKey = keyof typeof EN;
