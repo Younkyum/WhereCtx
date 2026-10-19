@@ -521,4 +521,44 @@ describe("the owner's own location, for the Home map", () => {
     expect(await agent.text()).not.toContain(String(HOME.lon));
     expect((await accessRows()).map((e) => [e.action, e.outcome])).toEqual([["presence.precise", "hidden"]]);
   });
+
+  it("reads coarse and precise alike whatever the agent policy, while a token gets each refusal it got before", async () => {
+    await ingest(AWAY);
+    const cases: [Record<string, unknown>, number, RegExp][] = [
+      [{ defaultAgentAccess: "hidden" }, 403, /hidden from agents/],
+      [{ defaultAgentAccess: "precise", allowPreciseLocation: false }, 200, /allowPreciseLocation=false/],
+      [{ allowPreciseLocation: true, preciseRequiresReason: true }, 200, /reason is required/],
+      [{ defaultAgentAccess: "coarse", preciseRequiresReason: false, preciseRequiresApproval: true }, 200, /interactive approval/],
+    ];
+    for (const [patch, agentCoarse, refusal] of cases) {
+      await settings(patch);
+      const label = JSON.stringify(patch);
+      expect((await owner.browser.send("/v1/presence")).status, label).toBe(200);
+      expect(await owner.browser.json("/v1/presence/precise"), label).toMatchObject({ lat: AWAY.lat, lon: AWAY.lon });
+      expect((await as(AGENT, "/v1/presence")).status, label).toBe(agentCoarse);
+      const precise = await as(AGENT, "/v1/presence/precise");
+      expect(precise.status, label).toBe(403);
+      expect(JSON.stringify(await precise.json()), label).toMatch(refusal);
+    }
+    await settings({ preciseRequiresApproval: false, hideHomeExactCoordinates: true });
+    await ingest(HOME);
+    expect(await owner.browser.json("/v1/presence/precise")).toMatchObject({ lat: HOME.lat, lon: HOME.lon });
+    const atHome = await as(AGENT, "/v1/presence/precise?reason=pick%20up");
+    expect(atHome.status).toBe(403);
+    expect(await atHome.text()).toMatch(/protected by policy/);
+  });
+
+  it("says when the owner is near home while the provider is kept away from there, so the map shows the home place", async () => {
+    await ingest({ lat: HOME.lat + 0.001, lon: HOME.lon });
+    await settings({ skipProviderNearHome: true });
+    expect(await owner.browser.json("/v1/presence/precise")).toMatchObject({
+      lat: HOME.lat + 0.001,
+      nearHome: { name: "home", lat: HOME.lat, lon: HOME.lon, radiusM: 150 },
+    });
+    await settings({ skipProviderNearHome: false });
+    expect(await owner.browser.json("/v1/presence/precise")).not.toHaveProperty("nearHome");
+    await settings({ skipProviderNearHome: true });
+    await ingest(AWAY);
+    expect(await owner.browser.json("/v1/presence/precise")).not.toHaveProperty("nearHome");
+  });
 });
