@@ -76,3 +76,20 @@ it's inferred from speed.
 - Keep `accuracyM` accurate — it helps the geofence engine.
 - A reading whose `timestamp` is far in the future is distrusted; let the device
   clock be correct or omit the timestamp (the server uses receive time).
+
+## Receiving webhooks (n8n, Zapier, internal APIs)
+
+Webhooks go the other way: WhereCtx calls your service when your presence
+changes. If the receiving end authenticates by a request header, give the hook
+an auth header in the dashboard (Webhooks, Add webhook, "Auth header") or
+through `authHeader` in the API (docs/api.md, "Auth header").
+
+- **n8n**: in the Webhook node choose Authentication "Header Auth", create a
+  credential with a name and value, and enter the same name and value in
+  WhereCtx, for example `X-N8N-Auth` and a long random string.
+- **Zapier, Make, an internal API**: a catch hook that checks
+  `Authorization: Bearer <token>` takes name `Authorization` and value
+  `Bearer <token>`.
+
+The auth header proves the call is allowed; the signing secret proves the
+body came from this server and was not changed. Use either or both.

@@ -397,6 +397,17 @@ delivery time, and uses `redirect: "manual"`. Set
 docs/api.md for verification) when the subscription has a secret, and signing
 secrets are encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set.
 
+A webhook's auth header (a credential such as `Authorization: Bearer …` that
+the receiver checks) is a secret of the same kind. It is encrypted at rest
+with the same key, bound to its owner and hook so a value copied onto another
+row does not open, sent only to that hook's URL, never returned by the API or
+shown in the dashboard (only its name and last four characters), and cut out
+of any delivery error before it is logged or kept as a dead letter. Without
+`WEBHOOK_ENCRYPTION_KEY` it is stored in the clear and boot warns, as for
+signing secrets; setting the key encrypts existing values at the next boot.
+A hook whose secret or auth header cannot be opened (a changed key) is not
+delivered to at all, rather than delivered without its credential.
+
 ## Accounts and sessions
 
 People sign in with passkeys that require user verification (biometric or

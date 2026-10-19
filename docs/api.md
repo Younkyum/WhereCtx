@@ -462,9 +462,9 @@ admin token) are never kept.
 ## Webhooks (admin)
 
 ```
-GET    /v1/webhooks                 # manage_privacy — secrets stripped
-POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "secret":"…" }
-PATCH  /v1/webhooks/:id             # { "events"?: [...], "active"?: bool }
+GET    /v1/webhooks                 # manage_privacy — secrets stripped, auth header as name + hint
+POST   /v1/webhooks                 # { "url":"https://…", "events":["*"], "secret"?:"…", "authHeader"?:{ "name"?:"…", "value":"…" } }
+PATCH  /v1/webhooks/:id             # { "events"?: [...], "active"?: bool, "authHeader"?: {…} | null }
 GET    /v1/webhooks/dead-letters    # undeliverable events
 DELETE /v1/webhooks/:id
 ```
@@ -481,8 +481,41 @@ The dashboard creates hooks for `presence.entered_place` and
 `POST` answers `400` when the URL's host does not resolve, or resolves to a
 private or reserved IP (SSRF guard) unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`.
 The delivery re-checks the address each time. Each user may have 20 webhooks
-(`409` beyond that). Secrets are encrypted at rest when
+(`409` beyond that). Secrets and auth headers are encrypted at rest when
 `WEBHOOK_ENCRYPTION_KEY` is set.
+
+### Auth header
+
+A receiver that checks a credential in a request header (n8n Header Auth, an
+internal API behind a Bearer token) needs more than a signature: the
+signature lets the receiver verify the body, the auth header lets it check a
+credential. A hook can carry one header, sent on every delivery to that
+hook's URL and to no other:
+
+```
+POST /v1/webhooks
+{ "url":"https://n8n.example/webhook/…", "events":["*"],
+  "authHeader":{ "name":"Authorization", "value":"Bearer <token>" } }
+```
+
+- `name` defaults to `Authorization`. It must be an HTTP token (letters,
+  digits and ``!#$%&'*+-.^_`|~``), at most 64 characters, and not one the
+  server or the connection sets: `Host`, `Content-Length`, `Content-Type`,
+  `Content-Encoding`, `Transfer-Encoding`, `Connection`, `Upgrade`, `TE`,
+  `Trailer`, `Keep-Alive`, `Expect`, `Cookie`, `User-Agent`, any `Proxy-*`,
+  or any `X-WhereCtx-*`. Case does not matter.
+- `value` is 1 to 1024 printable ASCII characters (spaces allowed, no line
+  breaks or other control characters); surrounding spaces are trimmed.
+- A refused header answers `400` without quoting the value.
+- `PATCH` with `authHeader` replaces it, and `"authHeader": null` removes it.
+- No response returns the value. A hook with a header lists it as
+  `"authHeader": { "name":"Authorization", "hint":"…9f3k" }`: the last four
+  characters, or `"…"` alone when the value is shorter than 12.
+- Redirects are not followed (a `3xx` counts as a failed delivery), so the
+  header never reaches another URL. A failed delivery's error, in the server
+  log and in the dead letters, has the value cut out.
+- It works alongside `secret`: a delivery can be both signed and carry the
+  header.
 
 ### Delivery signature
 
