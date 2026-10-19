@@ -475,6 +475,7 @@ export const EN = {
   "access.action.get_eta": "Asked how long it takes to get somewhere",
   "access.action.get_directions": "Asked for directions from where you are",
   "access.action.geo.settings": "Read your maps settings",
+  "access.action.geo.map_config": "Read your map key",
   "access.action.geo.credentials.write": "Tried to save a maps key",
   "access.action.geo.credentials.delete": "Tried to remove a maps key",
   "access.action.geo.credentials.test": "Tried to test a maps key",

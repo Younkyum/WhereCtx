@@ -16,12 +16,13 @@ import { geoCredentials } from "../db/schema.js";
 import type { UserId } from "../types.js";
 import { nowIso, systemClock, type Clock } from "../util/time.js";
 import { isEncryptedSecret, type SecretBox } from "../webhooks/secretBox.js";
+import { MAP_SDKS } from "./mapSdk.js";
 import { HINTED_KINDS, restCredentials, type GeoKeyBag, type GeoProviderName } from "./types.js";
 
 /**
- * ok: the keys open and hold what the REST calls need. unusable: the row
- * cannot be opened (another install's key, a corrupted or tampered row) or
- * lacks a REST kind; calls skip it, and saving or removing it still works.
+ * ok: the keys open and hold what the REST calls or the map need. unusable:
+ * the row cannot be opened (another install's key, a corrupted or tampered
+ * row) or holds neither; calls skip it, and saving or removing it still works.
  */
 export type GeoCredentialStatus = "ok" | "unusable";
 
@@ -66,12 +67,12 @@ export class GeoCredentialsStore {
     return `${userId}|${provider}`;
   }
 
-  /** The row's keys, or null when it cannot be opened or holds no usable REST credential. */
+  /** The row's keys, or null when it cannot be opened or holds neither a REST credential nor a map key. */
   private unseal(row: Pick<Row, "userId" | "provider" | "secret">): GeoKeyBag | null {
     if (!isEncryptedSecret(row.secret)) return null;
     try {
       const bag = KeyBag.safeParse(JSON.parse(this.box.decrypt(row.secret, GeoCredentialsStore.aad(row.userId as UserId, row.provider))));
-      return bag.success && restCredentials(row.provider, bag.data) ? bag.data : null;
+      return bag.success && (restCredentials(row.provider, bag.data) || bag.data[MAP_SDKS[row.provider].keyKind]) ? bag.data : null;
     } catch {
       return null;
     }
@@ -105,7 +106,7 @@ export class GeoCredentialsStore {
     return rows[0] ? this.unseal(rows[0]) : null;
   }
 
-  /** Save a provider's keys, replacing whatever was saved for it before. */
+  /** Save a provider's whole key bag, replacing whatever was saved for it before. */
   async put(userId: UserId, provider: GeoProviderName, keys: GeoKeyBag): Promise<StoredGeoCredential> {
     const now = nowIso(this.clock);
     const sealed = this.box.encrypt(JSON.stringify(keys), GeoCredentialsStore.aad(userId, provider));

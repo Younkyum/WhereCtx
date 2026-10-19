@@ -123,6 +123,8 @@ function scopeFor(system: SystemStores, userId: UserId) {
       "saveCredential",
       "deleteCredential",
       "testCredential",
+      "saveMapKey",
+      "mapConfig",
       "search",
       "eta",
       "refreshArea",

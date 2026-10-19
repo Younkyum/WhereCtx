@@ -46,7 +46,7 @@ beforeEach(async () => {
   clock = new TestClock();
   const booted = await bootApp(clock, {
     bootstrapTokens: { admin: OWNER_ADMIN, agent: AGENT },
-    geo: { operatorKeys: { kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" } }, operatorKeyForAll: false, fake: true },
+    geo: { operatorMapKeys: {}, operatorKeys: { kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" } }, operatorKeyForAll: false, fake: true },
   });
   ({ ctx, app } = booted);
   fake = ctx.system.geo.fake!;

@@ -39,6 +39,7 @@ async function boot(geo: Partial<WhereCtxConfig["geo"]>, fetch?: typeof fetch): 
     clock,
     {
       geo: {
+        operatorMapKeys: {},
         operatorKeys: {
           kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" },
           naver: { provider: "naver", clientId: "operator-naver-id", clientSecret: "operator-naver-secret" },

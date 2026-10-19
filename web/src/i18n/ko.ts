@@ -477,6 +477,7 @@ export const KO: Record<I18nKey, string> = {
   "access.action.get_eta": "목적지까지 걸리는 시간 조회",
   "access.action.get_directions": "현재 위치에서 길찾기 조회",
   "access.action.geo.settings": "지도 설정 조회",
+  "access.action.geo.map_config": "지도 키 조회",
   "access.action.geo.credentials.write": "지도 키 저장 시도",
   "access.action.geo.credentials.delete": "지도 키 삭제 시도",
   "access.action.geo.credentials.test": "지도 키 테스트 시도",

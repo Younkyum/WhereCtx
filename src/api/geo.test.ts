@@ -25,7 +25,7 @@ async function boot(geo: Partial<WhereCtxConfig["geo"]> = {}, geoFetch?: typeof 
     clock,
     {
       bootstrapTokens: { admin: OWNER_ADMIN, agent: AGENT },
-      geo: { operatorKeys: { kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" } }, operatorKeyForAll: false, fake: true, ...geo },
+      geo: { operatorMapKeys: {}, operatorKeys: { kakao: { provider: "kakao", restKey: "operator-kakao-key-0000" } }, operatorKeyForAll: false, fake: true, ...geo },
     },
     {},
     geoFetch ? { geoFetch } : {},
@@ -398,5 +398,111 @@ describe("ETA", () => {
     const row = (await accessRows()).find((e) => e.action === "geo.route");
     expect(row).toMatchObject({ outcome: "error", denial: expect.stringContaining("quota") });
     expect((await accessRows()).find((e) => e.action === "geo.eta")).toMatchObject({ outcome: "error" });
+  });
+});
+
+describe("the map key and map-config", () => {
+  const JS_KEY = "0123456789abcdef0123456789abc123";
+  const OPERATOR_JS = "operatorjs0123456789abcdef000000";
+  const mapConfig = (who: { browser: Enrolled["browser"] } = owner) => who.browser.json("/v1/geo/map-config");
+
+  async function invite(name: string) {
+    const ws = (await owner.browser.json("/v1/workspaces")).workspaces[0].id;
+    const { url } = await owner.browser.json(`/v1/workspaces/${ws}/invites`, { body: { role: "member" } });
+    return signUpByInvite(app, url, name);
+  }
+
+  it("is none without a map key, and none while maps are off", async () => {
+    await boot();
+    expect(await mapConfig()).toEqual({ provider: null });
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
+    expect(await mapConfig()).toEqual({ provider: null });
+    await settings({ geoEnabled: true });
+    expect(await mapConfig()).toEqual({
+      provider: "kakao",
+      sdkUrl: `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${JS_KEY}&autoload=false`,
+      key: JS_KEY,
+    });
+    const res = await owner.browser.send("/v1/geo/map-config");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("is the owner's alone: another person gets none, and a token is refused and recorded", async () => {
+    await boot();
+    await settings({ geoEnabled: true });
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
+    const mina = await invite("Mina");
+    await mina.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
+    expect(await mapConfig(mina)).toEqual({ provider: null });
+    expect(JSON.stringify(await mina.browser.json("/v1/geo"))).not.toContain("c123");
+    for (const token of [OWNER_ADMIN, AGENT]) {
+      const res = await as(token, "/v1/geo/map-config");
+      expect(res.status).toBe(403);
+      expect(await res.text()).not.toContain(JS_KEY);
+    }
+    expect((await accessRows()).filter((e) => e.action === "geo.map_config").map((e) => e.outcome)).toEqual(["denied", "denied"]);
+  });
+
+  it("needs a fresh passkey to save, never comes back but as a hint, and rides beside the REST key", async () => {
+    await boot();
+    clock.advance(11 * 60_000);
+    const stale = await owner.browser.send("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
+    expect(stale.status).toBe(403);
+    await reauth(owner.browser, owner.credentialId);
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
+    await owner.browser.json("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: KAKAO_KEY } });
+    const status = await owner.browser.json("/v1/geo");
+    expect(JSON.stringify(status)).not.toContain(JS_KEY);
+    expect(status.credentials).toEqual([expect.objectContaining({ provider: "kakao", status: "ok", kinds: { restKey: "cdef", jsKey: "c123" } })]);
+    expect(status.active).toEqual({ provider: "kakao", source: "own" });
+
+    clock.advance(11 * 60_000);
+    expect((await owner.browser.send("/v1/geo/credentials/kakao/map", { method: "DELETE" })).status).toBe(200);
+    expect((await owner.browser.json("/v1/geo")).credentials[0].kinds).toEqual({ restKey: "cdef" });
+    await reauth(owner.browser, owner.credentialId);
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
+    await owner.browser.json("/v1/geo/credentials/kakao", { method: "DELETE" });
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "DELETE" });
+    expect((await owner.browser.json("/v1/geo")).credentials).toEqual([]);
+  });
+
+  it("refuses a key that could break out of the script URL", async () => {
+    await boot();
+    for (const key of ["short", "abc&callback=evil123", "abc\"onload=x12345", "x".repeat(129)]) {
+      expect((await owner.browser.send("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key } })).status, key).toBe(400);
+    }
+    expect((await owner.browser.send("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY, extra: 1 } })).status).toBe(400);
+  });
+
+  it("follows the chosen provider, and loads Naver's script by its key id", async () => {
+    await boot();
+    await settings({ geoEnabled: true, geoProvider: "naver" });
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
+    expect(await mapConfig()).toEqual({ provider: null });
+    await owner.browser.json("/v1/geo/credentials/naver/map", { method: "PUT", body: { key: "naverkeyid01" } });
+    expect(await mapConfig()).toMatchObject({
+      provider: "naver",
+      sdkUrl: "https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=naverkeyid01",
+    });
+    await settings({ geoProvider: null });
+    expect((await mapConfig()).provider).toBe("kakao");
+  });
+
+  it("falls back to the operator's map key for USER_ID only, unless every person may use operator keys", async () => {
+    await boot({ operatorMapKeys: { kakao: OPERATOR_JS } });
+    await settings({ geoEnabled: true });
+    expect(await mapConfig()).toMatchObject({ provider: "kakao", key: OPERATOR_JS });
+    expect((await owner.browser.json("/v1/geo")).map).toEqual({ provider: "kakao", source: "operator" });
+    const mina = await invite("Mina");
+    await mina.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
+    expect(await mapConfig(mina)).toEqual({ provider: null });
+    await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
+    expect(await mapConfig()).toMatchObject({ key: JS_KEY });
+
+    await boot({ operatorMapKeys: { kakao: OPERATOR_JS }, operatorKeyForAll: true });
+    const ana = await invite("Ana");
+    await ana.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
+    expect(await mapConfig(ana)).toMatchObject({ provider: "kakao", key: OPERATOR_JS });
   });
 });

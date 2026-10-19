@@ -25,6 +25,7 @@ import type { Clock } from "../util/time.js";
 import { UNUSABLE_KEY, type GeoCredentialsStore, type StoredGeoCredential } from "./credentialsStore.js";
 import type { FakeGeoProvider } from "./fake.js";
 import { KakaoProvider } from "./kakao.js";
+import { MAP_SDKS } from "./mapSdk.js";
 import { NaverProvider } from "./naver.js";
 import {
   GEO_PROVIDERS,
@@ -66,10 +67,21 @@ export interface ResolvedKey {
 export interface GeoStatus {
   /** The provider calls would use now, and whose key; null when none is set up. */
   active: { provider: GeoProviderName; source: KeySource } | null;
+  /** The provider whose map the dashboard loads, and whose key; null when none is set up. */
+  map: { provider: GeoProviderName; source: KeySource } | null;
   /** My own saved keys, never the key itself. */
   credentials: StoredGeoCredential[];
   /** Operator keys I may fall back to. */
   operator: GeoProviderName[];
+  /** Operator map keys I may fall back to. */
+  operatorMap: GeoProviderName[];
+}
+
+/** The map key a person's dashboard loads, and whose it is. */
+export interface ResolvedMapKey {
+  provider: GeoProviderName;
+  key: string;
+  source: KeySource;
 }
 
 export type KeyTestOutcome =
@@ -112,9 +124,18 @@ export class GeoKeys {
     return userId === this.deps.config.defaultUserId;
   }
 
+  private mayUseOperatorKeys(userId: UserId): boolean {
+    return this.deps.config.geo.operatorKeyForAll || this.isOperator(userId);
+  }
+
   private operatorProviders(userId: UserId): GeoProviderName[] {
-    if (!this.deps.config.geo.operatorKeyForAll && !this.isOperator(userId)) return [];
+    if (!this.mayUseOperatorKeys(userId)) return [];
     return GEO_PROVIDERS.filter((p) => this.deps.config.geo.operatorKeys[p] !== undefined);
+  }
+
+  private operatorMapProviders(userId: UserId): GeoProviderName[] {
+    if (!this.mayUseOperatorKeys(userId)) return [];
+    return GEO_PROVIDERS.filter((p) => this.deps.config.geo.operatorMapKeys[p] !== undefined);
   }
 
   /** Every provider is reached through `roundingProvider`, so no adapter is ever handed an unrounded point. */
@@ -146,17 +167,48 @@ export class GeoKeys {
     return null;
   }
 
+  /**
+   * The map key for this person's dashboard: the chosen provider, else the
+   * first with a map key; their own before the operator's. Nothing here
+   * checks the maps switch; GeoService does.
+   */
+  async resolveMap(userId: UserId, settings: PrivacySettings): Promise<ResolvedMapKey | null> {
+    const operator = new Set(this.operatorMapProviders(userId));
+    for (const provider of settings.geoProvider ? [settings.geoProvider] : GEO_PROVIDERS) {
+      const own = (await this.deps.credentials.open(userId, provider))?.[MAP_SDKS[provider].keyKind];
+      if (own) return { provider, key: own, source: "own" };
+      const fallback = operator.has(provider) ? this.deps.config.geo.operatorMapKeys[provider] : undefined;
+      if (fallback) return { provider, key: fallback, source: "operator" };
+    }
+    return null;
+  }
+
   async status(userId: UserId, settings: PrivacySettings): Promise<GeoStatus> {
-    const resolved = await this.resolve(userId, settings);
+    const [resolved, map] = await Promise.all([this.resolve(userId, settings), this.resolveMap(userId, settings)]);
     return {
       active: resolved && { provider: resolved.name, source: resolved.source },
+      map: map && { provider: map.provider, source: map.source },
       credentials: await this.deps.credentials.list(userId),
       operator: this.operatorProviders(userId),
+      operatorMap: this.operatorMapProviders(userId),
     };
   }
 
-  save(userId: UserId, provider: GeoProviderName, keys: GeoKeyBag): Promise<StoredGeoCredential> {
-    return this.deps.credentials.put(userId, provider, keys);
+  /** Save a provider's REST keys, keeping its map key. */
+  async save(userId: UserId, provider: GeoProviderName, keys: GeoKeyBag): Promise<StoredGeoCredential> {
+    const mapKind = MAP_SDKS[provider].keyKind;
+    const map = (await this.deps.credentials.open(userId, provider))?.[mapKind];
+    return this.deps.credentials.put(userId, provider, { ...keys, ...(map ? { [mapKind]: map } : {}) });
+  }
+
+  /** Save or, with null, forget a provider's map key, keeping its REST keys; the row goes when nothing is left. */
+  async saveMapKey(userId: UserId, provider: GeoProviderName, key: string | null): Promise<StoredGeoCredential | null> {
+    const mapKind = MAP_SDKS[provider].keyKind;
+    const { [mapKind]: _old, ...rest } = (await this.deps.credentials.open(userId, provider)) ?? {};
+    const keys: GeoKeyBag = key ? { ...rest, [mapKind]: key } : rest;
+    if (Object.values(keys).some(Boolean)) return this.deps.credentials.put(userId, provider, keys);
+    await this.deps.credentials.delete(userId, provider);
+    return null;
   }
 
   delete(userId: UserId, provider: GeoProviderName): Promise<boolean> {
@@ -169,7 +221,7 @@ export class GeoKeys {
     const credentials = keys && restCredentials(provider, keys);
     if (!credentials) {
       const saved = (await this.deps.credentials.list(userId)).find((c) => c.provider === provider);
-      return { ok: false, error: "missing", message: saved ? UNUSABLE_KEY : "no REST key saved for this provider" };
+      return { ok: false, error: "missing", message: saved?.status === "unusable" ? UNUSABLE_KEY : "no REST key saved for this provider" };
     }
     const resolved: ResolvedKey = { provider: this.adapter(credentials), name: provider, source: "own" };
     const result = await this.call(userId, { kind: "owner" }, resolved, "geo.reverse", (p) => p.reverse(KEY_TEST_POINT));
