@@ -126,6 +126,37 @@ describe("maps keys", () => {
   });
 });
 
+describe("the switches that send more out", () => {
+  beforeEach(() => boot());
+
+  it.each([
+    [{ geoEnabled: true }],
+    [{ etaToAgents: true }],
+    [{ areaToAgents: true }],
+    [{ skipProviderNearHome: false }],
+  ])("%o needs a fresh passkey, and never a token; turning it back is free", async (patch) => {
+    expect((await as(OWNER_ADMIN, "/v1/privacy", { method: "PUT", body: JSON.stringify(patch) })).status).toBe(403);
+    clock.advance(11 * 60_000);
+    const stale = await owner.browser.send("/v1/privacy", { method: "PUT", body: patch });
+    expect(stale.status).toBe(403);
+    expect(((await stale.json()) as any).code).toBe("reauth_required");
+    await reauth(owner.browser, owner.credentialId);
+    expect((await owner.browser.send("/v1/privacy", { method: "PUT", body: patch })).status).toBe(200);
+
+    clock.advance(11 * 60_000);
+    const back = Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, !v]));
+    expect((await owner.browser.send("/v1/privacy", { method: "PUT", body: back })).status).toBe(200);
+    expect((await as(OWNER_ADMIN, "/v1/privacy", { method: "PUT", body: JSON.stringify(back) })).status).toBe(200);
+  });
+
+  it("the Home area switch too, once it is off", async () => {
+    await settings({ areaOnHome: false });
+    expect((await as(OWNER_ADMIN, "/v1/privacy", { method: "PUT", body: JSON.stringify({ areaOnHome: true }) })).status).toBe(403);
+    expect((await as(OWNER_ADMIN, "/v1/privacy", { method: "PUT", body: JSON.stringify({ areaOnHome: false, retentionHours: 12 }) })).status).toBe(200);
+    expect((await owner.browser.json("/v1/privacy")).settings).toMatchObject({ areaOnHome: false, geoEnabled: false });
+  });
+});
+
 describe("testing a key", () => {
   it("looks up Seoul City Hall with my key, not where I am, and notes how it went", async () => {
     const sent: URL[] = [];
@@ -322,6 +353,7 @@ describe("ETA", () => {
 
   it("caps a day of operator-key calls for anyone but USER_ID", async () => {
     await boot({ operatorKeyForAll: true, operatorDailyCap: 3 });
+    await settings({ geoEnabled: true });
     const { url } = await owner.browser.json(`/v1/workspaces/${(await owner.browser.json("/v1/workspaces")).workspaces[0].id}/invites`, {
       body: { role: "member" },
     });
@@ -340,7 +372,6 @@ describe("ETA", () => {
     expect((await minaEta()).status).toBe(200);
 
     await ingest(AWAY);
-    await settings({ geoEnabled: true });
     for (let i = 0; i < 5; i++) expect((await eta(null, "to=office")).status).toBe(200);
   });
 
