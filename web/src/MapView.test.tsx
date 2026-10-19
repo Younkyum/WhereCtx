@@ -75,7 +75,7 @@ const at = (o: Overlay) => {
   const p = o.opts.position ?? o.opts.center;
   return [p.lat, p.lng];
 };
-const scripts = () => [...document.querySelectorAll("script")].filter((s) => /kakao|naver/.test(s.src));
+const scripts = () => [...document.querySelectorAll("script[src]")] as HTMLScriptElement[];
 
 async function settle() {
   for (let i = 0; i < 6; i++) {
@@ -142,6 +142,7 @@ describe("maps in the dashboard", () => {
     expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
     expect(scripts()).toEqual([]);
     expect(overlays).toEqual([]);
+    expect(host.textContent).not.toContain("The map could not load");
   });
 
   it("when the map config cannot be read, also falls back with no provider script", async () => {

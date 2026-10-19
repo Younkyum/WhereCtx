@@ -39,6 +39,9 @@ rules below apply per person.
 | `precise` | the same coarse summary; precise is gated (still requires reason/policy) |
 
 `hidden` is enforced at every read path — coarse view, events, and precise.
+The modes and the gate below are about agents: you, signed in to the
+dashboard, always read your own coordinates (`GET /v1/presence/precise` with
+a session), for the Home map.
 
 ## Precise location gate
 
@@ -253,8 +256,46 @@ database, so this protects a leaked `geo_credentials` table or dump of it,
 not a copy of the whole database.
 
 The operator can set fallback keys (`KAKAO_REST_API_KEY`,
-`NAVER_MAPS_CLIENT_ID`/`NAVER_MAPS_CLIENT_SECRET`). Only the `USER_ID` person
-uses them unless `GEO_OPERATOR_KEY_FOR_ALL=true`. Your own key always wins.
+`NAVER_MAPS_CLIENT_ID`/`NAVER_MAPS_CLIENT_SECRET`, and for the map
+`KAKAO_JS_KEY`, `NAVER_MAPS_KEY_ID`). Only the `USER_ID` person uses them
+unless `GEO_OPERATOR_KEY_FOR_ALL=true`. Your own key always wins.
+
+### Maps in the dashboard
+
+With a **map key** (a Kakao JavaScript key, or a Naver Maps Client ID) and
+maps on, the dashboard draws interactive maps: Home (you, and each person
+whose exact location you opened there, the audited read; nobody else),
+History (your track and places), Places (your geofences; click to pick a
+point), and the route tester in Maps & routes (your own route). Agents and
+MCP get nothing new.
+
+- **What the provider sees.** The map is drawn in your browser from tiles
+  your browser asks Kakao or Naver for, so the provider sees which area you
+  are looking at (your position, your places, your history, a person you
+  opened) and your browser's IP address, at tile precision. Nothing about who
+  you are, and nothing from this server: no coordinate is sent by the
+  server for a map.
+- **Nothing without a key.** With no map key, or maps off,
+  `GET /v1/geo/map-config` answers `{ "provider": null }`, the page's CSP
+  stays strict, and no script, tile or request goes to a provider. History
+  draws your track from the points alone, as before.
+- **The key.** A map key is a browser key by design: the provider restricts
+  it to the domains you register (this dashboard's origin), not by secrecy.
+  It is still sealed with your other keys and sent only to your own signed-in
+  browser, never to a token. Saving it needs a fresh passkey; removing it
+  does not.
+- **CSP.** The dashboard page's CSP adds exactly the provider's hosts, and
+  only for a signed-in person whose map resolves: Kakao `dapi.kakao.com`,
+  `t1.kakaocdn.net` (scripts), `mts.kakaocdn.net`, `t1.kakaocdn.net`
+  (images); Naver `oapi.map.naver.com`, `nrbe.pstatic.net` (scripts, the
+  key check and tile metadata are JSONP), `nrbe.pstatic.net`,
+  `ssl.pstatic.net` (images), `nrbe.pstatic.net` (connect). No
+  `'unsafe-eval'`, no wildcard. Naver's error telemetry
+  (`kr-col-ext.nelo.navercorp.com`) stays blocked.
+- **Referrer.** That page sends its origin, never its path, to those hosts
+  (`Referrer-Policy: strict-origin`), so the provider can match the key's
+  registered domain. Every other page sends no referrer. Naver's key check
+  also sends the page address itself, as its script does for every site.
 
 ## Raw history
 

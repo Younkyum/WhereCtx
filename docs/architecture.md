@@ -162,7 +162,16 @@ schedules a trailing one when the throttle holds, and
 `PresenceService.setArea` writes the region names and the point back under
 the lock, only if the person has not moved on since. Shutdown cancels
 trailing lookups and waits for running ones. Every provider call is
-server-side; the dashboard's CSP is unchanged.
+server-side.
+
+The one exception is the dashboard's map. `mapSdk.ts` (`MAP_SDKS`) names, per
+provider, the map key kind, the script URL and every host the script loads
+from. `GET /v1/geo/map-config` hands the signed-in owner their script URL
+and key; `dashboard/router.ts` opens the page's CSP to exactly those hosts
+for that person (see Dashboard). In the browser, `web/src/mapSdk.ts` loads
+the script once per page and draws a scene through one adapter per
+provider, and `MapView` falls back to the existing views when there is no
+map or it fails to load.
 
 ## Server log
 
@@ -227,9 +236,14 @@ answers `503`. The runtime image contains `dist/web` and no React.
 The dashboard talks to `/v1/*` with the session cookie. It keeps only the
 language, the color mode, and the selected workspace in `localStorage`. No credential is stored there.
 
-The CSP (`src/app/server.ts`) is `script-src 'self'` and `img-src 'self'`.
+The CSP (`src/app/securityHeaders.ts`) is `script-src 'self'` and `img-src 'self'`.
 `style-src` allows `'unsafe-inline'` for the two stylesheets the design system
-adds at runtime. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-sharing-and-the-new-dashboard).
+adds at runtime. `pageSecurity` sets it, with `Referrer-Policy: no-referrer`,
+on every response that did not set its own. Only the dashboard page sets its
+own: after the ETag check it reads the session cookie the navigation sent,
+and for a person whose map resolves adds that one provider's hosts to
+`script-src`, `img-src` and `connect-src` and sends `strict-origin`; the
+page varies on `Cookie`. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-sharing-and-the-new-dashboard).
 
 ## Components
 

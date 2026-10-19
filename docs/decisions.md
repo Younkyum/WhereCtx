@@ -492,3 +492,45 @@ than the switches promise. Each fix below is enforced in one place.
 - **Provider failures are errors.** `no_route`, `bad_request` and the rest
   are `error` in the access log, not `denied`: nothing was decided about the
   caller. One table answers each outcome for REST and MCP.
+
+## 2026-10-19: maps in the dashboard
+
+The owner asked to see things on a map. Agents still get none.
+
+- **The providers we already use, with the person's key.** Kakao Maps or
+  Naver Maps, chosen like the REST provider (`geoProvider`, else the first
+  with a map key; own key before the operator's). A map key is a browser
+  key the provider limits to registered domains, so it reaches the browser,
+  but only the signed-in owner's (`GET /v1/geo/map-config`), never a token.
+  It is stored sealed in the same bag as the REST keys, so the REST and map
+  keys of a provider are saved and removed independently without a schema
+  change. Naver's map key is named `mapKeyId` after the v3 script's current
+  `ncpKeyId` parameter (the old `ncpClientId` is retired); it is usually the
+  same Client ID as the REST calls.
+- **CSP per response, from the session cookie.** The page is served before
+  the app asks who is signed in, but a navigation carries the session
+  cookie, so the page's CSP is decided then: exactly the provider's hosts
+  for a person whose map resolves, the strict policy for everyone else.
+  Hosts were read from the scripts themselves (Kakao loader 4.5.29, Naver
+  3.10.4), not guessed, and live in one table (`src/geo/mapSdk.ts`). Kakao
+  recommends allowing `*.kakaocdn.net` because it may move resources between
+  hosts; we list exact hosts instead, so a move shows the fallback (and a
+  note) rather than widening the policy. Neither script needs
+  `'unsafe-eval'`. A key saved mid-session takes effect on reload, when the
+  CSP is decided again.
+- **Origin-only referrer for that page.** Kakao checks the key's registered
+  domain against the request's referrer, which `no-referrer` would remove.
+  The page with a map sends `strict-origin`; the injected script also sets
+  `referrerpolicy="strict-origin"`.
+- **Fallback, not failure.** No map key, maps off, the config request
+  failing, the script failing or timing out, or Naver refusing the key all
+  show what was there before (History's SVG track, the lists), so a page
+  never depends on the provider.
+- **People only after the audited read.** Home places another person only
+  after "Show exact location", the per-person read their share audit
+  records. The owner's own position comes from `GET /v1/presence/precise`,
+  which a session now reads without the agent policy: that policy is about
+  agents.
+- **Route geometry for the owner only.** The owner's ETA answer carries
+  `path` for drawing; an agent's approximate answer never does, since the
+  geometry would give back the origin the approximation hides.

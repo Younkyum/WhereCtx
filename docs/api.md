@@ -91,9 +91,12 @@ what leaves the server. The switches are privacy settings (`geoEnabled`,
 
 ```
 GET    /v1/geo                               # session only: provider in use, my keys' hints, operator fallbacks
+GET    /v1/geo/map-config                    # session only, no-store: the map script and key my dashboard loads
 PUT    /v1/geo/credentials/kakao             # session, step-up: { "restKey":"…" }
 PUT    /v1/geo/credentials/naver             # session, step-up: { "clientId":"…", "clientSecret":"…" }
-DELETE /v1/geo/credentials/:provider         # session, step-up
+DELETE /v1/geo/credentials/:provider         # session, step-up: every key for the provider, the map key included
+PUT    /v1/geo/credentials/:provider/map     # session, step-up: { "key":"…" } the map key
+DELETE /v1/geo/credentials/:provider/map     # session: the map key only
 POST   /v1/geo/credentials/:provider/test    # session: looks up Seoul City Hall with the saved key
 GET    /v1/geo/search?q=                     # manage_places, maps on: address or place search, with coordinates
 GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
@@ -104,13 +107,31 @@ GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
 
 ```json
 { "active": { "provider":"kakao", "source":"own" },
-  "credentials": [{ "provider":"kakao", "status":"ok", "kinds":{ "restKey":"cdef" },
+  "map": { "provider":"kakao", "source":"own" },
+  "credentials": [{ "provider":"kakao", "status":"ok", "kinds":{ "restKey":"cdef", "jsKey":"9a1b" },
     "createdAt":"…", "updatedAt":"…", "lastUsedAt":"…", "lastError":null }],
-  "operator": [] }
+  "operator": [], "operatorMap": [] }
 ```
 
-A key is never returned; `kinds` names each key kind held with its last four
-characters. Saving replaces the provider's keys. `status` is `unusable` (with
+A key is never returned here; `kinds` names each key kind held with its last
+four characters. Saving the REST keys replaces them and keeps the map key;
+saving the map key keeps the REST keys.
+
+The map key draws the interactive maps in the dashboard: a Kakao JavaScript
+key (`jsKey`) or a Naver Maps Client ID (`mapKeyId`, the `ncpKeyId` the v3
+script takes). It is 8 to 128 letters, digits, `-` or `_`. The map is the
+chosen `geoProvider`'s, else the first provider with a map key, the person's
+own before the operator's (`KAKAO_JS_KEY`, `NAVER_MAPS_KEY_ID`, for
+`USER_ID` only unless `GEO_OPERATOR_KEY_FOR_ALL`). `GET /v1/geo/map-config`
+answers it while maps are on:
+
+```json
+{ "provider":"kakao", "sdkUrl":"https://dapi.kakao.com/v2/maps/sdk.js?appkey=…&autoload=false", "key":"…" }
+```
+
+and `{ "provider": null }` otherwise. It is the one answer that holds a key:
+a browser key the provider restricts to registered domains, sent only to the
+signed-in owner. A token gets `403` (`geo.map_config` in the access log). `status` is `unusable` (with
 `lastError`) when the saved row cannot be opened; calls skip it, and it can
 still be replaced or removed. The key test counts against the maps limits.
 
@@ -126,19 +147,21 @@ offset for a future departure (Kakao only; Naver answers `502`
 `ferries` (Naver: one of `toll`, `motorway`). `directions=true` asks for the
 turn-by-turn steps. `reason` is why an agent needs the precise route.
 
-The owner (a session) gets the provider's answer as it is:
+The owner (a session) gets the provider's answer as it is, with `path`, the
+route's geometry for drawing it:
 
 ```json
 { "eta": { "destination": { "label":"office", "kind":"place" }, "origin":"current_location",
   "precision":"exact", "durationMin":23, "distanceKm":11.4, "traffic":"live",
   "departAt":"…", "arriveAt":"…", "summary":["강남대로","테헤란로"], "steps":["…"],
+  "path":[{ "lat":37.401, "lon":127.108 }, …],
   "tollFare":0, "taxiFare":15600, "provider":"kakao", "freshness":"live", "originAgeMin":2,
   "deepLinks": { "kakaoMap":"https://map.kakao.com/link/to/…", "naverMap":"nmap://navigation?…&appname=wherectx" } } }
 ```
 
 A token gets `precision: "approximate"`: `durationMin` in 5-minute steps
 (at least 5), `distanceKm` in whole kilometres, `arriveAt` to 5 minutes, no
-fares, and `summary` without any road within 1.5 km of either end, any side
+fares, no `path`, and `summary` without any road within 1.5 km of either end, any side
 street (…번길, …로12길) or any road the provider gave no geometry for. A
 token may route only to a registered place, and gets `steps` (with
 `directions=true`) only when it may read the precise location: it holds
