@@ -100,27 +100,13 @@ export function ipIsPrivateOrReserved(ip: string): boolean {
   return true; // not a valid IP -> unsafe
 }
 
-/**
- * Validate that a webhook URL is http(s) and (unless allowPrivate) resolves only
- * to public addresses. Returns the validated URL. Throws SsrfError otherwise.
- */
-export async function assertSafeWebhookUrl(
-  rawUrl: string,
-  allowPrivate: boolean,
-  resolver: (host: string) => Promise<string[]> = defaultResolve,
-): Promise<URL> {
-  let url: URL;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    throw new SsrfError("invalid URL");
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new SsrfError("url must be http(s)");
-  }
-  if (allowPrivate) return url;
+export type Resolver = (host: string) => Promise<string[]>;
 
-  const host = url.hostname.replace(/^\[|\]$/g, ""); // strip IPv6 brackets
+/**
+ * Resolve `host` and return its addresses when every one is public. Throws
+ * SsrfError when it does not resolve or any address is private or reserved.
+ */
+export async function resolvePublic(host: string, resolver: Resolver = resolveHost): Promise<string[]> {
   let addresses: string[];
   try {
     addresses = isIP(host) ? [host] : await resolver(host);
@@ -138,10 +124,35 @@ export async function assertSafeWebhookUrl(
       );
     }
   }
+  return addresses;
+}
+
+/**
+ * Validate that a webhook URL is http(s) and (unless allowPrivate) resolves only
+ * to public addresses. Returns the validated URL. Throws SsrfError otherwise.
+ * Delivery does not rely on this answer for a host name: the connection
+ * resolves again and checks what it connects to (transport.ts).
+ */
+export async function assertSafeWebhookUrl(
+  rawUrl: string,
+  allowPrivate: boolean,
+  resolver: Resolver = resolveHost,
+): Promise<URL> {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new SsrfError("invalid URL");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new SsrfError("url must be http(s)");
+  }
+  if (allowPrivate) return url;
+  await resolvePublic(url.hostname.replace(/^\[|\]$/g, ""), resolver); // strip IPv6 brackets
   return url;
 }
 
-async function defaultResolve(host: string): Promise<string[]> {
+export async function resolveHost(host: string): Promise<string[]> {
   const results = await lookup(host, { all: true });
   return results.map((r) => r.address);
 }

@@ -15,9 +15,10 @@
  * drain stops after `drainBudgetMs` and resumes from its cursor next tick.
  *
  * Deliveries are signed with HMAC-SHA256 over the body when the hook has a
- * secret, and carry the hook's auth header when it has one; redirects are
- * never followed, so neither reaches another URL. A permanently-failing endpoint is skipped after MAX_ATTEMPTS so it
- * cannot block its own queue forever (head-of-line guard).
+ * secret, and carry the hook's auth header when it has one. The transport
+ * connects only to addresses it has checked and never follows a redirect, so
+ * neither reaches another URL. A permanently-failing endpoint is skipped after
+ * MAX_ATTEMPTS so it cannot block its own queue forever (head-of-line guard).
  */
 
 import { createHmac } from "node:crypto";
@@ -26,23 +27,23 @@ import type { Webhook, WebhooksStore } from "../store/webhooksStore.js";
 import type { PresenceEvent } from "../types.js";
 import type { Clock } from "../util/time.js";
 import { WEBHOOK_HEADERS, WEBHOOK_USER_AGENT, eventPayload } from "./payload.js";
-import { assertSafeWebhookUrl } from "./ssrf.js";
+import { assertSafeWebhookUrl, type Resolver } from "./ssrf.js";
+import { connectTransport, type Transport } from "./transport.js";
 import { log } from "../util/log.js";
-
-type FetchFn = typeof fetch;
 
 export interface DispatcherOptions {
   webhooksStore: WebhooksStore;
   eventsStore: EventsStore;
   clock: Clock;
-  fetchFn?: FetchFn;
+  /** Replaces the connecting transport (tests). */
+  fetchFn?: Transport;
   timeoutMs?: number;
   maxAttempts?: number;
   batchSize?: number;
   /** Allow delivery to private/reserved IPs (LAN targets). Default false. */
   allowPrivateTargets?: boolean;
   /** Override DNS resolution (tests). */
-  urlResolver?: (host: string) => Promise<string[]>;
+  urlResolver?: Resolver;
   /** Drains running at once across all users. Default 8. */
   maxConcurrent?: number;
   /** Drains one user may run at once. Default 2. */
@@ -56,7 +57,7 @@ function subscribed(hook: Webhook, type: string): boolean {
 }
 
 export class WebhookDispatcher {
-  private readonly fetchFn: FetchFn;
+  private readonly fetchFn: Transport;
   private readonly timeoutMs: number;
   private readonly maxAttempts: number;
   private readonly batchSize: number;
@@ -81,11 +82,11 @@ export class WebhookDispatcher {
   private timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly opts: DispatcherOptions) {
-    this.fetchFn = opts.fetchFn ?? globalThis.fetch;
+    this.allowPrivateTargets = opts.allowPrivateTargets ?? false;
+    this.fetchFn = opts.fetchFn ?? connectTransport({ allowPrivate: this.allowPrivateTargets, resolver: opts.urlResolver });
     this.timeoutMs = opts.timeoutMs ?? 5_000;
     this.maxAttempts = opts.maxAttempts ?? 5;
     this.batchSize = opts.batchSize ?? 100;
-    this.allowPrivateTargets = opts.allowPrivateTargets ?? false;
     this.maxConcurrent = opts.maxConcurrent ?? 8;
     this.perUserSlots = opts.perUserSlots ?? 2;
     this.drainBudgetMs = opts.drainBudgetMs ?? 10_000;
@@ -242,7 +243,8 @@ export class WebhookDispatcher {
     hook: Webhook,
     ev: PresenceEvent,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
-    // Re-validate the target at delivery time (DNS-rebinding/TOCTOU defense).
+    // Re-validate the target at delivery time. For a host name the transport
+    // checks again at connect time; for an IP literal this is the check.
     try {
       await assertSafeWebhookUrl(hook.url, this.allowPrivateTargets, this.opts.urlResolver);
     } catch (e) {
@@ -250,11 +252,12 @@ export class WebhookDispatcher {
     }
 
     const body = JSON.stringify(eventPayload(ev));
-    const headers: Record<string, string> = {
+    // Headers, not an object literal: no name can land on a prototype and vanish.
+    const headers = new Headers({
       "content-type": "application/json",
       [WEBHOOK_HEADERS.event]: ev.type,
       "user-agent": WEBHOOK_USER_AGENT,
-    };
+    });
     if (hook.secret) {
       // BREAKING CHANGE (v0.2): The signed payload is `${timestamp}.${body}`, NOT
       // just `${body}` as it was in v0.1. Consumers MUST update their verification
@@ -268,10 +271,10 @@ export class WebhookDispatcher {
       // and rejecting when |now - timestamp| exceeds a small tolerance (e.g. 5 min).
       const ts = Math.floor(this.opts.clock().getTime() / 1000).toString();
       const sig = createHmac("sha256", hook.secret).update(`${ts}.${body}`).digest("hex");
-      headers[WEBHOOK_HEADERS.timestamp] = ts;
-      headers[WEBHOOK_HEADERS.signature] = `sha256=${sig}`;
+      headers.set(WEBHOOK_HEADERS.timestamp, ts);
+      headers.set(WEBHOOK_HEADERS.signature, `sha256=${sig}`);
     }
-    if (hook.authHeader) headers[hook.authHeader.name] = hook.authHeader.value;
+    if (hook.authHeader) headers.set(hook.authHeader.name, hook.authHeader.value);
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -280,7 +283,6 @@ export class WebhookDispatcher {
         headers,
         body,
         signal: AbortSignal.any([controller.signal, this.halt.signal]),
-        redirect: "manual", // a 3xx must not bounce into an internal address
       });
       return res.ok ? { ok: true } : { ok: false, error: `status ${res.status}` };
     } catch (e) {
