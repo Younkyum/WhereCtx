@@ -26,6 +26,7 @@ const ON_PAGE: Record<string, { fields: string[]; why: string }> = {
   "views/History.tsx:HistoryView": { fields: ["SegmentedControl"], why: "picks the time range to show" },
   "views/ServerLogs.tsx:ServerLogsView": { fields: ["SegmentedControl"], why: "filters the log by level" },
   "views/Maps.tsx:TryRoute": { fields: ["form", "TextInput"], why: "a route query, not something saved" },
+  "ui.tsx:RouteModePicker": { fields: ["SegmentedControl"], why: "picks the travel mode of a route query (route tester, time to home), not something saved" },
   "views/Maps.tsx:ProviderPanel": { fields: ["Selector"], why: "one choice that applies as soon as it is picked" },
   "views/Workspace.tsx:CurrentWorkspace": { fields: ["Selector"], why: "switches which workspace the page shows" },
 };

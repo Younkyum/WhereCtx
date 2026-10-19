@@ -198,7 +198,10 @@ first. Neither holds coordinates.
 
 ## Maps
 
-`src/geo/` holds one adapter per provider (`kakao.ts`, `naver.ts`), each a
+`src/geo/` holds one adapter per provider (`kakao.ts`, `naver.ts`). A
+route has a mode (`car`, `transit`, `walk`, `bike`); `RouteResult` is a
+union by mode, and `PROVIDER_ROUTE_MODES` (`types.ts`) says which modes each
+provider routes, checked before any call. Each adapter makes a
 GET with a 5 s timeout, a 4 MB body cap, no retries, the response parsed
 with zod (every kept string cleaned and capped) and every failure mapped to
 a `GeoError` kind. Every adapter is reached through `roundingProvider`
@@ -209,7 +212,8 @@ an unrounded one. The rest is split by concern:
   else the operator's), the per-person, per-key and daily budgets, and the
   only place a provider is called, with an access log row per call.
 - `eta.ts`: what an ETA answer may say to whom (the freshness gate,
-  near home by distance, an agent's coarse numbers and filtered roads).
+  near home by distance, an agent's coarse numbers, filtered roads and
+  transit lines), by mode, for the owner and for an agent.
 - `area.ts` (`AreaRefresher`): the background area lookup.
 - `service.ts` (`GeoService`): search and ETA for one caller, and the facade
   route handlers and MCP tools reach through `scope.geo`, bound to one user.

@@ -17,28 +17,33 @@ import type { SettingsStore } from "../privacy/settingsStore.js";
 import type { PlacesStore } from "../store/placesStore.js";
 import type { PresenceStore } from "../store/presenceStore.js";
 import type { SharesStore } from "../sharing/sharesStore.js";
-import type { Freshness, Place, UserId } from "../types.js";
+import type { Freshness, Place, PrivacySettings, UserId } from "../types.js";
 import { systemClock, type Clock } from "../util/time.js";
 import { AreaRefresher, timerSchedule, type AreaUpdate, type Schedule } from "./area.js";
 import type { GeoCacheStore } from "./cacheStore.js";
 import type { GeoCredentialsStore, StoredGeoCredential } from "./credentialsStore.js";
 import { FakeGeoProvider } from "./fake.js";
-import { GeoKeys, type CallResult, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
-import { agentNumbers, agentRoads, freshEnoughToRoute, ownerNumbers } from "./eta.js";
+import { GeoKeys, type CallResult, type GeoCallAction, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
+import { AnswerCache } from "./answerCache.js";
+import { AGENT_TIME_STEP_MIN, agentDetail, agentNumbers, freshEnoughToRoute, ownerDetail, ownerNumbers, type OwnerLeg } from "./eta.js";
 import { nearHomePlace } from "../geofence/shape.js";
-import { mainRoads } from "./roads.js";
+import { keepouts, type Keepout } from "./clearance.js";
 import {
+  PROVIDER_ROUTE_MODES,
   type GeocodeCandidate,
   type GeoErrorKind,
   type GeoCredentials,
   type GeoProviderName,
   type LatLon,
   type RouteAvoid,
+  type RouteMode,
   type RouteResult,
+  type TrafficBasis,
 } from "./types.js";
 
 
 export interface EtaRequest {
+  mode: RouteMode;
   /** A registered place's name, else an address or a place to search for. */
   to: string;
   /** Which search result, numbered from 1, when the search finds several. */
@@ -52,13 +57,14 @@ export interface EtaRequest {
 }
 
 interface EtaCommon {
+  mode: RouteMode;
   destination: { label: string; kind: "place" | "address" };
   /** The route starts at the current location, or, for the owner near home, at the home place. */
   origin: "current_location" | "home";
   durationMin: number;
   distanceKm: number;
-  /** live: timed on current traffic. predicted: a future departure, on the provider's forecast. */
-  traffic: RouteResult["traffic"];
+  /** Driving only. live: timed on current traffic. predicted: a future departure, on the provider's forecast. */
+  traffic?: TrafficBasis;
   departAt: string;
   arriveAt: string;
   summary: string[];
@@ -70,7 +76,7 @@ interface EtaCommon {
   deepLinks?: { kakaoMap: string; naverMap: string };
 }
 
-/** The owner's answer: the provider's numbers and roads, the steps, the fares, and the route as drawn. */
+/** The owner's answer: the provider's numbers and roads or lines, the steps, the fares, and the route as drawn. */
 export interface OwnerEtaAnswer extends EtaCommon {
   precision: "exact";
   /** The whole route as the provider drew it, start to end. */
@@ -78,6 +84,11 @@ export interface OwnerEtaAnswer extends EtaCommon {
   steps: string[];
   tollFare?: number;
   taxiFare?: number;
+  /** Transit: the fare, the transfers, the minutes on foot, and each leg with its stops and geometry. */
+  fare?: number;
+  transfers?: number;
+  walkMin?: number;
+  legs?: OwnerLeg[];
 }
 
 /**
@@ -92,6 +103,11 @@ export interface AgentEtaAnswer extends EtaCommon {
   steps?: string[];
   /** Why the steps an agent asked for are left out. */
   stepsWithheld?: string;
+  /** Transit: how many transfers, and the minutes on foot in 5-minute steps. */
+  transfers?: number;
+  walkMin?: number;
+  legs?: never;
+  fare?: never;
 }
 
 export type EtaAnswer = OwnerEtaAnswer | AgentEtaAnswer;
@@ -111,10 +127,55 @@ export type EtaOutcome<A extends EtaAnswer = EtaAnswer> =
   | { kind: "ambiguous"; candidates: CandidateView[] }
   | { kind: "rate_limited" }
   | { kind: "unconfigured" }
+  /** The provider in use does not route this mode; nothing was sent. `switchTo`: other providers with a key that do. */
+  | { kind: "unsupported_mode"; mode: RouteMode; provider: GeoProviderName; supported: readonly RouteMode[]; switchTo: GeoProviderName[] }
+  /** An option only driving takes (a later departure, road kinds to avoid); refused before anything was asked or spent. */
+  | { kind: "unsupported_option"; mode: Exclude<RouteMode, "car">; option: "departAt" | "avoid" }
   | { kind: "failed"; error: GeoErrorKind; message: string };
 
 /** Every way an ETA request ends without an answer. */
 type EtaRefusal = Exclude<EtaOutcome, { kind: "ok" }>;
+
+/** What the gates found: who may hear what, where the person is, and the destination when it is a registered place. */
+interface Gated {
+  settings: PrivacySettings;
+  start: LatLon;
+  freshness: Freshness;
+  originAgeMin: number;
+  places: Place[];
+  /** The home place the person is at or near, when routes start there (the owner only). */
+  home: Place | null;
+  precise: boolean;
+  place: Place | null;
+}
+
+type AgentEtaOk = Extract<EtaOutcome<AgentEtaAnswer>, { kind: "ok" }>;
+
+/** A later departure or road kinds to avoid on a mode that is not driving, as a refusal. */
+function drivingOnlyOption(request: EtaRequest, now: Date): Extract<EtaOutcome, { kind: "unsupported_option" }> | null {
+  if (request.mode === "car") return null;
+  if (request.departAt && request.departAt.getTime() > now.getTime()) return { kind: "unsupported_option", mode: request.mode, option: "departAt" };
+  if (request.avoid?.length) return { kind: "unsupported_option", mode: request.mode, option: "avoid" };
+  return null;
+}
+
+/** One credential's identical request, under the same chosen provider: the same answer within AGENT_ANSWER_TTL_MS. */
+function answerKey(userId: UserId, caller: AgentCaller, request: EtaRequest, { precise, settings }: Gated): string {
+  const stepMs = AGENT_TIME_STEP_MIN * 60_000;
+  return JSON.stringify([
+    userId,
+    caller.credential.kind,
+    caller.credential.id,
+    request.mode,
+    request.to.trim(),
+    request.pick ?? null,
+    request.directions === true,
+    request.departAt ? Math.floor(request.departAt.getTime() / stepMs) : null,
+    [...(request.avoid ?? [])].sort(),
+    precise,
+    settings.geoProvider,
+  ]);
+}
 
 /** A route timed from where the person is, before it is shaped for whoever asked. */
 interface TimedRoute {
@@ -122,8 +183,8 @@ interface TimedRoute {
   common: Omit<EtaCommon, "durationMin" | "distanceKm" | "arriveAt" | "summary">;
   /** Whether an agent's request may read the precise location (always false for the owner). */
   precise: boolean;
-  /** Points whose roads an agent is not told about: the start, and a registered destination. */
-  avoid: LatLon[];
+  /** What an agent's roads and lines keep clear of: the start, the destination, and every registered place as drawn. */
+  avoid: Keepout[];
 }
 
 export type AgentCaller = Extract<GeoCaller, { kind: "agent" }>;
@@ -172,6 +233,7 @@ export class GeoService {
   private readonly clock: Clock;
   private readonly keys: GeoKeys;
   private readonly area: AreaRefresher;
+  private readonly agentAnswers = new AnswerCache<AgentEtaOk>();
   /** Answers every call when GEO_PROVIDER_FAKE is on. */
   readonly fake?: FakeGeoProvider;
 
@@ -241,55 +303,58 @@ export class GeoService {
     const result = await this.keys.call(userId, caller, resolved, "geo.geocode", (p) => p.geocode(query));
     if (result.kind === "ok") return { kind: "ok", candidates: result.value, provider: resolved.name };
     if (result.kind === "rate_limited") return result;
-    return { kind: "failed", error: result.error.kind, message: result.error.message };
+    const failed: SearchOutcome = { kind: "failed", error: result.error.kind, message: result.error.message };
+    return caller.kind === "agent" ? forAgent(failed) : failed;
   }
 
   /**
-   * Time a car route from where I am to a destination, for an agent (eta.ts
+   * Time a route from where I am to a destination, for an agent (eta.ts
    * says what it is told). Agents need etaToAgents, a visible presence, a
    * registered place as the destination unless they may read the precise
    * location, and are refused at or near home while skipProviderNearHome is
-   * on. The answer never carries the route's geometry.
+   * on. The answer never carries the route's geometry. The same credential
+   * asking the same thing within AGENT_ANSWER_TTL_MS hears the same answer,
+   * with no provider call.
    */
   async eta(userId: UserId, request: EtaRequest, caller: AgentCaller): Promise<EtaOutcome<AgentEtaAnswer>> {
-    const timed = await this.timeRoute(userId, request, caller);
-    if ("kind" in timed) return timed;
+    const gated = await this.gate(userId, request, caller);
+    if ("kind" in gated) return gated;
+    const key = answerKey(userId, caller, request, gated);
+    const now = this.clock().getTime();
+    const kept = this.agentAnswers.get(key, now);
+    if (kept) return kept;
+    const timed = await this.timeRoute(userId, request, caller, gated);
+    if ("kind" in timed) return forAgent(timed);
     const { route, common, precise, avoid } = timed;
-    const steps = request.directions
-      ? precise
-        ? { steps: route.steps }
-        : { stepsWithheld: "turn-by-turn steps name the streets around the person; they need precise access (read_precise_location, allowed by the person, and a reason)" }
-      : {};
-    return {
+    const { detail, usedPrecise } = agentDetail(route, avoid, { precise, directions: request.directions === true });
+    const outcome: AgentEtaOk = {
       kind: "ok",
-      precise: precise && (common.destination.kind === "address" || request.directions === true),
-      answer: { ...common, precision: "approximate", ...agentNumbers(route), summary: agentRoads(route.roads, avoid), ...steps },
+      precise: precise && (common.destination.kind === "address" || usedPrecise),
+      answer: { ...common, precision: "approximate", ...agentNumbers(route), ...detail },
     };
+    this.agentAnswers.set(key, outcome, now);
+    return outcome;
   }
 
-  /** Time a car route for me in the dashboard: the provider's numbers, the steps, and the route as drawn. Near home it starts at the home place. */
+  /** Time a route for me in the dashboard: the provider's numbers, the steps, the stops, and the route as drawn. Near home it starts at the home place. */
   async ownerEta(userId: UserId, request: EtaRequest): Promise<EtaOutcome<OwnerEtaAnswer>> {
-    const timed = await this.timeRoute(userId, request, { kind: "owner" });
+    const owner = { kind: "owner" } as const;
+    const gated = await this.gate(userId, request, owner);
+    if ("kind" in gated) return gated;
+    const timed = await this.timeRoute(userId, request, owner, gated);
     if ("kind" in timed) return timed;
     const { route, common } = timed;
     return {
       kind: "ok",
       precise: false,
-      answer: {
-        ...common,
-        precision: "exact",
-        ...ownerNumbers(route),
-        summary: mainRoads(route.roads),
-        path: route.path,
-        steps: route.steps,
-        ...(route.tollFare !== undefined ? { tollFare: route.tollFare } : {}),
-        ...(route.taxiFare !== undefined ? { taxiFare: route.taxiFare } : {}),
-      },
+      answer: { ...common, precision: "exact", ...ownerNumbers(route), path: route.path, ...ownerDetail(route) },
     };
   }
 
-  /** Everything an ETA needs before it is shaped: the gates, the destination, and the provider's route. */
-  private async timeRoute(userId: UserId, request: EtaRequest, caller: AgentCaller | { kind: "owner" }): Promise<TimedRoute | EtaRefusal> {
+  /** The gates an ETA passes before any provider is asked, and what they found. */
+  private async gate(userId: UserId, request: EtaRequest, caller: AgentCaller | { kind: "owner" }): Promise<Gated | EtaRefusal> {
+    const option = drivingOnlyOption(request, this.clock());
+    if (option) return option;
     const settings = await this.deps.settings.getOrSeed(userId);
     const agent = caller.kind === "agent" ? caller : null;
     if (agent) {
@@ -312,7 +377,7 @@ export class GeoService {
       agent !== null &&
       authorizePrecise({ scopes: [...agent.scopes], settings, presence, reason: request.reason }).allowed;
 
-    const place = places.find((p: Place) => p.name === request.to);
+    const place = places.find((p: Place) => p.name === request.to) ?? null;
     if (!place && agent && !precise) {
       return {
         kind: "denied",
@@ -320,10 +385,26 @@ export class GeoService {
           "agents may time a route only to a registered place; an address needs precise access (read_precise_location, allowed by the person, and a reason)",
       };
     }
+    return { settings, start: presence.precise, freshness: fresh.freshness, originAgeMin, places, home, precise, place };
+  }
+
+  /** The destination and the provider's route, for a request that passed the gates. */
+  private async timeRoute(
+    userId: UserId,
+    request: EtaRequest,
+    caller: AgentCaller | { kind: "owner" },
+    gated: Gated,
+  ): Promise<TimedRoute | EtaRefusal> {
+    const { settings, start, places, home, precise, place } = gated;
     const resolved = await this.keys.resolve(userId, settings);
     if (!resolved) return { kind: "unconfigured" };
+    const supported = PROVIDER_ROUTE_MODES[resolved.name];
+    if (!supported.includes(request.mode)) {
+      const switchTo = (await this.keys.available(userId)).filter((p) => p !== resolved.name && PROVIDER_ROUTE_MODES[p].includes(request.mode));
+      return { kind: "unsupported_mode", mode: request.mode, provider: resolved.name, supported, switchTo };
+    }
 
-    const managesPlaces = !agent || agent.scopes.includes("manage_places");
+    const managesPlaces = caller.kind !== "agent" || caller.scopes.includes("manage_places");
     let target: { label: string; kind: "place" | "address"; point: LatLon; showLinks: boolean };
     if (place) {
       target = { label: place.name, kind: "place", point: place, showLinks: managesPlaces };
@@ -337,24 +418,25 @@ export class GeoService {
       target = { label: chosen.candidate.label, kind: "address", point: chosen.candidate, showLinks: true };
     }
 
-    const origin: LatLon = home ?? presence.precise;
-    const routed = await this.keys.call(userId, caller, resolved, "geo.route", (p) =>
-      p.route({ origin, destination: target.point, departAt: request.departAt, avoid: request.avoid }),
+    const origin: LatLon = home ?? start;
+    const routed = await this.keys.call(userId, caller, resolved, ROUTE_ACTION[request.mode], (p) =>
+      p.route({ mode: request.mode, origin, destination: target.point, departAt: request.departAt, avoid: request.avoid }),
     );
     if (routed.kind !== "ok") return failure(routed);
     const route = routed.value;
     return {
       route,
       precise,
-      avoid: target.kind === "place" ? [presence.precise, target.point] : [presence.precise],
+      avoid: keepouts([start, target.point], places),
       common: {
+        mode: route.mode,
         destination: { label: target.label, kind: target.kind },
         origin: home ? "home" : "current_location",
-        traffic: route.traffic,
+        ...(route.mode === "car" ? { traffic: route.traffic } : {}),
         departAt: route.departAt,
         provider: resolved.name,
-        freshness: fresh.freshness,
-        originAgeMin,
+        freshness: gated.freshness,
+        originAgeMin: gated.originAgeMin,
         ...(target.showLinks ? { deepLinks: deepLinks(target.label, target.point) } : {}),
       },
     };
@@ -380,6 +462,33 @@ export class GeoService {
   prune(): Promise<number> {
     return this.deps.cache.prune();
   }
+}
+
+/** The access log action a route call is recorded as, by mode. */
+export const ROUTE_ACTION: Record<RouteMode, GeoCallAction> = {
+  car: "geo.route",
+  transit: "geo.route.transit",
+  walk: "geo.route.walk",
+  bike: "geo.route.bike",
+};
+
+/**
+ * What an agent hears of a provider failure: fixed words per kind, never
+ * the provider's own (a status, a message), which only the owner and the
+ * access log see.
+ */
+export const AGENT_FAILURE_TEXT: Record<GeoErrorKind, string> = {
+  auth: "the maps provider refused the key",
+  quota: "the maps provider's quota or rate limit was reached",
+  no_route: "no route found",
+  unsupported: "the maps provider cannot answer this request",
+  bad_request: "the maps provider rejected the request",
+  timeout: "the maps provider did not answer in time",
+  upstream: "the maps provider failed",
+};
+
+function forAgent<T extends EtaRefusal | SearchOutcome>(outcome: T): T {
+  return outcome.kind === "failed" ? { ...outcome, message: AGENT_FAILURE_TEXT[outcome.error] } : outcome;
 }
 
 /** A call that did not answer, as an outcome. */

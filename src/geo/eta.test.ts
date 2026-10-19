@@ -5,6 +5,7 @@ import type { WhereCtxConfig } from "../config.js";
 import type { NormalizedReading } from "../normalizer/types.js";
 import { asUserId, type PrivacySettings, type TokenScope } from "../types.js";
 import { TestClock, bootApp } from "../testing/accounts.js";
+import { keepouts } from "./clearance.js";
 import { agentRoads } from "./eta.js";
 import type { AgentCaller, EtaOutcome, EtaRequest } from "./service.js";
 
@@ -19,10 +20,21 @@ const DESTINATION = { lat: 37.394425724914576, lon: 127.1098265381582 };
 let clock: TestClock;
 let ctx: AppContext;
 
+/** The paths of every request the sample fetch answered. */
+const fetched: string[] = [];
+
 /** The providers' documented sample answers, by endpoint. */
 const sampleFetch = (async (input: URL | string) => {
   const url = new URL(String(input));
-  const body = url.pathname.endsWith("/directions")
+  fetched.push(url.pathname);
+  const routing: Record<string, string> = {
+    "/v2/routing/publictraffic": "kakao-transit-transfers.json",
+    "/v2/routing/walk": "kakao-walk.json",
+    "/v2/routing/bicycle": "kakao-bicycle.json",
+  };
+  const body = routing[url.pathname]
+    ? fixture(routing[url.pathname]!)
+    : url.pathname.endsWith("/directions")
     ? fixture("kakao-directions.json")
     : url.pathname === "/map-direction/v1/driving"
       ? fixture("naver-directions5.json")
@@ -34,6 +46,7 @@ const sampleFetch = (async (input: URL | string) => {
 
 async function boot(geo: Partial<WhereCtxConfig["geo"]>, fetch?: typeof fetch): Promise<void> {
   clock = new TestClock();
+  fetched.length = 0;
   ({ ctx } = await bootApp(
     clock,
     {
@@ -80,8 +93,14 @@ const read = (at: { lat: number; lon: number }, motion?: NormalizedReading["moti
     ...(motion ? { motion } : {}),
     updatedAt: clock.fn().toISOString(),
   });
-const eta = (request: EtaRequest, caller: AgentCaller | { kind: "owner" } = agent()): Promise<EtaOutcome> =>
-  caller.kind === "agent" ? ctx.system.geo.eta(OWNER, request, caller) : ctx.system.geo.ownerEta(OWNER, request);
+/** A route by car unless the request names a mode. */
+const eta = (
+  request: Omit<EtaRequest, "mode"> & Partial<Pick<EtaRequest, "mode">>,
+  caller: AgentCaller | { kind: "owner" } = agent(),
+): Promise<EtaOutcome> => {
+  const full: EtaRequest = { mode: "car", ...request };
+  return caller.kind === "agent" ? ctx.system.geo.eta(OWNER, full, caller) : ctx.system.geo.ownerEta(OWNER, full);
+};
 
 describe("the roads an agent is told", () => {
   const at = (km: number) => ({ lat: ORIGIN.lat + km / 111, lon: ORIGIN.lon });
@@ -96,8 +115,8 @@ describe("the roads an agent is told", () => {
       road("서울외곽순환고속도로", 8, 2000),
       road("목적지앞로", 9.8, 6000),
     ];
-    expect(agentRoads(roads, [ORIGIN, at(10)])).toEqual(["경부고속도로", "서울외곽순환고속도로"]);
-    expect(agentRoads(roads, [ORIGIN])).toEqual(["목적지앞로", "경부고속도로", "서울외곽순환고속도로"]);
+    expect(agentRoads(roads, keepouts([ORIGIN, at(10)], []))).toEqual(["경부고속도로", "서울외곽순환고속도로"]);
+    expect(agentRoads(roads, keepouts([ORIGIN], []))).toEqual(["목적지앞로", "경부고속도로", "서울외곽순환고속도로"]);
   });
 });
 
@@ -151,6 +170,214 @@ describe("an agent's route, from the providers' documented samples", () => {
       kind: "ok",
       answer: { precision: "exact", durationMin: 58, distanceKm: 19, taxiFare: 22200, summary: expect.arrayContaining(["판교역로241번길"]) },
     });
+  });
+});
+
+describe("a transit, walking or cycling route, from Kakao's documented samples", () => {
+  /** Where kakao-transit-transfers.json starts (판교) and ends (서울시청). */
+  const START = { lat: 37.3929, lon: 127.1105 };
+  const CITY_HALL = { lat: 37.5663, lon: 126.9779 };
+  const STOPS = ["판교", "청계산입구", "양재시민의숲", "양재", "강남", "신사역", "한남대교남단", "남산예장공원", "명동입구", "서울시청"];
+  const NEAR_END_WORDS = ["판교역로146번길", "세종대로", "출구", ...STOPS];
+  const LINES_NEAR_ENDS = ["신분당선", "지선 7011"];
+
+  async function setUp(provider: "kakao" | "naver" = "kakao"): Promise<void> {
+    await boot({}, sampleFetch);
+    await place("home", "home", { lat: 37.45, lon: 127.3 });
+    await place("city hall", "work", CITY_HALL);
+    await set({ geoEnabled: true, etaToAgents: true, geoProvider: provider });
+    await read(START);
+  }
+  const ok = (outcome: EtaOutcome) => {
+    if (outcome.kind !== "ok") throw new Error(`expected an answer, got ${outcome.kind}`);
+    return outcome;
+  };
+
+  it("an agent hears no line when the first and last rides run near the ends, no transfers, coarse minutes; never a stop, a fare or a street", async () => {
+    await setUp();
+    const outcome = ok(await eta({ to: "city hall", mode: "transit", directions: true }));
+    const text = JSON.stringify(outcome);
+    for (const word of [...NEAR_END_WORDS, ...LINES_NEAR_ENDS, "간선 472", "간선 421"]) expect(text).not.toContain(word);
+    expect(outcome).toMatchObject({
+      precise: false,
+      answer: {
+        mode: "transit",
+        precision: "approximate",
+        summary: [],
+        durationMin: 60,
+        walkMin: 10,
+        distanceKm: 27,
+        stepsWithheld: expect.any(String),
+      },
+    });
+    for (const key of ["fare", "legs", "path", "steps", "traffic", "transfers"]) expect(outcome.answer).not.toHaveProperty(key);
+  });
+
+  it("an agent that may read the precise location hears each ride's first line, still no stop", async () => {
+    await setUp();
+    await set({ allowPreciseLocation: true });
+    const outcome = ok(await eta({ to: "city hall", mode: "transit", reason: "meeting there" }, agent(["read_presence", "read_precise_location"])));
+    expect(outcome).toMatchObject({ precise: true, answer: { summary: ["신분당선", "간선 472", "지선 7011"], transfers: 2 } });
+    const text = JSON.stringify(outcome);
+    for (const stop of STOPS) expect(text).not.toContain(stop);
+    const steps = ok(await eta({ to: "city hall", mode: "transit", directions: true, reason: "meeting there" }, agent(["read_presence", "read_precise_location"])));
+    expect(steps).toMatchObject({ precise: true, answer: { steps: expect.arrayContaining([expect.stringContaining("판교")]) } });
+  });
+
+  it("the owner gets every leg with its stops, the fare and the route as drawn", async () => {
+    await setUp();
+    const { answer } = ok(await eta({ to: "city hall", mode: "transit" }, { kind: "owner" }));
+    expect(answer).toMatchObject({ mode: "transit", precision: "exact", durationMin: 62, fare: 2650, transfers: 2, walkMin: 8 });
+    if (answer.precision !== "exact") throw new Error("not the owner's answer");
+    expect(answer.legs!.map((l) => [l.kind, l.lines, l.stops.at(0), l.stops.at(-1)])).toEqual([
+      ["walk", [], undefined, undefined],
+      ["subway", ["신분당선"], "판교", "강남"],
+      ["bus", ["간선 472", "간선 421"], "강남역", "남산예장공원"],
+      ["bus", ["지선 7011"], "남산예장공원", "서울시청"],
+      ["walk", [], undefined, undefined],
+    ]);
+    expect(answer.legs![1]!.path[0]).toEqual({ lat: 37.3948, lon: 127.1111 });
+    expect(answer.path.at(-1)).toEqual({ lat: 37.5663, lon: 126.9779 });
+  });
+
+  it.each(["walk", "bike"] as const)("%s: an agent hears coarse numbers and no street; the steps need precise access", async (mode) => {
+    await setUp();
+    const outcome = ok(await eta({ to: "city hall", mode, directions: true }));
+    const text = JSON.stringify(outcome);
+    for (const word of ["판교역로", "성남대로", "탄천자전거길", "출구", "이동"]) expect(text).not.toContain(word);
+    expect(outcome.answer).toMatchObject({ mode, summary: [], stepsWithheld: expect.any(String) });
+
+    await set({ allowPreciseLocation: true });
+    const precise = ok(await eta({ to: "city hall", mode, directions: true, reason: "walking over" }, agent(["read_presence", "read_precise_location"])));
+    expect(precise).toMatchObject({ precise: true, answer: { steps: expect.arrayContaining([expect.stringContaining("이동")]) } });
+  });
+
+  it.each(["transit", "walk", "bike"] as const)("Naver answers %s as unsupported_mode and sends nothing", async (mode) => {
+    await setUp("naver");
+    expect(await eta({ to: "city hall", mode })).toEqual({ kind: "unsupported_mode", mode, provider: "naver", supported: ["car"], switchTo: ["kakao"] });
+    expect(fetched.filter((p) => !p.includes("reversegeocode"))).toEqual([]);
+  });
+
+  it("records each call under its mode in the access log", async () => {
+    await setUp();
+    for (const mode of ["car", "transit", "walk", "bike"] as const) ok(await eta({ to: "city hall", mode }));
+    const rows = (await ctx.system.accessLog.list(OWNER)).entries.map((e) => e.action).filter((a) => a.startsWith("geo.route"));
+    expect(rows.sort()).toEqual(["geo.route", "geo.route.bike", "geo.route.transit", "geo.route.walk"]);
+  });
+
+  it("an agent hears fixed words for a failed route; the owner and the access log get the status cleaned, cut short and masked", async () => {
+    const status = "NO\u202eROUTE operator-kakao-key-0000 " + "z".repeat(300);
+    await boot({}, (async (input: URL | string) =>
+      new URL(String(input)).pathname === "/v2/routing/publictraffic"
+        ? new Response(JSON.stringify({ status }))
+        : sampleFetch(input)) as typeof fetch);
+    await place("city hall", "work", CITY_HALL);
+    await set({ geoEnabled: true, etaToAgents: true, geoProvider: "kakao" });
+    await read(START);
+    expect(await eta({ to: "city hall", mode: "transit" })).toEqual({ kind: "failed", error: "no_route", message: "no route found" });
+    const owner = await eta({ to: "city hall", mode: "transit" }, { kind: "owner" });
+    if (owner.kind !== "failed") throw new Error(`expected a failure, got ${owner.kind}`);
+    const rows = (await ctx.system.accessLog.list(OWNER)).entries.filter((e) => e.action === "geo.route.transit").map((e) => e.denial ?? "");
+    for (const text of [owner.message, ...rows]) {
+      expect(text).toMatch(/Kakao found no route \(NOROUTE/);
+      expect(text).not.toMatch(/\u202e|operator-kakao-key-0000|z{20}/);
+      expect(text.length).toBeLessThan(100);
+    }
+    expect(rows, "the agent's call is logged; the owner's own is not").toHaveLength(1);
+  });
+
+  it("keeps the gates: near home is refused, an address needs precise access", async () => {
+    await setUp();
+    expect(await eta({ to: "서울특별시청", mode: "transit" })).toMatchObject({ kind: "denied", reason: expect.stringContaining("registered place") });
+    await read({ lat: 37.45, lon: 127.3 });
+    expect(await eta({ to: "city hall", mode: "transit" })).toMatchObject({ kind: "denied", reason: expect.stringContaining("near home") });
+    expect(fetched.filter((p) => p.startsWith("/v2/routing"))).toEqual([]);
+  });
+});
+
+describe("polling an agent's ETA with a moving clock and a moving phone", () => {
+  const STEP_MS = 5 * 60_000;
+  const TTL_MS = 5 * 60_000;
+  const office = { lat: 37.55, lon: 127.05 };
+
+  it.each([
+    ["car", 5],
+    ["transit", 5],
+    ["walk", 15],
+    ["bike", 15],
+  ] as const)("%s: one answer per 5 minutes, and no pair of fields finer than a %i-minute step", async (mode, stepMin) => {
+    await boot({ fake: true });
+    await place("office", "work", office);
+    await set({ geoEnabled: true, etaToAgents: true });
+    const routeCalls = () => ctx.system.geo.fake!.calls.filter((c) => c.op === "route").length;
+    let window: { start: number; answer: unknown } | null = null;
+    let windows = 0;
+    for (let i = 0; i < 24; i++) {
+      await read({ lat: 37.4 + i * 0.002, lon: 127.0 + i * 0.0013 });
+      const outcome = await eta({ to: "office", mode });
+      if (outcome.kind !== "ok") throw new Error(`expected an answer, got ${outcome.kind}`);
+      const { answer } = outcome;
+      if (!window || clock.now - window.start >= TTL_MS) {
+        window = { start: clock.now, answer };
+        windows += 1;
+      }
+      expect(answer, "the same answer within the window").toEqual(window.answer);
+      expect(Date.parse(answer.departAt) % STEP_MS, "departAt on a 5-minute step").toBe(0);
+      expect(Date.parse(answer.arriveAt) - Date.parse(answer.departAt), "arriveAt is departAt plus the rounded minutes").toBe(answer.durationMin * 60_000);
+      expect(answer.durationMin % (answer.durationMin >= 15 ? stepMin : 5), "minutes in steps").toBe(0);
+      expect(Number.isInteger(answer.distanceKm) && answer.distanceKm >= 1, "whole kilometres").toBe(true);
+      if (answer.walkMin !== undefined) expect(answer.walkMin % 5).toBe(0);
+      clock.advance(37_000);
+    }
+    expect(windows).toBeGreaterThan(2);
+    expect(routeCalls(), "a kept answer asks the provider nothing").toBe(windows);
+  });
+
+  it("each credential, destination and mode is kept apart", async () => {
+    await boot({ fake: true });
+    await place("office", "work", office);
+    await place("gym", "custom", { lat: 37.6, lon: 126.9 });
+    await set({ geoEnabled: true, etaToAgents: true });
+    await read({ lat: 37.4, lon: 127.0 });
+    const routeCalls = () => ctx.system.geo.fake!.calls.filter((c) => c.op === "route").length;
+    const other: AgentCaller = { ...agent(), credential: { kind: "token", id: "tok-2", name: "Other" } };
+    for (const [request, caller] of [
+      [{ to: "office" }, agent()],
+      [{ to: "office" }, agent()],
+      [{ to: "office" }, other],
+      [{ to: "gym" }, agent()],
+      [{ to: "office", mode: "walk" as const }, agent()],
+    ] as const) await eta(request, caller);
+    expect(routeCalls()).toBe(4);
+    await set({ geoProvider: "naver" });
+    await eta({ to: "office" });
+    expect(routeCalls(), "a different chosen provider is a different question").toBe(5);
+  });
+
+  it("a road that runs beside any registered place, not only the ends, is not named", async () => {
+    await boot({ fake: true });
+    await place("office", "work", office);
+    await set({ geoEnabled: true, etaToAgents: true });
+    await read({ lat: 37.4, lon: 127.0 });
+    const summary = async (to: string) => {
+      const outcome = await eta({ to });
+      if (outcome.kind !== "ok") throw new Error(`expected an answer, got ${outcome.kind}`);
+      return outcome.answer.summary;
+    };
+    expect(await summary("office")).toContain("테스트대로");
+    await place("gym", "custom", { lat: (37.4 + office.lat) / 2, lon: (127.0 + office.lon) / 2 });
+    await place("office 2", "work", office);
+    expect(await summary("office 2")).not.toContain("테스트대로");
+  });
+
+  it("the owner is never served a kept answer", async () => {
+    await boot({ fake: true });
+    await place("office", "work", office);
+    await set({ geoEnabled: true, etaToAgents: true });
+    await read({ lat: 37.4, lon: 127.0 });
+    await eta({ to: "office" }, { kind: "owner" });
+    await eta({ to: "office" }, { kind: "owner" });
+    expect(ctx.system.geo.fake!.calls.filter((c) => c.op === "route")).toHaveLength(2);
   });
 });
 

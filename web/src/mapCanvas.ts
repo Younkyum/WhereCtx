@@ -82,7 +82,9 @@ export function createMapCanvas(el: HTMLElement, tiles: MapTiles, onPick: (at: L
       const area = { ...stroke, fillColor: STROKE, fillOpacity: 0.12 };
       for (const c of scene.circles) L.circle(ll(c.at), { radius: c.radiusM, ...area }).bindTooltip(textNode(c.title)).addTo(overlays);
       for (const p of scene.polygons) L.polygon(p.ring.map(ll), area).bindTooltip(textNode(p.title)).addTo(overlays);
-      for (const line of scene.lines) L.polyline(line.points.map(ll), { ...stroke, weight: 4, interactive: false }).addTo(overlays);
+      for (const line of scene.lines) {
+        L.polyline(line.points.map(ll), { ...stroke, weight: 4, interactive: false, ...(line.dashed ? { dashArray: "4 8" } : {}) }).addTo(overlays);
+      }
       for (const m of scene.markers) {
         L.circleMarker(ll(m.at), { radius: 7, color: "#ffffff", weight: 2, fillColor: STROKE, fillOpacity: 1 }).bindTooltip(textNode(m.title)).addTo(overlays);
       }

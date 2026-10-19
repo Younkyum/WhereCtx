@@ -1,6 +1,6 @@
 /**
  * Maps providers (Kakao, Naver) behind one interface: geocoding, reverse
- * geocoding to region names, and car routes. Each adapter parses its
+ * geocoding to region names, and routes by car, transit, on foot or by bicycle. Each adapter parses its
  * provider's response with zod at the boundary and maps failures to a
  * `GeoError` kind, so callers never see a provider's wire format or a raw
  * HTTP error.
@@ -39,11 +39,27 @@ export interface ReverseResult {
 export const ROUTE_AVOID = ["toll", "motorway", "ferries"] as const;
 export type RouteAvoid = (typeof ROUTE_AVOID)[number];
 
+/** How the person travels: by car, public transit, on foot, or by bicycle. */
+export const ROUTE_MODES = ["car", "transit", "walk", "bike"] as const;
+export type RouteMode = (typeof ROUTE_MODES)[number];
+
+/**
+ * The modes each provider routes. Kakao Mobility Directions drives; the
+ * Kakao Map API added transit, walking and bicycle routes (2026-07-21).
+ * Naver Cloud Maps has Directions 5 and 15, both driving only.
+ */
+export const PROVIDER_ROUTE_MODES: Record<GeoProviderName, readonly RouteMode[]> = {
+  kakao: ROUTE_MODES,
+  naver: ["car"],
+};
+
 export interface RouteRequest {
+  mode: RouteMode;
   origin: LatLon;
   destination: LatLon;
   /** A future departure; omitted means now. */
   departAt?: Date;
+  /** Road kinds to avoid; driving only. */
   avoid?: readonly RouteAvoid[];
 }
 
@@ -60,20 +76,67 @@ export interface RouteRoad {
   path: LatLon[];
 }
 
-export interface RouteResult {
+interface RouteBase {
   durationSec: number;
   distanceM: number;
+  /** The whole route as the provider drew it, start to end. */
+  path: LatLon[];
+  departAt: string;
+}
+
+export interface CarRoute extends RouteBase {
+  mode: "car";
   traffic: TrafficBasis;
   tollFare?: number;
   taxiFare?: number;
   /** Every named stretch in order, with its geometry, so a caller can tell which roads run near a point. */
   roads: RouteRoad[];
-  /** The whole route as the provider drew it, start to end, named stretch or not. */
-  path: LatLon[];
   /** Turn-by-turn instructions in order, when the provider gives them. */
   steps: string[];
-  departAt: string;
 }
+
+/** `other`: a ride of a kind the provider names but WhereCtx does not know (a ferry, a new mode); never named to an agent. */
+export const TRANSIT_LEG_KINDS = ["walk", "bus", "subway", "other"] as const;
+export type TransitLegKind = (typeof TRANSIT_LEG_KINDS)[number];
+
+/**
+ * One leg of a transit route: a walk, or a ride on one of `lines` from the
+ * first of `stops` to the last. `path` is where it runs, empty when the
+ * provider gave no geometry.
+ */
+export interface TransitLeg {
+  kind: TransitLegKind;
+  durationSec: number;
+  distanceM: number;
+  /** The lines that serve this ride as people name them ("간선 472", "2호선"); empty for a walk. */
+  lines: string[];
+  /** Stop names in order, boarding first; empty for a walk. */
+  stops: string[];
+  /** The provider's own words for the leg; they name stops. */
+  guidance: string;
+  path: LatLon[];
+}
+
+export interface TransitRoute extends RouteBase {
+  mode: "transit";
+  transfers: number;
+  fare?: number;
+  legs: TransitLeg[];
+}
+
+/** One instruction of a walking or cycling route, and the stretch it covers. */
+export interface ActiveStep {
+  guidance: string;
+  distanceM: number;
+  path: LatLon[];
+}
+
+export interface ActiveRoute extends RouteBase {
+  mode: "walk" | "bike";
+  steps: ActiveStep[];
+}
+
+export type RouteResult = CarRoute | TransitRoute | ActiveRoute;
 
 export interface GeoProvider {
   readonly name: GeoProviderName | "fake";
@@ -86,7 +149,7 @@ export interface GeoProvider {
 /**
  * auth: the key was refused. quota: a quota or rate limit was hit.
  * no_route: the provider found no route between the points.
- * unsupported: this provider cannot answer this request (a future departure on Naver).
+ * unsupported: this provider cannot answer this request (a future departure on Naver, a mode it does not route).
  * bad_request: the provider rejected the request's parameters.
  * timeout, upstream: the provider did not answer, or failed.
  */

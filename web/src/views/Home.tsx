@@ -25,10 +25,10 @@ import { useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import { geoErrorKey, motionOf, safeHttpUrl, statusOf } from "../lib";
-import type { Eta, MyPoint, Person, Place, PreciseLocation, Presence, PrivacySettings } from "../model";
+import type { Eta, MyPoint, Person, Place, PreciseLocation, Presence, PrivacySettings, RouteMode } from "../model";
 import { homeScene } from "../mapScene";
 import { MapView, useMapTiles } from "../MapView";
-import { Empty, Hint, Loaded, Page, Panel, useAction, useFormat, useLoad, useNotify } from "../ui";
+import { Empty, Hint, Loaded, Page, Panel, RouteModePicker, useAction, useFormat, useLoad, useNotify } from "../ui";
 
 type Mine = { presence: Presence | null; paused: boolean; geoEnabled: boolean; hiddenFromAgents: boolean };
 
@@ -44,11 +44,11 @@ async function loadMine(): Promise<Mine> {
   }
 }
 
-/** Drive time to my home place, asked only when I press the button: one provider call each time. */
-async function timeToHome(): Promise<Eta | null> {
+/** Travel time to my home place, asked only when I press the button: one provider call each time. */
+async function timeToHome(mode: RouteMode): Promise<Eta | null> {
   const home = (await api<{ places: Place[] }>("/v1/places")).places?.find((p) => p.type === "home");
   if (!home) return null;
-  return (await api<{ eta: Eta }>(`/v1/geo/eta?to=${encodeURIComponent(home.name)}`)).eta;
+  return (await api<{ eta: Eta }>(`/v1/geo/eta?to=${encodeURIComponent(home.name)}&mode=${mode}`)).eta;
 }
 
 function locate(t: ReturnType<typeof useApp>["t"]): Promise<GeolocationPosition> {
@@ -207,12 +207,13 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
 
 function ToHome() {
   const { t } = useApp();
+  const [mode, setMode] = useState<RouteMode>("car");
   const [eta, setEta] = useState<Eta | null | undefined>(undefined);
   const [problem, setProblem] = useState<string | null>(null);
   const [checking, check] = useAction(async () => {
     setProblem(null);
     try {
-      setEta(await timeToHome());
+      setEta(await timeToHome(mode));
     } catch (e) {
       setEta(undefined);
       setProblem(e instanceof Error ? e.message : String(e));
@@ -221,10 +222,20 @@ function ToHome() {
   return (
     <VStack gap={1}>
       <HStack gap={2} vAlign="center" wrap="wrap">
+        <RouteModePicker
+          size="sm"
+          value={mode}
+          onChange={(m) => {
+            setMode(m);
+            setEta(undefined);
+          }}
+        />
         <Button label={t("home.checkToHome")} size="sm" isLoading={checking} onClick={() => void check()} />
         {eta ? (
           <Text weight="medium">
-            {t(eta.traffic === "live" ? "home.toHomeLive" : "home.toHome", { min: eta.durationMin })}
+            {eta.mode === "car"
+              ? t(eta.traffic === "live" ? "home.toHomeLive" : "home.toHome", { min: eta.durationMin })
+              : t("home.toHomeBy", { mode: t(`maps.mode.${eta.mode}`), min: eta.durationMin })}
             {eta.origin === "home" ? ` · ${t("maps.from.home")}` : ""}
           </Text>
         ) : eta === null ? (

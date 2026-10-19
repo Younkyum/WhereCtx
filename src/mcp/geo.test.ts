@@ -137,6 +137,29 @@ describe("get_eta and get_directions", () => {
   });
 });
 
+describe("get_eta by transit, on foot and by bicycle", () => {
+  it("names no line when a ride runs near an end, never a stop, and records the mode", async () => {
+    await settings({ geoEnabled: true, etaToAgents: true });
+    const res = await call(AGENT, "get_directions", { to: "office", mode: "transit" });
+    expect(res.isError).toBe(false);
+    expect(res.body).toMatchObject({ mode: "transit", summary: [], stepsWithheld: expect.any(String) });
+    expect(res.text).not.toMatch(/정류장|테스트\S*역|마을 테스트1|2호선|간선 472|"transfers"|"fare"|"legs"|"path"/);
+    expect(fake.calls.filter((c) => c.op === "route").map((c) => c.op === "route" && c.request.mode)).toEqual(["transit"]);
+    const { entries } = await owner.browser.json("/v1/activity/access");
+    expect(entries.map((e: any) => e.action)).toContain("geo.route.transit");
+  });
+
+  it("answers walk and bike with no street, and refuses an unknown mode", async () => {
+    await settings({ geoEnabled: true, etaToAgents: true });
+    for (const mode of ["walk", "bike"]) {
+      const res = await call(AGENT, "get_eta", { to: "office", mode });
+      expect(res.body, mode).toMatchObject({ mode, summary: [] });
+      expect(res.text, mode).not.toMatch(/테스트\S*로/);
+    }
+    expect((await call(AGENT, "get_eta", { to: "office", mode: "boat" })).isError).toBe(true);
+  });
+});
+
 describe("create_place by address", () => {
   beforeEach(() => settings({ geoEnabled: true }));
 

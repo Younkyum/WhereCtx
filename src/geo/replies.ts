@@ -10,7 +10,7 @@ import type { AccessDecision } from "../activity/types.js";
 import type { CandidateView, EtaOutcome, SearchOutcome } from "./service.js";
 
 export interface GeoReply {
-  status: 200 | 403 | 404 | 409 | 429 | 502;
+  status: 200 | 400 | 403 | 404 | 409 | 429 | 502;
   body: unknown;
   decision: AccessDecision;
   isError: boolean;
@@ -61,6 +61,23 @@ export function etaReply(outcome: EtaOutcome): GeoReply {
     }
     case "not_found":
       return reply(404, { error: outcome.reason }, { outcome: "allowed" });
+    case "unsupported_mode": {
+      const error = `${outcome.provider} does not route ${outcome.mode}; it routes ${outcome.supported.join(", ")}`;
+      const [other] = outcome.switchTo;
+      const hint = other && `the person can set the maps provider (geoProvider) to ${other} under Maps & routes, which routes ${outcome.mode}`;
+      return reply(
+        409,
+        { error, unsupported: "mode", mode: outcome.mode, provider: outcome.provider, supported: outcome.supported, ...(hint ? { hint } : {}) },
+        { outcome: "error", denial: error },
+      );
+    }
+    case "unsupported_option": {
+      const error =
+        outcome.option === "departAt"
+          ? `${outcome.mode} routes are timed for now only; a later departAt applies to driving`
+          : `road kinds to avoid apply to driving only, not ${outcome.mode}`;
+      return reply(400, { error, unsupported: "option", option: outcome.option, mode: outcome.mode }, { outcome: "denied", denial: error });
+    }
     case "ambiguous":
       // Answered: the caller picks one and asks again.
       return {

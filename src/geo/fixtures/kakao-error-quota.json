@@ -1,0 +1,6 @@
+{
+  "errorType": "BadRequest",
+  "message": "API limit has been exceeded.",
+  "code": -10,
+  "msg": "API limit has been exceeded."
+}

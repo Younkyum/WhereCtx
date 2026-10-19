@@ -10,7 +10,8 @@
  *   in memory and reset with the process.
  * - The record: each call notes how the key fared and, unless the owner made
  *   it from the dashboard, lands in the person's access log as geo.reverse,
- *   geo.geocode or geo.route under the agent or `system`, with no
+ *   geo.geocode or geo.route (geo.route.transit, .walk, .bike by mode)
+ *   under the agent or `system`, with no
  *   coordinates. A provider failure is an `error` there: nothing was decided
  *   about the caller.
  */
@@ -95,7 +96,10 @@ export type KeyTestOutcome =
 /** How one provider call went. `rate_limited`: a budget was spent, so nothing was sent. */
 export type CallResult<T> = { kind: "ok"; value: T } | { kind: "rate_limited" } | { kind: "failed"; error: GeoError };
 
-export type GeoCallAction = Extract<AccessAction, "geo.reverse" | "geo.geocode" | "geo.route">;
+export type GeoCallAction = Extract<
+  AccessAction,
+  "geo.reverse" | "geo.geocode" | "geo.route" | "geo.route.transit" | "geo.route.walk" | "geo.route.bike"
+>;
 
 export interface GeoKeysDeps {
   config: WhereCtxConfig;
@@ -166,6 +170,17 @@ export class GeoKeys {
     return name ? { provider: this.adapter(this.deps.config.geo.operatorKeys[name]!), name, source: "operator" } : null;
   }
 
+  /** Every provider my calls could use: one I saved a usable key for, or the operator's. */
+  async available(userId: UserId): Promise<GeoProviderName[]> {
+    const operator = this.operatorProviders(userId);
+    const out: GeoProviderName[] = [];
+    for (const name of GEO_PROVIDERS) {
+      const keys = await this.deps.credentials.open(userId, name);
+      if ((keys && restCredentials(name, keys)) || operator.includes(name)) out.push(name);
+    }
+    return out;
+  }
+
   async status(userId: UserId, settings: PrivacySettings): Promise<GeoStatus> {
     const resolved = await this.resolve(userId, settings);
     return {
@@ -201,7 +216,7 @@ export class GeoKeys {
     const owner: GeoCaller = { kind: "owner" };
     const region = await this.call(userId, owner, resolved, "geo.reverse", (p) => p.reverse(KEY_TEST_POINT));
     if (region.kind !== "ok") return testFailure("geocoding", region);
-    const route = await this.call(userId, owner, resolved, "geo.route", (p) => p.route({ origin: KEY_TEST_POINT, destination: KEY_TEST_DESTINATION }));
+    const route = await this.call(userId, owner, resolved, "geo.route", (p) => p.route({ mode: "car", origin: KEY_TEST_POINT, destination: KEY_TEST_DESTINATION }));
     if (route.kind !== "ok") return testFailure("directions", route);
     return { ok: true, label: region.value?.label ?? "" };
   }

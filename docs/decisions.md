@@ -746,3 +746,111 @@ maps that need neither provider.
   provider's own text comes back with every key masked, since Kakao echoes
   the key it was sent.
 
+
+## 2026-10-19: routes by transit, on foot and by bicycle
+
+The operator asked for public transit beside driving. The Kakao Map API
+added transit, walking and cycling routes on 2026-07-21
+(devtalk.kakao.com/t/api-notice-on-new-kakao-map-api-features-and-free-quota-policy/150222),
+on `dapi.kakao.com` with the same REST key.
+
+- **One route type, a mode, a capability table.** `RouteMode` is `car`,
+  `transit`, `walk` or `bike`; `RouteResult` is a union by mode (a car has
+  roads and fares, transit has legs with lines, stops and geometry, walking
+  and cycling have instructions). `PROVIDER_ROUTE_MODES` names Kakao for
+  all four and Naver for `car` alone: Naver Cloud Maps lists Directions 5
+  and 15, both driving, and no transit, walking or cycling API. GeoService
+  answers `unsupported_mode` before any call, and the Naver adapter refuses
+  any other mode itself too. Rejected: falling back to another provider for
+  a mode, since that would send the location somewhere the person did not
+  choose.
+- **The endpoints, as documented** (developers.kakao.com/docs/ko/kakaomap/rest-api):
+  `GET /v2/routing/publictraffic`, `/v2/routing/walk`, `/v2/routing/bicycle`
+  with `start_x`, `start_y`, `end_x`, `end_y` (WGS84 by default) and
+  `Authorization: KakaoAK <key>`. Transit answers `status` (`OK`,
+  `STARTNODES_NULL`, `ENDNODES_NULL`, `EQUAL_POINTS`, `INVALID_REQUEST`,
+  `NO_RESULTS`) and `routes[]` of `properties` (`totalTime` s,
+  `totalDistance` m, `transfers`, `fare.value`) and `steps[]` (`type` `BUS`,
+  `SUBWAY` or `WALKING`, `time`, `distance`, `guidance`, `stops[].name`,
+  `vehicles[]` of `type` and `name`, `path.points` as [x, y]). Walking and
+  cycling answer `route.properties` and `legs[].steps[]` with `guidance`
+  and `path.points`. None takes a departure time, so a future `departAt`
+  and `avoid` are `unsupported` for them. The first transit route is used,
+  in Kakao's order. A bus is named with its kind (`간선 472`), a subway line
+  by its name. Each path is one constant in `kakao.ts`.
+- **Quota.** Kakao's `-10` ("API limit has been exceeded.", HTTP 400) is
+  `quota`, as it already was for Mobility. DevTalk threads report it on
+  transit from test apps with a small separate daily quota. Each route call
+  counts against the same per-person and per-key budgets as a car's.
+- **What an agent hears of transit.** The stops at either end are the
+  ones nearest the person and the destination, so stop names never reach an
+  agent, nor the fare, the legs or the provider's step text, which names
+  stops. It hears the transfers, the minutes on foot in 5-minute steps, and
+  the lines of rides that run, boarding to alighting, farther than
+  `AGENT_ROAD_CLEARANCE_M` (1.5 km) from the origin and a registered
+  destination, the same rule as roads. The whole ride must be clear, not
+  only the boarding stop, so a line alighting beside the destination is
+  left out too. Precise access (the gate `get_precise_location` uses) lifts
+  the line filter only, and the answer is then logged as precise. Walking
+  and cycling give an agent no street at all without precise access and
+  `directions`.
+- **Logged by mode.** A route call is `geo.route` (car, unchanged so old
+  rows read the same), `geo.route.transit`, `geo.route.walk` or
+  `geo.route.bike`. New actions instead of a column: no migration, and the
+  activity page already names each action.
+- **Fixtures.** The documented examples elide most steps (`// ...`), so the
+  fixtures keep every value the docs print and fill the elided steps per the
+  documented schema; a second transit fixture with two transfers is built
+  per that schema to test the line filter at both ends. They were not
+  recorded from a live key.
+
+## 2026-10-19: what an agent hears of a route, after a two-model review
+
+A two-model adversarial review of routes by mode found the agent answer
+still leaked more than its steps promised. Each fix below has a test that
+fails without it.
+
+- **No timing or distance oracle.** `arriveAt` was the exact departure
+  plus the exact duration, rounded once, so `arriveAt - departAt` and
+  successive answers a minute apart gave the duration and the start finer
+  than 5 minutes. The departure is now floored to 5 minutes and the arrival
+  is that plus the rounded minutes. Walking and cycling minutes are their
+  distance, so they go in 15-minute steps from 15 on. Each answer is kept
+  per (credential, request) for 5 minutes (`AnswerCache`), after the gates
+  and before the key, so polling hears the identical answer and spends no
+  budget. Rejected: a cache shared across credentials, which would let one
+  agent see another's question.
+- **Segments, not points.** `clearOf` measured each path point. A two-point
+  ride whose stops lie 2 km away can pass 300 m from the start. Distances
+  are now point-to-segment on a local equirectangular plane per keep-out
+  (`clearance.ts`), accurate well under a percent at route scales.
+- **Every place is a keep-out.** The avoid set was the origin and a
+  registered destination. A route to work that runs past home named the bus
+  that does. It is now the origin, the destination and every registered
+  place, measured to a circle's edge or a polygon's outline (the shapes
+  #6 added).
+- **All or nothing.** Dropping only the rides near an end let the dropped
+  ride be read from the gap, the transfer count and the alternatives listed
+  for a ride. Without precise access a transit answer names one line per
+  ride (the first) only when every ride is named; otherwise no line and no
+  `transfers`. Labels must be citywide: `(간선|지선|광역|직행|순환|급행|공항)
+  N`, `N호선`, or a short list of named rail lines. Village buses and
+  place-prefixed labels never are. Rejected: bucketing `transfers` to 0, 1,
+  2+, since with lines named the count is their number less one anyway.
+- **Refuse before sending.** A later `departAt` or `avoid` off driving
+  reached the adapter after a geocode and a budget spend and came back as a
+  502. It is `unsupported_option` (400) before any gate that reads state.
+- **Unknown shapes.** A step type or a vehicle in a shape the schema did
+  not know failed the whole route. Unknown step types are rides of kind
+  `other`, never named; a vehicle with a non-string type or no name is
+  dropped.
+- **Provider words.** An agent hears fixed text per error kind. The status
+  is cleaned, capped at 40 characters and key-masked for the owner and the
+  access log.
+- **Precise steps.** Precise access may read the exact location already,
+  so with `directions` it hears up to 30 steps by any mode, transit legs
+  (with stations) included. `usedPrecise` is true only when the answer
+  carried something the open answer would not.
+- **`unsupported_mode` says what would work.** It carries `supported` and,
+  when another provider with a key routes the mode, a hint to switch
+  `geoProvider`. Still no automatic fallback, for the reason above.

@@ -98,6 +98,10 @@ export const ACCESS_ACTIONS = [
   "geo.reverse",
   "geo.geocode",
   "geo.route",
+  /** A route by transit, on foot or by bicycle; `geo.route` is a car's. */
+  "geo.route.transit",
+  "geo.route.walk",
+  "geo.route.bike",
 ] as const;
 export type AccessAction = (typeof ACCESS_ACTIONS)[number];
 

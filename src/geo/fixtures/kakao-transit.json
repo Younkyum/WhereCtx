@@ -1,0 +1,114 @@
+{
+  "status": "OK",
+  "properties": {
+    "total": 15,
+    "bus": 9,
+    "subway": 1,
+    "busAndSubway": 5,
+    "landingURL": "https://map.kakao.com/link/by/traffic/출발,37.39477123,127.11119217/도착,37.41993056,127.12628814"
+  },
+  "routes": [
+    {
+      "properties": {
+        "type": "BUS",
+        "totalDistance": 5013,
+        "totalTime": 2115,
+        "transfers": 0,
+        "fare": {
+          "value": 1350
+        }
+      },
+      "steps": [
+        {
+          "properties": {
+            "guidance": "판교역로 따라 판교역동편까지 도보",
+            "type": "WALKING",
+            "distance": 226,
+            "time": 204
+          },
+          "path": {
+            "points": [
+              [
+                127.11119217,
+                37.39477123
+              ],
+              [
+                127.1121,
+                37.3948
+              ],
+              [
+                127.11316378,
+                37.3948816
+              ]
+            ]
+          }
+        },
+        {
+          "properties": {
+            "guidance": "마을 76 (판교역동편 > 성남시청전면)",
+            "type": "BUS",
+            "distance": 4127,
+            "time": 1158,
+            "stops": [
+              {
+                "name": "판교역동편"
+              },
+              {
+                "name": "봇들마을7.8단지.롯데마트판교점"
+              },
+              {
+                "name": "성남시청전면"
+              }
+            ],
+            "vehicles": [
+              {
+                "name": "76",
+                "type": "마을"
+              }
+            ]
+          },
+          "path": {
+            "points": [
+              [
+                127.11316378,
+                37.3948816
+              ],
+              [
+                127.11312974,
+                37.39488161
+              ],
+              [
+                127.119,
+                37.406
+              ],
+              [
+                127.1255,
+                37.4185
+              ]
+            ]
+          }
+        },
+        {
+          "properties": {
+            "guidance": "성남시청전면에서 도착지까지 도보",
+            "type": "WALKING",
+            "distance": 660,
+            "time": 753
+          },
+          "path": {
+            "points": [
+              [
+                127.1255,
+                37.4185
+              ],
+              [
+                127.12628814,
+                37.41993056
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

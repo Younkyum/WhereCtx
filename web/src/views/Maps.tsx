@@ -10,6 +10,7 @@ import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
+import { List, ListItem } from "@astryxdesign/core/List";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Switch } from "@astryxdesign/core/Switch";
 import { Text } from "@astryxdesign/core/Text";
@@ -17,7 +18,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../context";
-import type { I18nKey } from "../i18n";
+import type { I18nKey, Translate } from "../i18n";
 import {
   GEO_FLAGS,
   GEO_PROVIDERS,
@@ -28,10 +29,11 @@ import {
   type GeoStatus,
   type KeyTest,
   type PrivacySettings,
+  type RouteMode,
 } from "../model";
 import { routeScene } from "../mapScene";
 import { MapView, tileHost, useMapTiles } from "../MapView";
-import { DialogForm, FormDialog, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useFormat, useLoad, useNotify } from "../ui";
+import { DialogForm, FormDialog, Hint, Loaded, Page, Panel, RouteModePicker, Row, Rows, useAction, useConfirm, useFormat, useLoad, useNotify } from "../ui";
 
 /** Where each provider documents getting a key (checked 2026-10-19). */
 const KEY_DOCS: Record<GeoProviderName, string> = {
@@ -295,13 +297,14 @@ function TryRoute() {
   const { t } = useApp();
   const fmt = useFormat();
   const [to, setTo] = useState("");
+  const [mode, setMode] = useState<RouteMode>("car");
   const [eta, setEta] = useState<Eta | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, run] = useAction(async () => {
     setProblem(null);
     setEta(null);
     try {
-      setEta((await api<{ eta: Eta }>(`/v1/geo/eta?to=${encodeURIComponent(to.trim())}`)).eta);
+      setEta((await api<{ eta: Eta }>(`/v1/geo/eta?to=${encodeURIComponent(to.trim())}&mode=${mode}`)).eta);
     } catch (e) {
       setProblem(e instanceof Error ? e.message : String(e));
     }
@@ -315,6 +318,7 @@ function TryRoute() {
         }}
       >
         <VStack gap={3}>
+          <RouteModePicker value={mode} onChange={setMode} />
           <HStack gap={2} wrap="wrap" vAlign="end">
             <TextInput label={t("maps.tryTo")} value={to} onChange={setTo} width={300} />
             <Button type="submit" label={t("maps.tryGo")} variant="primary" isLoading={busy} isDisabled={!to.trim()} />
@@ -329,7 +333,10 @@ function TryRoute() {
               </Text>
               <Text type="supporting">
                 {[
-                  t(eta.traffic === "live" ? "maps.live" : "maps.predicted"),
+                  eta.traffic ? t(eta.traffic === "live" ? "maps.live" : "maps.predicted") : t(`maps.mode.${eta.mode}`),
+                  eta.transfers !== undefined ? transfersText(t, eta.transfers) : "",
+                  eta.walkMin !== undefined ? t("maps.walkMin", { min: eta.walkMin }) : "",
+                  eta.fare !== undefined ? t("maps.fare", { won: eta.fare.toLocaleString() }) : "",
                   t("maps.arrive", { when: fmt.time(eta.arriveAt) }),
                   t(`maps.from.${eta.origin}`),
                   eta.summary.join(" · "),
@@ -337,6 +344,7 @@ function TryRoute() {
                   .filter(Boolean)
                   .join(" · ")}
               </Text>
+              {eta.legs?.length ? <Legs legs={eta.legs} /> : null}
               {eta.deepLinks ? (
                 <HStack gap={3}>
                   <Link href={eta.deepLinks.kakaoMap} isExternalLink>
@@ -352,9 +360,45 @@ function TryRoute() {
   );
 }
 
+function transfersText(t: Translate, n: number): string {
+  return n === 0 ? t("maps.transfers.none") : n === 1 ? t("maps.transfers.one") : t("maps.transfers", { n });
+}
+
+/** Where a ride boards and alights, and how many stops it rides: the stops after the one it boards at. */
+function stopsText(t: Translate, stops: readonly string[]): string | undefined {
+  if (stops.length < 2) return undefined;
+  const ends = { from: stops[0]!, to: stops.at(-1)! };
+  const n = stops.length - 1;
+  return n === 1 ? t("maps.leg.stops.one", ends) : t("maps.leg.stops", { ...ends, n });
+}
+
+/** A transit route leg by leg: each walk, and each ride with its lines and stops. */
+function Legs({ legs }: { legs: NonNullable<Eta["legs"]> }) {
+  const { t } = useApp();
+  return (
+    <List listStyle="decimal" density="compact">
+      {legs.map((leg, i) =>
+        leg.kind === "walk" ? (
+          <ListItem key={i} label={t("maps.leg.walk", { min: leg.durationMin, m: leg.distanceM })} />
+        ) : (
+          <ListItem
+            key={i}
+            label={
+              leg.lines.length > 0
+                ? t("maps.leg.ride", { lines: leg.lines.join(" / "), min: leg.durationMin })
+                : t("maps.leg.other", { min: leg.durationMin })
+            }
+            description={stopsText(t, leg.stops)}
+          />
+        ),
+      )}
+    </List>
+  );
+}
+
 function RouteMap({ eta }: { eta: Eta }) {
   const { t } = useApp();
   const tiles = useMapTiles();
-  const scene = useMemo(() => routeScene(eta.path ?? [], eta.destination.label, t("map.start")), [eta, t]);
+  const scene = useMemo(() => routeScene({ path: eta.path ?? [], legs: eta.legs }, eta.destination.label, t("map.start")), [eta, t]);
   return <MapView tiles={tiles} scene={scene} />;
 }

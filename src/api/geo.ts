@@ -6,8 +6,8 @@
  *   DELETE /v1/geo/credentials/:provider        -> forget my keys for it (session, step-up)
  *   POST   /v1/geo/credentials/:provider/test   -> look up Seoul City Hall with them, never my location (session)
  *   GET    /v1/geo/search?q=                    -> candidates with coordinates (manage_places)
- *   GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
- *                                               -> drive time from my current location (read_presence)
+ *   GET    /v1/geo/eta?to=&mode=&pick=&departAt=&avoid=&directions=&reason=
+ *                                               -> travel time by car|transit|walk|bike from my current location (read_presence)
  *
  * A saved key never comes back: answers carry the kinds held and a
  * four-character hint. The provider calls themselves are logged by
@@ -20,7 +20,7 @@ import type { RouteContext } from "../app/context.js";
 import { credentialOf } from "../activity/record.js";
 import type { GeoCaller } from "../geo/keys.js";
 import { etaReply, searchReply, type GeoReply } from "../geo/replies.js";
-import { GEO_PROVIDERS, ROUTE_AVOID, type GeoCredentials, type GeoProviderName } from "../geo/types.js";
+import { GEO_PROVIDERS, ROUTE_AVOID, ROUTE_MODES, type GeoCredentials, type GeoProviderName } from "../geo/types.js";
 import { decide, refuse } from "./accessAudit.js";
 import { noStore, requireFreshSession, requireScope, requireSession } from "./middleware.js";
 import { zodMessages } from "./validation.js";
@@ -38,6 +38,7 @@ const Provider = z.enum(GEO_PROVIDERS);
 
 const EtaQuery = z.object({
   to: z.string().trim().min(1).max(200),
+  mode: z.enum(ROUTE_MODES).default("car"),
   pick: z.coerce.number().int().min(1).max(30).optional(),
   departAt: z.iso.datetime({ offset: true }).optional(),
   avoid: z
@@ -112,6 +113,7 @@ export function geoRouter(ctx: RouteContext): Hono<AppEnv> {
   app.get("/eta", requireScope("read_presence"), noStore, async (c) => {
     const query = EtaQuery.safeParse({
       to: c.req.query("to"),
+      mode: c.req.query("mode"),
       pick: c.req.query("pick"),
       departAt: c.req.query("departAt"),
       avoid: c.req.query("avoid"),
@@ -119,9 +121,9 @@ export function geoRouter(ctx: RouteContext): Hono<AppEnv> {
       reason: c.req.query("reason"),
     });
     if (!query.success) return c.json({ error: "invalid query", detail: zodMessages(query.error) }, 400);
-    const { to, pick, departAt, avoid, directions, reason } = query.data;
+    const { to, mode, pick, departAt, avoid, directions, reason } = query.data;
     decide(c, { reason });
-    const request = { to, pick, departAt: departAt ? new Date(departAt) : undefined, avoid, directions, reason };
+    const request = { mode, to, pick, departAt: departAt ? new Date(departAt) : undefined, avoid, directions, reason };
     const caller = callerOf(c);
     const geo = c.get("scope").geo;
     const outcome = caller.kind === "agent" ? await geo.eta(request, caller) : await geo.ownerEta(request);
