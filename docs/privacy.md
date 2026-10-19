@@ -4,7 +4,7 @@ WhereCtx is designed around one principle:
 
 > **Presence by default, precise location when needed.**
 
-Agents usually need a contextual state (`near_home`, `walking`, `stale`), not raw
+Agents usually need a contextual state (`near_home`, `walking`, `stationary`), not raw
 GPS. WhereCtx exposes coarse presence by default and gates precise location
 behind explicit policy.
 
@@ -143,6 +143,65 @@ Device-reported timestamps more than 5 minutes in the future are
 distrusted and clamped to server-receive time, so a skewed or malicious device
 cannot pin presence permanently "fresh".
 
+## Maps: directions, ETA and neighbourhood names
+
+Agents can ask how long it takes you to drive somewhere (MCP `get_eta`,
+`get_directions`, REST `GET /v1/geo/eta`), and your presence can carry the
+neighbourhood you are in (`area`, such as "성남시 분당구 삼평동"). Both need a
+call to Kakao or Naver with your location. Everything is off by default.
+
+| Setting (`PUT /v1/privacy`) | Default | What it does |
+|---|---|---|
+| `geoEnabled` | off | Master switch. Off: no provider call with your location, and no area is kept (turning it off clears it at once). |
+| `skipProviderNearHome` | on | At or near home, nothing goes out: no area lookup, and a route starts at your registered home place instead of your phone's position. |
+| `areaToAgents` | off | Agents' coarse presence includes `area`. |
+| `etaToAgents` | off | Agents may ask for ETA and directions from your current location. Separate from precise location; a drive time still hints how far away you are. |
+| `areaToPeople` | off | The starting value of each new share's `showArea` (a per-share switch, turned on with a fresh passkey like any widening). |
+| `geoProvider` | null | `kakao`, `naver`, or null for whichever has a key, Kakao first. |
+
+What leaves the server, and when:
+
+- **Rounded.** A point sent to a provider (your position for an area
+  lookup or a route origin) is cut to three decimals, about 100 m. Your
+  exact position never leaves.
+- **Region names only.** The area is the city/district and dong from the
+  provider's administrative-region lookup. No street, building or number is
+  kept.
+- **Off the ingest path.** The area is looked up after a reading is stored,
+  in the background: at most every two minutes per person, only after moving
+  200 m, and from a per-person cache first (`geo_cache`, kept 7 days,
+  pruned by the 6-hourly sweep). A failed lookup drops the area rather
+  than keep one for somewhere else.
+- **Only what a caller may see.** Agents never get your coordinates from a
+  route. Map links (to the destination, starting from the device's own
+  location) are given only for an address the agent itself named, or to a
+  token with `manage_places`, which sees place coordinates anyway.
+- **Address search** (adding a place by address, `create_place` with
+  `address`) sends only the text typed.
+- **Every call is logged.** Each provider call with your location or key is
+  an access log row: `geo.reverse` (the background lookup, credential
+  `system`), `geo.geocode`, `geo.route` (under the agent that asked). No
+  coordinates. Your own dashboard calls are not logged, as your own reads
+  are not.
+- **Limits.** 30 provider calls a minute per agent credential (and per owner),
+  to protect your quota. Requests time out after 5 s and are not retried.
+
+### Keys (BYOK)
+
+Save your own Kakao REST API key, or a Naver Cloud Maps Client ID and Client
+Secret, under **Maps & routes**. A key is sealed with AES-256-GCM under a
+per-install key kept in `server_secrets` before it is written, and is never
+returned: the dashboard shows the last four characters, the last use and
+the last error. Saving, replacing or removing a key needs a passkey proof
+from the last 10 minutes; no token can touch keys. The key test looks up
+Seoul City Hall, never your location. The sealing key sits in the same
+database, so this protects a leaked `geo_credentials` table or dump of it,
+not a copy of the whole database.
+
+The operator can set fallback keys (`KAKAO_REST_API_KEY`,
+`NAVER_MAPS_CLIENT_ID`/`NAVER_MAPS_CLIENT_SECRET`). Only the `USER_ID` person
+uses them unless `GEO_OPERATOR_KEY_FOR_ALL=true`. Your own key always wins.
+
 ## Raw history
 
 Disabled by default (`STORE_RAW_HISTORY=false` seeds each person's
@@ -161,7 +220,7 @@ gives a viewer no history.
 
 | Log | What a row holds | Kept | Who can read it |
 |-----|------------------|------|-----------------|
-| Access log (`access_log`) | Every token request to the person's `/v1` routes (all but ingest and sign-in: presence, places, events, privacy, webhooks, tokens, devices, and token attempts at account, activity and admin routes) and every MCP tool call, refused calls included, from a token or a connected OAuth app. The token's id and name (for an app, its grant id and client name), REST or MCP, the action (never a raw path or tool name), whether it sought coordinates, the reason given for a precise request, the outcome (allowed, denied, hidden, error) and why it was denied. Identical requests within a minute share a row with a count. No coordinates. The reason and denial go through the same redaction as an ingest rejection. | `ACCESS_LOG_RETENTION_DAYS`, default 90 days | The person, signed in (Agent access view, `GET /v1/activity/access`). No token can read it. |
+| Access log (`access_log`) | Every maps provider call made with the person's location or key (`geo.reverse`, `geo.geocode`, `geo.route`, under the agent or `system`). Every token request to the person's `/v1` routes (all but ingest and sign-in: presence, places, events, privacy, webhooks, tokens, devices, and token attempts at account, activity and admin routes) and every MCP tool call, refused calls included, from a token or a connected OAuth app. The token's id and name (for an app, its grant id and client name), REST or MCP, the action (never a raw path or tool name), whether it sought coordinates, the reason given for a precise request, the outcome (allowed, denied, hidden, error) and why it was denied. Identical requests within a minute share a row with a count. No coordinates. The reason and denial go through the same redaction as an ingest rejection. | `ACCESS_LOG_RETENTION_DAYS`, default 90 days | The person, signed in (Agent access view, `GET /v1/activity/access`). No token can read it. |
 | Ingest log (`ingest_log`) | Every authenticated upload from a device: which token (none for the dashboard's "share now"), which route, accepted, rejected, ignored or a server error, and why. No coordinates: the table has no column for them, and a rejection message is redacted before it is stored. | `INGEST_LOG_RETENTION_DAYS`, default 7 days | The person, signed in (Devices view, `GET /v1/activity/ingest`, and the summary in `GET /v1/devices`). |
 | Share audit (`share_audit`) | Grants, changes, revokes, and who viewed the person's precise location. | `SHARE_AUDIT_RETENTION_DAYS`, default 365 days | The person (`GET /v1/shares/audit`). |
 | Server log | What the server reports: errors, webhook failures, boot notices. Written through one logger that redacts as it writes (see below). | stdout/stderr (for `docker logs`) as long as the host keeps them; the last 1000 entries in memory until restart | The operator (the `USER_ID` person) in the Server logs view, `GET /v1/admin/logs`. Nobody else, no token. |

@@ -139,10 +139,75 @@ PUT /v1/privacy              # manage_privacy — partial update; emits privacy_
 ```
 Body keys: `defaultAgentAccess`, `allowPreciseLocation`, `preciseRequiresReason`,
 `preciseRequiresApproval`, `hideHomeExactCoordinates`, `protectHomePlace`,
-`retentionHours`, `storeRawHistory`, `sharingPaused` (all optional).
+`retentionHours`, `storeRawHistory`, `sharingPaused`, and the maps switches
+`geoEnabled`, `skipProviderNearHome`, `areaToAgents`, `etaToAgents`,
+`areaToPeople`, `geoProvider` (`kakao` | `naver` | null) (all optional).
 `sharingPaused` hides you from everyone you share your location with (see
 [Location sharing](#location-sharing-signed-in-people)); it has no effect on
 agents.
+
+## Maps
+
+Directions, ETA, address search and the maps keys. See
+[privacy.md](privacy.md#maps-directions-eta-and-neighbourhood-names) for
+what leaves the server. The switches are privacy settings (`geoEnabled`,
+`skipProviderNearHome`, `areaToAgents`, `etaToAgents`, `areaToPeople`,
+`geoProvider` on `PUT /v1/privacy`).
+
+```
+GET    /v1/geo                               # session only: provider in use, my keys' hints, operator fallbacks
+PUT    /v1/geo/credentials/kakao             # session, step-up: { "restKey":"…" }
+PUT    /v1/geo/credentials/naver             # session, step-up: { "clientId":"…", "clientSecret":"…" }
+DELETE /v1/geo/credentials/:provider         # session, step-up
+POST   /v1/geo/credentials/:provider/test    # session: looks up Seoul City Hall with the saved key
+GET    /v1/geo/search?q=                     # manage_places: address or place search, with coordinates
+GET    /v1/geo/eta?to=&pick=&departAt=&avoid= # read_presence: drive time from my current location
+```
+
+`GET /v1/geo`:
+
+```json
+{ "active": { "provider":"kakao", "source":"own" },
+  "credentials": [{ "provider":"kakao", "kinds":{ "restKey":"cdef" },
+    "createdAt":"…", "updatedAt":"…", "lastUsedAt":"…", "lastError":null }],
+  "operator": [] }
+```
+
+A key is never returned; `kinds` names each key kind held with its last four
+characters. Saving keeps the kinds a request does not name, so the map SDK
+keys of a later release can sit beside the REST keys.
+
+`GET /v1/geo/eta`: `to` is a registered place's name, else an address or a
+place name to search. When a search finds several, the answer is `409` with
+numbered `candidates` (coordinates only for a session or a `manage_places`
+token); pass `pick`. `departAt` is an ISO 8601 time with an offset for a
+future departure (Kakao only; Naver answers `502` `kind:"unsupported"`).
+`avoid` is a comma list of `toll`, `motorway`, `ferries` (Naver: one of
+`toll`, `motorway`).
+
+```json
+{ "eta": { "destination": { "label":"office", "kind":"place" }, "origin":"current_location",
+  "durationMin":23, "distanceKm":11.4, "trafficAware":true, "traffic":"live",
+  "departAt":"…", "arriveAt":"…", "summary":["강남대로","테헤란로"], "steps":["…"],
+  "tollFare":0, "taxiFare":15600, "provider":"kakao",
+  "deepLinks": { "kakaoMap":"https://map.kakao.com/link/to/…", "naverMap":"nmap://navigation?…" } } }
+```
+
+`origin` is `home` when you are at or near home with `skipProviderNearHome`
+on: the route starts at your home place. `deepLinks` appear only for a
+session, a `manage_places` token, or an address the caller named.
+
+| Case | Status |
+|------|--------|
+| maps off, or (token) `etaToAgents` off | `403` |
+| (token) hidden mode | `403` `{ "privacy":"hidden" }` |
+| no reading | `404` |
+| the device appears offline (`stale`) | `409` `{ "error":"location is stale", "updatedAgoSec" }` |
+| no such place and nothing found | `404` |
+| several matches | `409` with `candidates` |
+| no key set up | `409` |
+| over 30 calls a minute for this caller | `429` |
+| the provider refused or failed | `502` `{ "error", "kind" }` (`auth`, `quota`, `no_route`, `unsupported`, `bad_request`, `timeout`, `upstream`) |
 
 ## Accounts (signed-in people)
 
@@ -194,7 +259,7 @@ viewer's agents ever reach these routes.
 ```
 GET    /v1/shares                        # { outgoing: [{ viewer:{id,displayName}, level, hideHomeExact }],
                                          #   incoming: [{ owner:{id,displayName}, level, hideHomeExact }] }
-PUT    /v1/shares/:viewerUserId          # { "level":"coarse"|"precise", "hideHomeExact"?:bool } -> { share }
+PUT    /v1/shares/:viewerUserId          # { "level":"coarse"|"precise", "hideHomeExact"?:bool, "showArea"?:bool } -> { share }
 DELETE /v1/shares/:viewerUserId          # stop sharing
 DELETE /v1/shares/incoming/:ownerUserId  # stop seeing someone who shares with me
 GET    /v1/shares/audit?limit=50         # my shares' audit, newest first (max 500)
@@ -346,7 +411,10 @@ GET /v1/activity/ingest?limit=50&before=               # device uploads (max 200
     `events.list`, `privacy.read`, `privacy.update`, `webhooks.list`,
     `webhooks.create`, `webhooks.update`, `webhooks.delete`,
     `webhooks.dead_letters`, `tokens.list`, `tokens.create`, `tokens.revoke`,
-    `devices.list`, `devices.pair`, `activity.read`, `admin.logs`; `account`
+    `devices.list`, `devices.pair`, `activity.read`, `admin.logs`,
+    `geo.settings`, `geo.credentials.write`, `geo.credentials.delete`,
+    `geo.credentials.test`, `geo.search`, `geo.eta`; the maps provider calls
+    `geo.reverse`, `geo.geocode`, `geo.route`; `account`
     for any `/v1/me`, `/v1/workspaces`, `/v1/shares`, `/v1/people` or
     `/v1/oauth` route, or the OAuth consent API under `/oauth/interaction/`
     (a token is always refused there); an MCP tool name; `mcp.request` for an
@@ -367,8 +435,9 @@ GET /v1/activity/ingest?limit=50&before=               # device uploads (max 200
     within a minute of the previous one fold into one row: `count` of them,
     the first at `createdAt`, the latest at `lastAt`. The row keeps the first
     reason.
-  - `credential.kind` is `token` for a WhereCtx token, or `oauth` for an MCP
-    client connected with OAuth. An OAuth row's `id` is the grant id (the `id`
+  - `credential.kind` is `token` for a WhereCtx token, `oauth` for an MCP
+    client connected with OAuth, or `system` (with `surface: "system"`) for
+    a maps call WhereCtx made on its own: the background area lookup. An OAuth row's `id` is the grant id (the `id`
     in `GET /v1/oauth/grants`), and its `name` is the client's name, else its
     `client_id` host.
   - `credential` filters by token or grant id. The person's own dashboard

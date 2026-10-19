@@ -392,3 +392,45 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
 - **The dashboard shows the age only.** The person reading their own or a
   shared presence sees "12 min ago", not a stale badge; `stale` is a signal
   for agents.
+
+## 2026-10-19: maps for agents (directions, ETA, neighbourhood)
+
+- **Kakao and Naver, with the person's own key.** Agents asked for routes
+  that reflect real traffic in Korea, which global providers serve poorly.
+  Kakao (Local API for addresses and regions, Kakao Mobility Directions for
+  car routes) takes one REST key as `Authorization: KakaoAK <key>`; Naver
+  Cloud Maps (Geocoding, Reverse Geocoding, Directions 5 on
+  `maps.apigw.ntruss.com`) takes an Application's Client ID and Secret in
+  `x-ncp-apigw-api-key-id` / `x-ncp-apigw-api-key`. Both bill per call
+  against the key holder, so each person brings their own; the operator's
+  keys are a fallback for `USER_ID` unless `GEO_OPERATOR_KEY_FOR_ALL`.
+  Each adapter's base URL is one constant, and contract tests run it against
+  the sample responses in the providers' docs.
+- **Driving only.** Both Directions APIs route cars. Kakao times a future
+  departure (`/v1/future/directions`, `departure_time` as YYYYMMDDHHMM, read
+  as KST since the docs name no zone); Naver Directions 5 has no departure
+  time and always applies live traffic, so a future `departAt` on Naver is
+  `unsupported` rather than silently timed for now.
+- **What leaves, decided once.** `GeoService` is the only caller of a
+  provider. It rounds any point to three decimals, sends nothing while maps
+  are off or (by default) near home, where a route starts at the home place,
+  and writes an access log row per call. The area lookup runs after the
+  ingest lock is released, so a slow provider never delays a reading.
+- **No coordinates to agents through routes.** An ETA reveals distance, so
+  it has its own switch (`etaToAgents`) apart from precise location. Map
+  links carry the destination's coordinates, so they go only to callers who
+  already know them: the owner, a `manage_places` token, or an agent that
+  named the address. The links start from the device's own location, so the
+  user's position is never in them. Only the documented links are used:
+  `https://map.kakao.com/link/to/<name>,<lat>,<lng>` and
+  `nmap://navigation?dlat=…&dlng=…&dname=…&appname=…`. The `kakaomap://`
+  app scheme was not confirmed in current docs, so it is left out.
+- **Sealed keys, one bag per provider.** The keys of a provider are one
+  JSON value sealed with AES-256-GCM under a per-install key in
+  `server_secrets`. Saving merges kinds, so the map SDK keys of a later
+  release (a Kakao JavaScript key, a Naver web client id) fit beside the
+  REST keys with no migration. The sealing key lives in the same database:
+  this guards a leaked table or a partial dump, not the whole file.
+- **The area is a consent like a share level.** Agents see it only with
+  `areaToAgents`; a person only through a share's `showArea`, which widens
+  the share and needs a fresh passkey; the owner always, while maps are on.

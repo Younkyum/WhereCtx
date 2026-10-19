@@ -168,8 +168,10 @@ protected from it.
 | `get_location_age` | – | `{updatedAgoSec, updatedAt, stale, freshness, lastReportAgoSec, lastMovedAgoSec, likelyStationary}` |
 | `list_recent_presence_events` | `limit?: number` | recent events (place names omitted for agents) |
 | `create_location_reminder` | `place: string, message: string` | `{id, place, message}`; the place must exist; refused in hidden mode |
-| `create_place` | `name, type, lat, lon, radiusM?` | `{name, type, radiusM}`; registers/replaces a geofence |
+| `create_place` | `name, type, lat, lon, radiusM?` or `name, type, address, pick?, radiusM?` | `{name, type, radiusM, address?}`; registers/replaces a geofence. An address is looked up with the user's maps provider; several matches come back numbered (no coordinates) for `pick` |
 | `remember_current_place` | `name, type?, radiusM?` | `{name, type, radiusM}`; saves the **current** location as a place (coordinates are never returned) |
+| `get_eta` | `to, pick?, departAt?, avoid?` | `{destination, origin, durationMin, distanceKm, trafficAware, traffic, departAt, arriveAt, summary, provider, …}` drive time from where the user is now, with live traffic. Never the user's coordinates. Needs the user's `geoEnabled` and `etaToAgents` |
+| `get_directions` | same | `get_eta` plus `steps` (the provider's turn instructions) and, for an address the agent named or a `manage_places` token, `deepLinks` (Kakao Map web, Naver Map app) |
 
 All tools apply the same privacy rules as the REST API: hidden mode withholds,
 precise is policy-gated, home coordinates are protected, and coarse tools never
@@ -196,6 +198,25 @@ in the dashboard's Agent access view; see [privacy.md](privacy.md#what-is-logged
 
 A POST may batch at most 10 JSON-RPC messages; a larger batch is refused with
 `400` and JSON-RPC error `-32600`.
+
+### ETA and directions
+
+`to` is a registered place's name (preferred: `home`, `office`), else an
+address or place to search. The route starts at the user's current
+location, rounded to about 100 m before it leaves the server, or at their
+home place while they are at or near home. A tool answers with an error
+text, never a guess, when maps or ETA for agents are off, the user's phone
+appears offline, no maps key is set up, or the caller made more than 30
+maps calls this minute. Several search matches return
+`{ambiguous:true, candidates:[{pick, label, address, …}]}`; call again with
+`pick`. Each call also writes a `geo.geocode` or `geo.route` row to the
+user's access log under the same credential.
+
+Provider support: Kakao (Kakao Mobility Directions) times a future
+`departAt` on predicted traffic (`traffic:"predicted"`); Naver Directions 5
+always uses live traffic and refuses `departAt`. Neither offers walking or
+public transit routes through these APIs, so the tools answer for driving
+only.
 
 ## Agent usage policy
 
