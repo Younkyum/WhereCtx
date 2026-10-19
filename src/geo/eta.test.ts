@@ -263,6 +263,27 @@ describe("a transit, walking or cycling route, from Kakao's documented samples",
     expect(rows.sort()).toEqual(["geo.route", "geo.route.bike", "geo.route.transit", "geo.route.walk"]);
   });
 
+  it("an agent hears fixed words for a failed route; the owner and the access log get the status cleaned, cut short and masked", async () => {
+    const status = "NO\u202eROUTE operator-kakao-key-0000 " + "z".repeat(300);
+    await boot({}, (async (input: URL | string) =>
+      new URL(String(input)).pathname === "/v2/routing/publictraffic"
+        ? new Response(JSON.stringify({ status }))
+        : sampleFetch(input)) as typeof fetch);
+    await place("city hall", "work", CITY_HALL);
+    await set({ geoEnabled: true, etaToAgents: true, geoProvider: "kakao" });
+    await read(START);
+    expect(await eta({ to: "city hall", mode: "transit" })).toEqual({ kind: "failed", error: "no_route", message: "no route found" });
+    const owner = await eta({ to: "city hall", mode: "transit" }, { kind: "owner" });
+    if (owner.kind !== "failed") throw new Error(`expected a failure, got ${owner.kind}`);
+    const rows = (await ctx.system.accessLog.list(OWNER)).entries.filter((e) => e.action === "geo.route.transit").map((e) => e.denial ?? "");
+    for (const text of [owner.message, ...rows]) {
+      expect(text).toMatch(/Kakao found no route \(NOROUTE/);
+      expect(text).not.toMatch(/\u202e|operator-kakao-key-0000|z{20}/);
+      expect(text.length).toBeLessThan(100);
+    }
+    expect(rows, "the agent's call is logged; the owner's own is not").toHaveLength(1);
+  });
+
   it("keeps the gates: near home is refused, an address needs precise access", async () => {
     await setUp();
     expect(await eta({ to: "서울특별시청", mode: "transit" })).toMatchObject({ kind: "denied", reason: expect.stringContaining("registered place") });

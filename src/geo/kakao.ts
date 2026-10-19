@@ -16,7 +16,7 @@
 
 import { z } from "zod";
 import { getJson, malformed, providerText } from "./http.js";
-import { kakaoFailure } from "./problems.js";
+import { kakaoFailure, providerMessageOf } from "./problems.js";
 import {
   GeoError,
   type GeocodeCandidate,
@@ -184,7 +184,12 @@ function stopNames(raw: readonly unknown[] | undefined): string[] {
 
 const pointsPath = (path: z.infer<typeof Points> | undefined): LatLon[] => (path?.points ?? []).map(([lon, lat]) => ({ lat: lat!, lon: lon! }));
 
-function noRouteFor(status: string): GeoError {
+/** Longest status word kept from a routing answer; Kakao's are short codes (NO_ROUTE, EQUAL_POINTS). */
+const STATUS_MAX = 40;
+
+/** A routing status other than OK as an error; the status is the provider's text, so it is cleaned, cut short and has every key masked. */
+function noRouteFor(raw: string, secrets: readonly string[]): GeoError {
+  const status = [...(providerMessageOf(raw, secrets) ?? "unknown")].slice(0, STATUS_MAX).join("");
   return BAD_REQUEST_STATUSES.has(status)
     ? new GeoError("bad_request", `Kakao rejected the route request (${status})`)
     : new GeoError("no_route", `Kakao found no route (${status})`);
@@ -318,7 +323,7 @@ export class KakaoProvider implements GeoProvider {
     this.nowOnly(request);
     const res = await this.get(KAKAO_LOCAL_BASE, KAKAO_TRANSIT_PATH, this.endpoints(request), Transit);
     const route = res.routes?.[0];
-    if (res.status !== "OK" || !route) throw noRouteFor(res.status);
+    if (res.status !== "OK" || !route) throw noRouteFor(res.status, [this.options.restKey]);
     const legs = route.steps.map(({ properties: p, path }): TransitLeg => {
       const kind = LEG_KIND.get(p.type) ?? "other";
       const ride = kind === "bus" || kind === "subway";
@@ -347,7 +352,7 @@ export class KakaoProvider implements GeoProvider {
   private async active(request: RouteRequest, mode: "walk" | "bike"): Promise<ActiveRoute> {
     this.nowOnly(request);
     const res = await this.get(KAKAO_LOCAL_BASE, mode === "walk" ? KAKAO_WALK_PATH : KAKAO_BIKE_PATH, this.endpoints(request), Active);
-    if (res.status !== "OK" || !res.route) throw noRouteFor(res.status);
+    if (res.status !== "OK" || !res.route) throw noRouteFor(res.status, [this.options.restKey]);
     const steps = res.route.legs.flatMap((leg) =>
       leg.steps.map((s) => ({ guidance: s.properties.guidance ?? "", distanceM: s.properties.distance, path: pointsPath(s.path) })),
     );

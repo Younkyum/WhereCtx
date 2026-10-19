@@ -302,7 +302,8 @@ export class GeoService {
     const result = await this.keys.call(userId, caller, resolved, "geo.geocode", (p) => p.geocode(query));
     if (result.kind === "ok") return { kind: "ok", candidates: result.value, provider: resolved.name };
     if (result.kind === "rate_limited") return result;
-    return { kind: "failed", error: result.error.kind, message: result.error.message };
+    const failed: SearchOutcome = { kind: "failed", error: result.error.kind, message: result.error.message };
+    return caller.kind === "agent" ? forAgent(failed) : failed;
   }
 
   /**
@@ -322,7 +323,7 @@ export class GeoService {
     const kept = this.agentAnswers.get(key, now);
     if (kept) return kept;
     const timed = await this.timeRoute(userId, request, caller, gated);
-    if ("kind" in timed) return timed;
+    if ("kind" in timed) return forAgent(timed);
     const { route, common, precise, avoid } = timed;
     const { detail, usedPrecise } = agentDetail(route, avoid, { precise, directions: request.directions === true });
     const outcome: AgentEtaOk = {
@@ -469,6 +470,25 @@ export const ROUTE_ACTION: Record<RouteMode, GeoCallAction> = {
   walk: "geo.route.walk",
   bike: "geo.route.bike",
 };
+
+/**
+ * What an agent hears of a provider failure: fixed words per kind, never
+ * the provider's own (a status, a message), which only the owner and the
+ * access log see.
+ */
+export const AGENT_FAILURE_TEXT: Record<GeoErrorKind, string> = {
+  auth: "the maps provider refused the key",
+  quota: "the maps provider's quota or rate limit was reached",
+  no_route: "no route found",
+  unsupported: "the maps provider cannot answer this request",
+  bad_request: "the maps provider rejected the request",
+  timeout: "the maps provider did not answer in time",
+  upstream: "the maps provider failed",
+};
+
+function forAgent<T extends EtaRefusal | SearchOutcome>(outcome: T): T {
+  return outcome.kind === "failed" ? { ...outcome, message: AGENT_FAILURE_TEXT[outcome.error] } : outcome;
+}
 
 /** A call that did not answer, as an outcome. */
 function failure(result: Exclude<CallResult<unknown>, { kind: "ok" }>): Extract<EtaOutcome, { kind: "rate_limited" | "failed" }> {
