@@ -1,9 +1,8 @@
 /**
- * My own data: places, privacy (what agents see, and pausing people), presence
- * events, and webhooks with their failed deliveries.
+ * My own data: places, privacy (what agents see, and pausing people), and
+ * presence events.
  */
 
-import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Grid } from "@astryxdesign/core/Grid";
@@ -23,12 +22,10 @@ import {
   PRIVACY_FLAGS,
   oneOf,
   type AgentAccess,
-  type DeadLetter,
   type Place,
   type PlaceType,
   type PresenceEvent,
   type PrivacySettings,
-  type Webhook,
 } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, useAction, useConfirm, useLoad, useNotify } from "../ui";
 
@@ -260,105 +257,6 @@ export function EventsView() {
               />
             ) : (
               <Empty text={t("events.empty")} />
-            )
-          }
-        </Loaded>
-      </Panel>
-    </Page>
-  );
-}
-
-export function WebhooksView() {
-  const { t } = useApp();
-  const notify = useNotify();
-  const confirm = useConfirm();
-  const [hooks, reloadHooks] = useLoad(() => api<{ webhooks: Webhook[] }>("/v1/webhooks").then((r) => r.webhooks ?? []), []);
-  const [dead, reloadDead] = useLoad(
-    () => api<{ deadLetters: DeadLetter[] }>("/v1/webhooks/dead-letters?limit=20").then((r) => r.deadLetters ?? []),
-    [],
-  );
-  const reload = async () => {
-    await Promise.all([reloadHooks(), reloadDead()]);
-  };
-  const [url, setUrl] = useState("");
-  const [secret, setSecret] = useState("");
-  const [busy, add] = useAction(async () => {
-    await api("/v1/webhooks", { body: { url: url.trim(), events: ["*"], ...(secret ? { secret } : {}) } });
-    notify.ok(t("toast.added"));
-    setUrl("");
-    setSecret("");
-    await reload();
-  });
-  const remove = async (w: Webhook) => {
-    if (!(await confirm({ title: t("webhooks.deleteConfirm"), description: w.url, action: t("common.delete") }))) return;
-    try {
-      await api(`/v1/webhooks/${encodeURIComponent(w.id)}`, { method: "DELETE" });
-      notify.ok(t("toast.deleted"));
-    } catch (e) {
-      notify.fail(e);
-    }
-    await reload();
-  };
-  return (
-    <Page title={t("webhooks.title")} description={t("webhooks.desc")}>
-      <Panel title={t("webhooks.list")}>
-        <Loaded state={hooks}>
-          {(list) =>
-            list.length ? (
-              <Table
-                data={list.map((w) => ({ ...w }))}
-                idKey="id"
-                columns={[
-                  { key: "url", header: t("webhooks.url"), renderCell: (w) => <Text type="code" wordBreak="break-all">{w.url}</Text> },
-                  { key: "events", header: t("webhooks.events"), renderCell: (w) => (w.events ?? []).join(", ") },
-                  {
-                    key: "active",
-                    header: t("webhooks.active"),
-                    renderCell: (w) => (w.active ? t("common.yes") : <Badge variant="warning" label={t("common.no")} />),
-                  },
-                  {
-                    key: "actions",
-                    header: "",
-                    align: "end",
-                    renderCell: (w) => <Button label={t("common.delete")} variant="destructive" size="sm" clickAction={() => remove(w)} />,
-                  },
-                ]}
-              />
-            ) : (
-              <Empty text={t("webhooks.empty")} />
-            )
-          }
-        </Loaded>
-      </Panel>
-      <Panel title={t("webhooks.add")}>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (/^https?:\/\//i.test(url.trim())) void add();
-          }}
-        >
-          <HStack gap={2} wrap="wrap" vAlign="end">
-            <TextInput label="URL" value={url} onChange={setUrl} placeholder="https://…" isRequired width={320} />
-            <TextInput label={t("webhooks.secret")} value={secret} onChange={setSecret} width={240} />
-            <Button type="submit" label={t("webhooks.addButton")} variant="primary" isLoading={busy} isDisabled={!/^https?:\/\//i.test(url.trim())} />
-          </HStack>
-        </form>
-      </Panel>
-      <Panel title={t("webhooks.deadLetters")}>
-        <Loaded state={dead}>
-          {(list) =>
-            list.length ? (
-              <Table
-                data={list.map((x, i) => ({ ...x, key: x.id ?? String(i) }))}
-                idKey="key"
-                columns={[
-                  { key: "eventType", header: t("events.type"), renderCell: (x) => <Text type="code">{x.eventType}</Text> },
-                  { key: "error", header: t("webhooks.error"), renderCell: (x) => x.error ?? "" },
-                  { key: "createdAt", header: t("events.when"), renderCell: (x) => <Timestamp value={x.createdAt} format="date_time" /> },
-                ]}
-              />
-            ) : (
-              <Empty text={t("webhooks.deadEmpty")} />
             )
           }
         </Loaded>

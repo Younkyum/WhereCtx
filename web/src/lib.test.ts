@@ -132,3 +132,91 @@ describe("pairing QR code", () => {
     expect(kept.paths).toEqual([{ d: "M0 0h1", stroke: "#000" }]);
   });
 });
+
+describe("history helpers", () => {
+  it("fits a track to the drawing with the north up and the first point first", () => {
+    const d = lib.drawTrack(
+      [
+        { lat: 37.5, lon: 127.0 },
+        { lat: 37.51, lon: 127.02 },
+      ],
+      [{ name: "home", lat: 37.5, lon: 127.0, radiusM: 100 }],
+      { width: 400, height: 200, pad: 10 },
+    )!;
+    const [a, b] = d.dots as [{ x: number; y: number }, { x: number; y: number }];
+    expect(b.x).toBeGreaterThan(a.x);
+    expect(b.y).toBeLessThan(a.y);
+    for (const p of d.dots) {
+      expect(p.x).toBeGreaterThanOrEqual(10);
+      expect(p.x).toBeLessThanOrEqual(390);
+      expect(p.y).toBeGreaterThanOrEqual(10);
+      expect(p.y).toBeLessThanOrEqual(190);
+    }
+    expect(d.line).toBe(`M${a.x} ${a.y} L${b.x} ${b.y}`);
+    expect(d.places[0]).toMatchObject({ name: "home", x: a.x, y: a.y });
+    expect(d.places[0]!.r).toBeGreaterThan(0);
+  });
+
+  it("draws a track that never moved, and nothing for no points", () => {
+    const still = lib.drawTrack([{ lat: 1, lon: 1 }, { lat: 1, lon: 1 }], [])!;
+    expect(still.dots[0]).toEqual({ x: still.width / 2, y: still.height / 2 });
+    expect(lib.drawTrack([], [])).toBeNull();
+  });
+
+  it("turns a local day into an inclusive ISO range and steps across months", () => {
+    const { from, to } = lib.dayRange("2026-03-31");
+    expect(new Date(from).getDate()).toBe(31);
+    expect(new Date(to).getTime() - new Date(from).getTime()).toBe(86_400_000 - 1);
+    expect(lib.shiftDay("2026-03-31", 1)).toBe("2026-04-01");
+    expect(lib.shiftDay("2026-01-01", -1)).toBe("2025-12-31");
+  });
+
+  it("groups by local day in order", () => {
+    const at = (d: number, h: number) => new Date(2026, 9, d, h).toISOString();
+    const groups = lib.groupByDay([at(18, 23), at(18, 1), at(17, 22)], (x) => x);
+    expect(groups.map((g) => [g.day, g.items.length])).toEqual([
+      ["2026-10-18", 2],
+      ["2026-10-17", 1],
+    ]);
+  });
+});
+
+describe("webhook event selection", () => {
+  it("lets all events and single events replace each other", () => {
+    expect(lib.pickEvents(["presence.left_place"], ["presence.left_place", "*"])).toEqual(["*"]);
+    expect(lib.pickEvents(["*"], ["*", "presence.updated"])).toEqual(["presence.updated"]);
+    expect(lib.pickEvents(["presence.left_place"], ["presence.left_place", "presence.updated"])).toEqual([
+      "presence.left_place",
+      "presence.updated",
+    ]);
+    expect(lib.pickEvents(["*"], [])).toEqual([]);
+  });
+});
+
+describe("bearer header", () => {
+  it("always renders the value as Bearer, one space, the token", () => {
+    expect(lib.bearerHeader("wctx_abc")).toEqual({ name: "Authorization", value: "Bearer wctx_abc", token: "wctx_abc" });
+    expect(lib.bearerHeader("Bearer wctx_abc").value).toBe("Bearer wctx_abc");
+  });
+});
+
+describe("history ranges", () => {
+  const now = new Date("2026-10-18T12:00:00.000Z");
+
+  it("asks for the last hours from now, leaves the end to the server, and asks for the most points", () => {
+    const q = new URLSearchParams(lib.historyQuery({ kind: "recent", hours: 6 }, now, 5000).slice(1));
+    expect(q.get("from")).toBe("2026-10-18T06:00:00.000Z");
+    expect(q.has("to")).toBe(false);
+    expect(q.get("limit")).toBe("5000");
+  });
+
+  it("asks for a whole local day", () => {
+    const q = new URLSearchParams(lib.historyQuery({ kind: "day", day: "2026-10-17" }, now, 5000).slice(1));
+    expect(q.get("from")).toBe(lib.dayRange("2026-10-17").from);
+    expect(q.get("to")).toBe(lib.dayRange("2026-10-17").to);
+  });
+
+  it("links a point to a map", () => {
+    expect(lib.mapLink(37.5, -122.25)).toBe("https://maps.google.com/?q=37.5,-122.25");
+  });
+});

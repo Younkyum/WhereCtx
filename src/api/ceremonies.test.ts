@@ -109,7 +109,7 @@ describe("ceremony binding", () => {
   it("refuses a login ceremony at invite sign-up and access-code registration", async () => {
     const browser = new Browser(app);
     const token = await newInvite();
-    const { code } = await ctx.system.accessCodes.issue(asUserId("owner"));
+    const code = (await ctx.system.accessCodes.issue(asUserId("owner"))).code.reveal();
     for (const [path, extra] of [
       ["/v1/auth/invite/verify", { token }],
       ["/v1/auth/access-code/verify", { code }],
@@ -184,7 +184,7 @@ describe("operator access codes", () => {
 
   it("lets a migrated user with no passkey claim their account", async () => {
     await ctx.system.users.ensure(asUserId("bob"), "bob");
-    const { code } = await ctx.system.accessCodes.issue(asUserId("bob"));
+    const code = (await ctx.system.accessCodes.issue(asUserId("bob"))).code.reveal();
     const { browser, res } = await claim(code.toLowerCase());
     expect(res.status).toBe(201);
     const body = (await res.json()) as any;
@@ -196,19 +196,19 @@ describe("operator access codes", () => {
 
   it("signs the user out everywhere else and replaces their recovery codes", async () => {
     const elsewhere = await login(app, (await ctx.system.passkeys.list(asUserId("owner")))[0]!.id);
-    const { code } = await ctx.system.accessCodes.issue(asUserId("owner"));
+    const code = (await ctx.system.accessCodes.issue(asUserId("owner"))).code.reveal();
     expect((await claim(code)).res.status).toBe(201);
     expect((await elsewhere.send("/v1/me")).status).toBe(401);
   });
 
   it("expires after an hour", async () => {
-    const { code } = await ctx.system.accessCodes.issue(asUserId("owner"));
+    const code = (await ctx.system.accessCodes.issue(asUserId("owner"))).code.reveal();
     clock.advance(61 * MINUTE);
     expect((await claim(code)).res.status).toBe(401);
   });
 
   it("registers exactly one passkey when redeemed twice at once", async () => {
-    const { code } = await ctx.system.accessCodes.issue(asUserId("owner"));
+    const code = (await ctx.system.accessCodes.issue(asUserId("owner"))).code.reveal();
     const starts = await Promise.all(
       [1, 2].map(async () => {
         const browser = new Browser(app);

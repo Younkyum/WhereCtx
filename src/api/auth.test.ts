@@ -30,7 +30,7 @@ async function boot(overrides: Partial<WhereCtxConfig> = {}, limiter?: RateLimit
   );
   opened.push(ctx);
   const app = buildApp(ctx, { authLimiter: limiter });
-  return { ctx, app, setupCode: bootstrap.setupCode! };
+  return { ctx, app, setupCode: bootstrap.setupCode?.reveal() as string };
 }
 
 beforeEach(() => {

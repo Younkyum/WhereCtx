@@ -32,6 +32,7 @@ import {
   type OAuthScope,
 } from "./scopes.js";
 import type { OAuthStore } from "./store.js";
+import { log } from "../util/log.js";
 
 const MINUTE = 60;
 const DAY = 24 * 3600;
@@ -63,6 +64,8 @@ export interface OAuthAccess {
   scope: string;
   grantId: string;
   clientId: string;
+  /** What the person saw on the consent screen: the client's name, else its client_id host. */
+  clientName: string;
 }
 
 /** What the consent screen shows about a pending authorization. */
@@ -207,6 +210,8 @@ export class OAuthServer {
     // The provider reads its origin from the forwarded headers `atIssuer`
     // overwrites, never from the client. TRUST_PROXY only picks the client IP.
     this.provider.proxy = true;
+    // The provider catches its own failures and reports them only as this event.
+    this.provider.on("server_error", (_ctx, err) => log.error("oauth server error", err));
     this.provider.use(async (ctx, next) => {
       ctx.set(SECURITY_HEADERS);
       await next();
@@ -241,7 +246,9 @@ export class OAuthServer {
     if (!grant || grant.accountId !== token.accountId || grant.clientId !== token.clientId) return null;
     const user = await this.deps.users.get(asUserId(token.accountId));
     if (!user || !token.clientId) return null;
-    return { userId: user.id, scope: token.scope ?? "", grantId: token.grantId, clientId: token.clientId };
+    const clientName =
+      (await this.deps.store.grantName(token.grantId)) ?? (URL.parse(token.clientId)?.host || token.clientId);
+    return { userId: user.id, scope: token.scope ?? "", grantId: token.grantId, clientId: token.clientId, clientName };
   }
 
   /**

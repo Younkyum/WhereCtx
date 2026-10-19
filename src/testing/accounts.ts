@@ -51,6 +51,7 @@ export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxCon
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
     oauth: { dynamicRegistration: false },
+    activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
     ...overrides,
   };
 }
@@ -282,5 +283,5 @@ export async function bootApp(
     testConfig({ bootstrapTokens: { admin: OWNER_ADMIN }, ...overrides }),
     { clock: clock.fn, ceremony: new FakeCeremony(), ...options },
   );
-  return { ctx, app: buildApp(ctx, build), setupCode: bootstrap.setupCode! };
+  return { ctx, app: buildApp(ctx, build), setupCode: bootstrap.setupCode!.reveal() };
 }

@@ -12,6 +12,7 @@
  * caller's user so one tenant can never see or revoke another's credentials.
  */
 
+import { Secret } from "../util/secret.js";
 import { randomBytes } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
@@ -41,7 +42,7 @@ export interface SeedResult {
   seeded: TokenRole[];
   warnings: string[];
   /** Set only when a strong admin token had to be auto-generated. */
-  generatedAdminSecret?: string;
+  generatedAdminSecret?: Secret;
 }
 
 export const TOKEN_PREFIX = "wctx";
@@ -247,7 +248,7 @@ export class TokenStore {
         lastUsedAt: null,
       });
       result.seeded.push("admin");
-      result.generatedAdminSecret = secret;
+      result.generatedAdminSecret = new Secret(secret);
     }
 
     return result;

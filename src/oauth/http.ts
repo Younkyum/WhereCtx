@@ -21,6 +21,7 @@ import { z } from "zod";
 import type { AppContext } from "../app/context.js";
 import { parseBody, respond } from "../api/accountHttp.js";
 import { noStore, sessionAuth } from "../api/middleware.js";
+import { auditAccess } from "../api/accessAudit.js";
 import type { SessionEnv } from "../api/types.js";
 import type { OAuthScope } from "./scopes.js";
 
@@ -35,7 +36,8 @@ const EXPIRED = {
 
 export function oauthRouter(ctx: AppContext): Hono<InteractionEnv> {
   const app = new Hono<InteractionEnv>();
-  const signedIn = sessionAuth(ctx);
+  // A token is refused here and recorded as "account", as on /v1/me.
+  const signedIn = [auditAccess(ctx, () => "account"), sessionAuth(ctx)] as const;
 
   const metadata = cors({ origin: "*", allowMethods: ["GET"] });
   for (const path of ["/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource"]) {
@@ -47,12 +49,12 @@ export function oauthRouter(ctx: AppContext): Hono<InteractionEnv> {
     c.redirect(`/dashboard/#authorize/${encodeURIComponent(c.req.param("uid"))}`, 303),
   );
 
-  app.get("/oauth/interaction/:uid/details", signedIn, noStore, async (c) => {
+  app.get("/oauth/interaction/:uid/details", ...signedIn, noStore, async (c) => {
     const request = await ctx.oauth.consentRequest(c.env.incoming, c.env.outgoing, c.req.param("uid"));
     return request ? c.json(request) : c.json(EXPIRED, 404);
   });
 
-  app.post("/oauth/interaction/:uid/confirm", signedIn, async (c) => {
+  app.post("/oauth/interaction/:uid/confirm", ...signedIn, async (c) => {
     const body = await parseBody(c, Confirm);
     if (body instanceof Response) return body;
     const optedIn = new Set<OAuthScope>(body.precise ? ["location:precise"] : []);
@@ -63,7 +65,7 @@ export function oauthRouter(ctx: AppContext): Hono<InteractionEnv> {
     return respond(c, result, (redirectTo) => c.json({ redirectTo }));
   });
 
-  app.post("/oauth/interaction/:uid/abort", signedIn, async (c) => {
+  app.post("/oauth/interaction/:uid/abort", ...signedIn, async (c) => {
     const redirectTo = await ctx.oauth.deny(c.env.incoming, c.env.outgoing, c.req.param("uid"));
     return redirectTo ? c.json({ redirectTo }) : c.json(EXPIRED, 404);
   });

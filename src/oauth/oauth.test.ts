@@ -515,6 +515,49 @@ describe("revocation from the Agents screen", () => {
   });
 });
 
+describe("access log", () => {
+  const accessLog = async () => (await owner.browser.json("/v1/activity/access")).entries as any[];
+
+  it("records every tools/call by an OAuth client under its grant, named after the client", async () => {
+    await placeAndPresence(owner.userId, "home", 37.0, 127.0);
+    const tokens = await connect(new UserAgent(owner.browser.cookie));
+    const [grant] = (await owner.browser.json("/v1/oauth/grants")).grants;
+    expect((await callTool(tokens.access_token, "get_presence")).isError).toBe(false);
+    expect((await callTool(tokens.access_token, "list_places")).isError).toBe(false);
+    expect((await callTool(tokens.access_token, "get_precise_location", { reason: "directions" })).isError).toBe(true);
+
+    const credential = { kind: "oauth", id: grant.id, name: "Test Agent" };
+    const rows = (await accessLog()).map(({ credential, surface, action, outcome }) => ({ credential, surface, action, outcome }));
+    // The test clock stands still, so the rows share a timestamp; order by action.
+    expect(rows.sort((x, y) => x.action.localeCompare(y.action))).toEqual([
+      { credential, surface: "mcp", action: "get_precise_location", outcome: "denied" },
+      { credential, surface: "mcp", action: "get_presence", outcome: "allowed" },
+      { credential, surface: "mcp", action: "list_places", outcome: "allowed" },
+    ]);
+  });
+
+  it("records the insufficient_scope refusal", async () => {
+    const res = await exchange(await consent(new UserAgent(owner.browser.cookie), true, { scope: "location:precise" }));
+    const { access_token } = (await res.json()) as Tokens;
+    expect((await mcp(access_token, "tools/call", { name: "get_presence", arguments: {} })).status).toBe(403);
+    expect(await accessLog()).toEqual([
+      expect.objectContaining({
+        credential: expect.objectContaining({ kind: "oauth", name: "Test Agent" }),
+        action: "mcp.request",
+        outcome: "denied",
+        denial: "requires read_presence scope",
+      }),
+    ]);
+  });
+
+  it("does not record the person listing or disconnecting their connected apps", async () => {
+    await connect(new UserAgent(owner.browser.cookie));
+    const [grant] = (await owner.browser.json("/v1/oauth/grants")).grants;
+    expect((await owner.browser.send(`/v1/oauth/grants/${grant.id}`, { method: "DELETE" })).status).toBe(200);
+    expect(await accessLog()).toEqual([]);
+  });
+});
+
 describe("isolation", () => {
   it("lets each person's token read only that person's presence", async () => {
     const ws = (await owner.browser.json("/v1/workspaces")).workspaces[0].id;

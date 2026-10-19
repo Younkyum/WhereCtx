@@ -26,6 +26,15 @@ import {
   buildPreciseView,
 } from "../privacy/policy.js";
 import { toPresenceContext } from "../store/presenceStore.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import {
+  isJSONRPCErrorResponse,
+  isJSONRPCRequest,
+  isJSONRPCResultResponse,
+  type RequestId,
+} from "@modelcontextprotocol/sdk/types.js";
+import { accessRecorder, type AccessRecorder } from "../activity/record.js";
+import type { AccessAction, AccessDecision } from "../activity/types.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
 import { secondsSince, isStale } from "../util/time.js";
 
@@ -35,13 +44,92 @@ const MAX_ACTIVE_REMINDERS = 100;
 /** Cap on registered places, to bound writes from read-scoped tokens. */
 const MAX_PLACES = 100;
 
-const ok = (data: unknown) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(data) }],
+type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+
+/**
+ * A tool's answer together with its access decision, so every tool says what
+ * became of the call and the recorder never reads the answer back.
+ */
+interface Reply {
+  decision: AccessDecision;
+  body: unknown;
+  isError?: boolean;
+}
+
+/** Served. `precise` when the answer carries coordinates. */
+const ok = (body: unknown, precise = false): Reply => ({
+  decision: { outcome: "allowed", ...(precise ? { precise } : {}) },
+  body,
 });
-const err = (message: string) => ({
-  content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }],
+/** Withheld by hidden mode. */
+const hidden = (body: unknown): Reply => ({ decision: { outcome: "hidden" }, body });
+/** Refused by scope or policy. */
+const err = (message: string, precise = false): Reply => ({
+  decision: { outcome: "denied", denial: message, ...(precise ? { precise } : {}) },
+  body: { error: message },
   isError: true,
 });
+/** Nothing to answer with (no presence yet, no such place): served, as a REST 404 is. */
+const none = (message: string, precise = false): Reply => ({
+  decision: { outcome: "allowed", ...(precise ? { precise } : {}) },
+  body: { error: message },
+  isError: true,
+});
+
+const toResult = (reply: Reply): ToolResult => ({
+  content: [{ type: "text", text: JSON.stringify(reply.body) }],
+  ...(reply.isError ? { isError: true } : {}),
+});
+
+/**
+ * Write one access log row per tools/call request, valid or not, when its
+ * response goes out. Watches the transport the server connects to: its
+ * incoming requests and its outgoing responses. A call still unanswered when
+ * the transport closes is recorded as an error.
+ */
+function recordToolCalls(
+  server: McpServer,
+  record: AccessRecorder,
+  outcomeOf: (id: RequestId, name: string, undecided: AccessDecision) => { action: AccessAction; decision: AccessDecision },
+): void {
+  const pending = new Map<RequestId, { name: string; args: unknown }>();
+  /** `undecided`: the outcome of a call no handler decided (the SDK refused it, or it was never answered). */
+  const settle = async (id: RequestId, undecided: AccessDecision): Promise<void> => {
+    const call = pending.get(id);
+    if (!call) return;
+    pending.delete(id);
+    const { action, decision } = outcomeOf(id, call.name, undecided);
+    const reason = (call.args as { reason?: unknown } | undefined)?.reason;
+    await record({
+      action,
+      ...decision,
+      ...(decision.precise && typeof reason === "string" ? { reason } : {}),
+    });
+  };
+  const connect = server.connect.bind(server);
+  server.connect = (transport: Transport) => {
+    // Protocol.connect chains these, so they run before the server's own.
+    transport.onmessage = (message) => {
+      if (isJSONRPCRequest(message) && message.method === "tools/call") {
+        const params = message.params as { name?: unknown; arguments?: unknown } | undefined;
+        pending.set(message.id, { name: typeof params?.name === "string" ? params.name : "", args: params?.arguments });
+      }
+    };
+    transport.onclose = () => {
+      for (const id of [...pending.keys()]) void settle(id, { outcome: "error" });
+    };
+    const send = transport.send.bind(transport);
+    transport.send = async (message, options) => {
+      if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
+        if (message.id !== undefined && message.id !== null) {
+          await settle(message.id, { outcome: "denied", denial: "invalid arguments" });
+        }
+      }
+      return send(message, options);
+    };
+    return connect(transport);
+  };
+}
 
 export function buildMcpServer(
   scope: UserScope,
@@ -52,6 +140,38 @@ export function buildMcpServer(
     { name: "wherectx", version: "0.1.0" },
     { capabilities: { tools: {} } },
   );
+
+  // Every tool is registered through this wrapper, which keeps the decision
+  // its handler returned for the call's request id. The access log is written
+  // per tools/call request (recordToolCalls), so a call the SDK refuses before
+  // any handler runs (bad arguments, an unknown tool) is recorded too.
+  const decisions = new Map<RequestId, AccessDecision>();
+  const tools = new Set<string>();
+  const registerTool = <Shape extends z.ZodRawShape>(
+    name: AccessAction,
+    config: { description: string; inputSchema: Shape },
+    handler: (args: z.infer<z.ZodObject<Shape>>) => Promise<Reply>,
+  ): void => {
+    tools.add(name);
+    const run = async (args: z.infer<z.ZodObject<Shape>>, extra: { requestId: RequestId }): Promise<ToolResult> => {
+      let reply: Reply;
+      try {
+        reply = await handler(args);
+      } catch (e) {
+        decisions.set(extra.requestId, { outcome: "error" });
+        throw e;
+      }
+      decisions.set(extra.requestId, reply.decision);
+      return toResult(reply);
+    };
+    server.registerTool(name, config, run as never);
+  };
+  recordToolCalls(server, accessRecorder(scope, principal, "mcp"), (id, name, undecided) => {
+    const decision = decisions.get(id);
+    decisions.delete(id);
+    if (!tools.has(name)) return { action: "unknown", decision: { outcome: "denied", denial: "unknown tool" } };
+    return { action: name as AccessAction, decision: decision ?? undecided };
+  });
 
   const isAdmin = principal.scopes.includes("manage_privacy");
   // Same scope REST places uses to decide who sees place coordinates.
@@ -64,7 +184,7 @@ export function buildMcpServer(
     return accessAtLeast(settings.defaultAgentAccess, "coarse");
   };
 
-  server.registerTool(
+  registerTool(
     "get_presence",
     {
       description:
@@ -77,7 +197,7 @@ export function buildMcpServer(
       const settings = await scope.settings.getOrSeed();
       if (!isAdmin) {
         const view = agentCoarseView(toPresenceContext(stored), settings, ctx.clock);
-        if (!view) return ok({ status: "hidden", privacy: "hidden" });
+        if (!view) return hidden({ status: "hidden", privacy: "hidden" });
         return ok(view);
       }
       // Admin sees the coarse summary using the live mode.
@@ -86,7 +206,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_precise_location",
     {
       description:
@@ -95,18 +215,22 @@ export function buildMcpServer(
     },
     async ({ reason }) => {
       const stored = await scope.presence.getCurrent();
-      if (!stored) return err("no presence recorded yet");
+      if (!stored) return none("no presence recorded yet", true);
       const settings = await scope.settings.getOrSeed();
       const presence = toPresenceContext(stored);
       const auth = authorizePrecise({ scopes: principal.scopes, settings, presence, reason });
-      if (!auth.allowed) return err(auth.reason ?? "precise location denied");
+      if (!auth.allowed) {
+        return auth.outcome === "hidden"
+          ? { decision: { outcome: "hidden", precise: true }, body: { error: auth.reason }, isError: true }
+          : err(auth.reason, true);
+      }
       const view = buildPreciseView(presence, ctx.clock);
-      if (!view) return err("no precise location available");
-      return ok(view);
+      if (!view) return none("no precise location available", true);
+      return ok(view, true);
     },
   );
 
-  server.registerTool(
+  registerTool(
     "is_near_place",
     {
       description:
@@ -114,9 +238,9 @@ export function buildMcpServer(
       inputSchema: { name: z.string().min(1).max(64).describe("The place name to check") },
     },
     async ({ name }) => {
-      if (!(await presenceVisible())) return ok({ name, hidden: true });
+      if (!(await presenceVisible())) return hidden({ name, hidden: true });
       const place = await scope.places.get(name);
-      if (!place) return err(`no place named "${name}"`);
+      if (!place) return none(`no place named "${name}"`);
       const stored = await scope.presence.getCurrent();
       if (!stored?.precise) return ok({ name, near: false, inside: false, note: "no location" });
       const d = haversineMeters(
@@ -131,7 +255,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "list_places",
     {
       description:
@@ -140,12 +264,12 @@ export function buildMcpServer(
     },
     async () => {
       const places = await scope.places.list();
-      if (canManagePlaces) return ok({ places });
+      if (canManagePlaces) return ok({ places }, true);
       return ok({ places: places.map(sanitizePlace) });
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_location_age",
     {
       description:
@@ -153,7 +277,7 @@ export function buildMcpServer(
       inputSchema: {},
     },
     async () => {
-      if (!(await presenceVisible())) return ok({ hidden: true });
+      if (!(await presenceVisible())) return hidden({ hidden: true });
       const stored = await scope.presence.getCurrent();
       if (!stored) return ok({ note: "no presence recorded yet" });
       return ok({
@@ -164,7 +288,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "list_recent_presence_events",
     {
       description:
@@ -172,14 +296,14 @@ export function buildMcpServer(
       inputSchema: { limit: z.number().int().min(1).max(200).optional() },
     },
     async ({ limit }) => {
-      if (!(await presenceVisible())) return ok({ hidden: true, events: [] });
+      if (!(await presenceVisible())) return hidden({ hidden: true, events: [] });
       const events = await scope.events.listRecent(limit ?? 20);
       if (isAdmin) return ok({ events });
       return ok({ events: events.map(agentEventView) });
     },
   );
 
-  server.registerTool(
+  registerTool(
     "create_location_reminder",
     {
       description:
@@ -191,11 +315,13 @@ export function buildMcpServer(
     },
     async ({ place, message }) => {
       // Re-apply the same gates as the read tools: withhold in hidden mode...
-      if (!(await presenceVisible())) return err("presence is hidden from agents by policy");
+      if (!(await presenceVisible())) {
+        return { decision: { outcome: "hidden" }, body: { error: "presence is hidden from agents by policy" }, isError: true };
+      }
       // ...require the target place to actually exist (no name probing / dangling
       // reminders)...
       const target = await scope.places.get(place);
-      if (!target) return err(`no place named "${place}"`);
+      if (!target) return none(`no place named "${place}"`);
       // ...and cap total active reminders so a read-scoped token cannot exhaust
       // storage (review finding M2).
       if ((await scope.reminders.countActive()) >= MAX_ACTIVE_REMINDERS) {
@@ -232,7 +358,7 @@ export function buildMcpServer(
     return null;
   };
 
-  server.registerTool(
+  registerTool(
     "create_place",
     {
       description:
@@ -267,7 +393,7 @@ export function buildMcpServer(
     },
   );
 
-  server.registerTool(
+  registerTool(
     "remember_current_place",
     {
       description:
@@ -285,7 +411,7 @@ export function buildMcpServer(
         return err(`place limit reached (${MAX_PLACES})`);
       }
       const current = await scope.presence.getCurrent();
-      if (!current?.precise) return err("no current location available to remember");
+      if (!current?.precise) return none("no current location available to remember");
       const place = await scope.places.upsert({
         name,
         type: type ?? "custom",

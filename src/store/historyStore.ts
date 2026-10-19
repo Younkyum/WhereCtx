@@ -5,9 +5,9 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
-import { locationHistory } from "../db/schema.js";
+import { locationHistory, privacySettings } from "../db/schema.js";
 import type { IngestSource, UserId } from "../types.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
@@ -29,8 +29,14 @@ interface HistoryRow {
   recordedAt: string;
 }
 
-function rowToPoint(row: HistoryRow): HistoryPoint {
+/** A stored point, with its row id. */
+export interface HistoryEntry extends HistoryPoint {
+  id: string;
+}
+
+function rowToEntry(row: HistoryRow): HistoryEntry {
   return {
+    id: row.id,
     lat: row.lat,
     lon: row.lon,
     accuracyM: row.accuracyM ?? undefined,
@@ -57,15 +63,54 @@ export class HistoryStore {
     });
   }
 
-  async listRecent(userId: UserId, limit = 100): Promise<HistoryPoint[]> {
-    const capped = Math.max(1, Math.min(limit, 1000));
+  /**
+   * The newest `limit` points recorded in [from, to], oldest first. `truncated`
+   * says the range held more (older ones were left out), so a caller can
+   * narrow it.
+   */
+  async listRange(
+    userId: UserId,
+    range: { from: string; to: string; limit: number },
+  ): Promise<{ points: HistoryEntry[]; truncated: boolean }> {
     const rows = (await this.db
       .select()
       .from(locationHistory)
-      .where(eq(locationHistory.userId, userId))
-      .orderBy(desc(locationHistory.recordedAt))
-      .limit(capped)) as HistoryRow[];
-    return rows.map(rowToPoint);
+      .where(
+        and(
+          eq(locationHistory.userId, userId),
+          gte(locationHistory.recordedAt, range.from),
+          lte(locationHistory.recordedAt, range.to),
+        ),
+      )
+      .orderBy(desc(locationHistory.recordedAt), desc(locationHistory.id))
+      .limit(range.limit + 1)) as HistoryRow[];
+    return { points: rows.slice(0, range.limit).reverse().map(rowToEntry), truncated: rows.length > range.limit };
+  }
+
+  /**
+   * Every user's points past their own retention (prune sweep), so history
+   * ages out even for someone whose phone stopped reporting. A user with no
+   * settings row has `defaultRetentionHours`. Deletes `batchSize` rows per
+   * statement, so a large backlog does not hold the database in one write.
+   */
+  async pruneExpired(defaultRetentionHours: number, batchSize = 5000): Promise<number> {
+    const now = nowIso(this.clock);
+    const retention = sql`COALESCE(
+      (SELECT ${privacySettings.retentionHours} FROM ${privacySettings} WHERE ${privacySettings.userId} = ${locationHistory.userId}),
+      ${defaultRetentionHours}
+    )`;
+    const expired = this.db
+      .select({ id: locationHistory.id })
+      .from(locationHistory)
+      .where(sql`${locationHistory.recordedAt} < strftime('%Y-%m-%dT%H:%M:%fZ', ${now}, '-' || ${retention} || ' hours')`)
+      .limit(batchSize);
+    let removed = 0;
+    for (;;) {
+      const result = await this.db.delete(locationHistory).where(inArray(locationHistory.id, expired));
+      const n = result.rowsAffected ?? 0;
+      removed += n;
+      if (n < batchSize) return removed;
+    }
   }
 
   /** Delete history older than `retentionHours` for a user. Returns rows removed. */

@@ -36,6 +36,7 @@ import {
 } from "../store/presenceStore.js";
 import type { Reminder, RemindersStore } from "../store/remindersStore.js";
 import type { SettingsStore } from "../privacy/settingsStore.js";
+import { log } from "../util/log.js";
 
 export interface PresenceServiceDeps {
   config: WhereCtxConfig;
@@ -133,7 +134,8 @@ export class PresenceService {
 
     const events = await this.emitTransitionEvents(userId, prev, next);
 
-    // Raw history (opt-in) + retention pruning.
+    // Raw history (opt-in). Pruning runs either way, so points kept before
+    // history was turned off still age out.
     if (settings.storeRawHistory) {
       await this.deps.historyStore.append(userId, {
         lat: reading.precise.lat,
@@ -142,8 +144,8 @@ export class PresenceService {
         source: reading.source,
         recordedAt: reading.updatedAt,
       });
-      await this.deps.historyStore.prune(userId, settings.retentionHours);
     }
+    await this.deps.historyStore.prune(userId, settings.retentionHours);
 
     // Fire reminders attached to a newly-entered place.
     const triggeredReminders = await this.fireReminders(userId, prev, next);
@@ -239,8 +241,7 @@ export class PresenceService {
       if (r.status === "fulfilled") {
         if (r.value) events.push(r.value);
       } else {
-        // eslint-disable-next-line no-console
-        console.error(`stale sweep failed for user ${due[i]!.userId}:`, r.reason);
+        log.error("stale sweep failed for a user", r.reason, { userId: due[i]!.userId });
       }
     });
     return events;

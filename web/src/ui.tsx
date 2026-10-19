@@ -5,6 +5,7 @@
  */
 
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
+import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
@@ -18,10 +19,10 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { Text } from "@astryxdesign/core/Text";
 import { useToast } from "@astryxdesign/core/Toast";
 import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, isHandled } from "./api";
+import { ApiError, api, isHandled } from "./api";
 import { useApp } from "./context";
 import type { Lang, Translate } from "./i18n";
-import { ageParts, errorKey, passkeyErrorKey } from "./lib";
+import { ageParts, bearerHeader, errorKey, passkeyErrorKey } from "./lib";
 
 /** A message the person can act on, for any error an action or loader throws. */
 export function describe(e: unknown, t: Translate): string {
@@ -100,6 +101,50 @@ export function useLoad<T>(loader: () => Promise<T>, deps: readonly unknown[]): 
   return [state, reload];
 }
 
+/**
+ * A newest-first log read page by page through its `next` cursor. `more`
+ * appends the following page; changing `url` (or reloading) starts over, and
+ * a page asked for before that is dropped when it arrives.
+ */
+export function usePaged<T>(url: string): {
+  state: Load<T[]>;
+  hasMore: boolean;
+  loadingMore: boolean;
+  more: () => Promise<void>;
+  reload: () => Promise<void>;
+} {
+  const next = useRef<string | undefined>(undefined);
+  const generation = useRef(0);
+  const [extra, setExtra] = useState<T[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const page = (before?: string) => {
+    const sep = url.includes("?") ? "&" : "?";
+    return api<{ entries: T[]; next?: string }>(before ? `${url}${sep}before=${encodeURIComponent(before)}` : url);
+  };
+  const [state, reload] = useLoad(async () => {
+    const asked = ++generation.current;
+    next.current = undefined;
+    const first = await page();
+    if (asked === generation.current) {
+      next.current = first.next;
+      setExtra([]);
+      setHasMore(Boolean(first.next));
+    }
+    return first.entries ?? [];
+  }, [url]);
+  const [loadingMore, more] = useAction(async () => {
+    const asked = generation.current;
+    if (!next.current) return;
+    const following = await page(next.current);
+    if (asked !== generation.current) return;
+    next.current = following.next;
+    setExtra((rows) => [...rows, ...(following.entries ?? [])]);
+    setHasMore(Boolean(following.next));
+  });
+  const merged: Load<T[]> = state.kind === "ready" ? { kind: "ready", data: [...state.data, ...extra] } : state;
+  return { state: merged, hasMore, loadingMore, more, reload };
+}
+
 export function Loaded<T>({ state, children }: { state: Load<T>; children: (data: T) => ReactNode }) {
   const { t } = useApp();
   if (state.kind === "loading") return <Spinner label={t("common.loading")} />;
@@ -151,14 +196,18 @@ export function Hint({ children }: { children: ReactNode }) {
   );
 }
 
-/** One record in a list: its name and details, with controls that wrap below on a phone. */
+/**
+ * One record in a list: its name and details, with controls that wrap below
+ * on a phone. A string subtitle is set as supporting text; anything else is
+ * placed as given.
+ */
 export function Row({ title, subtitle, children }: { title: ReactNode; subtitle?: ReactNode; children?: ReactNode }) {
   return (
     <HStack gap={3} vAlign="center" wrap="wrap" paddingBlock={3}>
       <StackItem size="fill">
         <VStack gap={0.5}>
           <Text weight="semibold">{title}</Text>
-          {subtitle ? <Text type="supporting">{subtitle}</Text> : null}
+          {typeof subtitle === "string" ? <Text type="supporting">{subtitle}</Text> : subtitle}
         </VStack>
       </StackItem>
       {children ? (
@@ -186,6 +235,30 @@ export function Rows<T>({ items, keyOf, children }: { items: T[]; keyOf: (item: 
 /** A value shown once (a token, a link, a config) with the copy button CodeBlock provides. */
 export function Secret({ label, value, language = "plaintext" }: { label: string; value: string; language?: string }) {
   return <CodeBlock code={value} title={label} language={language} isWrapped width="100%" hasLanguageLabel={false} />;
+}
+
+/**
+ * An HTTP header to type into another app, as two labelled fields: the name,
+ * and the value with its "Bearer " prefix set apart so it is not left out.
+ * The value's copy button copies the whole thing, prefix included.
+ */
+export function BearerHeader({ token, hint }: { token: string; hint: string }) {
+  const { t } = useApp();
+  const header = bearerHeader(token);
+  return (
+    <VStack gap={3} data-testid="bearer-header">
+      <Secret label={t("header.name")} value={header.name} />
+      <VStack gap={1}>
+        <HStack gap={1} vAlign="center" wrap="wrap" aria-hidden>
+          <Badge variant="purple" label="Bearer" />
+          <Text type="supporting">{t("header.space")}</Text>
+          <Text type="supporting">{t("header.token")}</Text>
+        </HStack>
+        <Secret label={t("header.value")} value={header.value} />
+      </VStack>
+      <Hint>{hint}</Hint>
+    </VStack>
+  );
 }
 
 export function download(filename: string, text: string, type = "application/json"): void {

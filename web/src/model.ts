@@ -5,8 +5,19 @@
  */
 
 import type { WorkspaceRole } from "../../src/accounts/types";
+import type { AccessEntry as ServerAccessEntry } from "../../src/activity/types";
 
 export type { WorkspaceRole };
+export {
+  ACCESS_ACTIONS,
+  ACCESS_OUTCOMES,
+  INGEST_OUTCOMES,
+  type AccessAction,
+  type AccessOutcome,
+  type DeviceSummary,
+  type IngestEntry,
+  type IngestOutcome,
+} from "../../src/activity/types";
 
 export const STATUSES = ["home", "near_home", "away", "work", "near_work", "transit", "custom", "unknown"] as const;
 export type Status = (typeof STATUSES)[number];
@@ -50,6 +61,8 @@ export interface WorkspaceMembership {
 
 export interface Me {
   user: UserRef;
+  /** The instance owner, who may read the server's logs. */
+  isOperator?: boolean;
   workspaces: WorkspaceMembership[];
   passkeys: { id: string; name: string; createdAt: string; lastUsedAt: string | null }[];
   sessions: { id: string; userAgent: string | null; createdAt: string; lastSeenAt: string; current: boolean }[];
@@ -192,3 +205,35 @@ export interface CeremonyStart<O> {
   ceremony: string;
   options: O;
 }
+
+export interface HistoryPoint {
+  id: string;
+  recordedAt: string;
+  lat: number;
+  lon: number;
+  accuracyM?: number;
+  source?: string;
+  /** The place whose geofence held the point, by today's places. */
+  place?: string;
+}
+
+export interface History {
+  enabled: boolean;
+  retentionHours: number;
+  from: string;
+  to: string;
+  truncated: boolean;
+  points: HistoryPoint[];
+}
+
+/** An access log row as JSON. */
+export type AccessEntry = ServerAccessEntry;
+
+/** A keyset page from the activity endpoints. */
+export interface LogPage<T> {
+  entries: T[];
+  next?: string;
+}
+
+export { LOG_LEVELS, type LogEntry, type LogLevel } from "../../src/util/logEntry";
+export { HISTORY_MAX_POINTS } from "../../src/types";

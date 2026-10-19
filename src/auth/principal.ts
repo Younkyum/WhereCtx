@@ -22,7 +22,7 @@ import { TOKEN_PREFIX } from "./tokens.js";
 export const SESSION_SCOPES: readonly TokenScope[] = ["write_location", ...ROLE_SCOPES.admin];
 
 export type Principal =
-  | { via: "token"; userId: UserId; scopes: TokenScope[] }
+  | { via: "token"; userId: UserId; scopes: TokenScope[]; tokenId: string; tokenName: string }
   | {
       via: "session";
       userId: UserId;
@@ -31,7 +31,7 @@ export type Principal =
       /** Last passkey proof of this session (see accounts/types.ts hasFreshAuth). */
       reauthAt: string;
     }
-  | { via: "oauth"; userId: UserId; scopes: TokenScope[]; grantId: string; clientId: string };
+  | { via: "oauth"; userId: UserId; scopes: TokenScope[]; grantId: string; clientId: string; clientName: string };
 
 export type SessionPrincipal = Extract<Principal, { via: "session" }>;
 export type TokenPrincipal = Extract<Principal, { via: "token" }>;
@@ -43,7 +43,15 @@ export async function resolveTokenPrincipal(
   secret: string | null | undefined,
 ): Promise<TokenPrincipal | null> {
   const token = await ctx.system.tokens.verify(secret);
-  return token && { via: "token", userId: token.userId, scopes: token.scopes };
+  return (
+    token && {
+      via: "token",
+      userId: token.userId,
+      scopes: token.scopes,
+      tokenId: token.id,
+      tokenName: token.name,
+    }
+  );
 }
 
 /**
@@ -64,6 +72,7 @@ export async function resolveBearerPrincipal(
       scopes: tokenScopesFor(access.scope),
       grantId: access.grantId,
       clientId: access.clientId,
+      clientName: access.clientName,
     }
   );
 }

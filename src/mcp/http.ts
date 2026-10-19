@@ -15,10 +15,15 @@ import type { AppContext } from "../app/context.js";
 import { nodeClientKey, type RateLimiter } from "../api/rateLimit.js";
 import { resolveBearerPrincipal } from "../auth/principal.js";
 import { RESOURCE_SCOPES, oauthScopeFor } from "../oauth/scopes.js";
+import { accessRecorder } from "../activity/record.js";
 import { buildMcpServer } from "./server.js";
+import { log } from "../util/log.js";
 
 // Match the REST body cap (app/server.ts bodyLimit) for consistency.
 const MAX_BODY_BYTES = 64 * 1024;
+
+/** Most JSON-RPC messages one POST may batch; each tool call in it is a log row. */
+export const MAX_BATCH_MESSAGES = 10;
 
 function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const text = JSON.stringify(body);
@@ -95,8 +100,7 @@ export function mcpNodeHandler(ctx: AppContext, authLimiter?: RateLimiter) {
     try {
       await handle(req, res);
     } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("mcp request error:", e);
+      log.error("mcp request failed", e);
       if (!res.headersSent) sendJson(res, 500, { error: "internal server error" });
       else res.end();
     }
@@ -123,7 +127,11 @@ function mcpRequest(ctx: AppContext, authLimiter?: RateLimiter) {
       authLimiter?.record(clientKey);
       return refuse(res, "invalid", resourceMetadata);
     }
-    if (!principal.scopes.includes("read_presence")) return refuse(res, "scope", resourceMetadata);
+    const record = accessRecorder(ctx.forUser(principal.userId), principal, "mcp");
+    if (!principal.scopes.includes("read_presence")) {
+      await record({ action: "mcp.request", outcome: "denied", denial: REFUSALS.scope.body.detail });
+      return refuse(res, "scope", resourceMetadata);
+    }
 
     let body: unknown;
     if (req.method === "POST") {
@@ -132,6 +140,11 @@ function mcpRequest(ctx: AppContext, authLimiter?: RateLimiter) {
       } catch (e) {
         const msg = e instanceof Error ? e.message : "bad request";
         return sendJson(res, msg === "payload too large" ? 413 : 400, { error: msg });
+      }
+      if (Array.isArray(body) && body.length > MAX_BATCH_MESSAGES) {
+        const message = `batch too large (at most ${MAX_BATCH_MESSAGES} messages)`;
+        await record({ action: "mcp.request", outcome: "denied", denial: message });
+        return sendJson(res, 400, { jsonrpc: "2.0", id: null, error: { code: -32600, message } });
       }
     }
 

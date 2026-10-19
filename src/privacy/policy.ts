@@ -240,11 +240,13 @@ export interface PreciseAuthInput {
   reason?: string;
 }
 
-export interface PreciseAuthResult {
-  allowed: boolean;
-  /** Denial reason (when not allowed) for a clear API/MCP message. */
-  reason?: string;
-}
+/**
+ * Allowed, or refused with the reason for a clear API/MCP message. `hidden`
+ * says the refusal is hidden mode, which the access log records as hidden.
+ */
+export type PreciseAuthResult =
+  | { allowed: true }
+  | { allowed: false; outcome: "denied" | "hidden"; reason: string };
 
 /**
  * Decide whether a caller may read precise location. Layered deny gate:
@@ -259,30 +261,33 @@ export function authorizePrecise(input: PreciseAuthInput): PreciseAuthResult {
   const { scopes, settings, presence, reason } = input;
 
   if (settings.defaultAgentAccess === "hidden") {
-    return { allowed: false, reason: "presence is hidden from agents by policy" };
+    return { allowed: false, outcome: "hidden", reason: "presence is hidden from agents by policy" };
   }
   if (!hasScope(scopes, "read_precise_location")) {
-    return { allowed: false, reason: "token lacks read_precise_location scope" };
+    return { allowed: false, outcome: "denied", reason: "token lacks read_precise_location scope" };
   }
   if (!settings.allowPreciseLocation) {
     return {
       allowed: false,
+      outcome: "denied",
       reason: "precise location is disabled by policy (allowPreciseLocation=false)",
     };
   }
   if (settings.preciseRequiresApproval) {
     return {
       allowed: false,
+      outcome: "denied",
       reason:
         "precise location requires interactive approval, which is not available in v0.1",
     };
   }
   if (settings.preciseRequiresReason && !reason?.trim()) {
-    return { allowed: false, reason: "a reason is required to access precise location" };
+    return { allowed: false, outcome: "denied", reason: "a reason is required to access precise location" };
   }
   if (shouldHideExact(presence, settings)) {
     return {
       allowed: false,
+      outcome: "denied",
       reason: "exact home/near-home coordinates are protected by policy",
     };
   }

@@ -13,6 +13,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace } from "../types.js";
+import { decide } from "./accessAudit.js";
 import { requireAnyScope, requireScope } from "./middleware.js";
 import { zodMessages } from "./validation.js";
 import type { AppEnv } from "./types.js";
@@ -36,6 +37,8 @@ export function placesRouter(ctx: RouteContext): Hono<AppEnv> {
   app.get("/", requireAnyScope("read_presence", "manage_places"), async (c) => {
     const places = await c.get("scope").places.list();
     const isAdmin = c.get("principal").scopes.includes("manage_places");
+    // Full place objects carry the exact coordinates of home and work.
+    decide(c, { precise: isAdmin });
     return c.json({ places: isAdmin ? places : places.map(sanitizePlace) });
   });
 

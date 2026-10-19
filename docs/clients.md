@@ -26,6 +26,12 @@ Behind it is `POST /v1/devices/pair`. With `{ "name": "...", "kind":
 Shortcut. See [api.md](api.md#devices-pairing). The manual setup below still
 works.
 
+On an iPhone, OwnTracks 26.2.2 and later refuses configuration by link or
+file until you allow it in its Settings (it asks you to confirm). Allow it,
+scan again, and turn it back off once the phone reports. See
+[clients/owntracks](../clients/owntracks/README.md#iphone-allow-configuration-by-link-first).
+The dashboard says the same next to the QR code.
+
 The config points the phone at `BASE_URL`, so set it to the server's public
 https URL first. Pairing refuses (`400`, `code: "base_url_unusable"`) while
 `BASE_URL` is a loopback address (`localhost`, `127.x`, `::1`), which a phone

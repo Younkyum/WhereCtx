@@ -1,7 +1,8 @@
 /**
  * Persistence for the OAuth authorization server: the oidc-provider Adapter
- * contract over the `oauth_store` table, plus the two reads WhereCtx needs
- * itself (a person's grants, for the Agents screen) and the prune sweep.
+ * contract over the `oauth_store` table, plus the reads WhereCtx needs itself
+ * (a person's grants, for the Agents screen, and a grant's client name, for
+ * the access log) and the prune sweep.
  *
  * Expiry follows the library's clock (Date.now), not the app clock: the
  * library computes every `expiresIn` against it. A row the library gives no
@@ -139,6 +140,16 @@ export class OAuthStore {
         ),
       )
       .orderBy(oauthStore.expiresAt);
+  }
+
+  /** The client name stored with a grant at consent, if the client gave one. */
+  async grantName(grantId: string): Promise<string | null> {
+    const [row] = await this.db
+      .select({ clientName: oauthStore.clientName })
+      .from(oauthStore)
+      .where(and(eq(oauthStore.model, "Grant"), eq(oauthStore.id, grantId)))
+      .limit(1);
+    return row?.clientName ?? null;
   }
 
   async nameGrant(grantId: string, clientName: string): Promise<void> {
