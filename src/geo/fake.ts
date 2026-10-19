@@ -41,7 +41,8 @@ function regionFor(point: LatLon): ReverseResult {
   return { region1: "서울특별시", region2: "테스트구", region3: dong, label: `테스트구 ${dong}` };
 }
 
-const midpoint = (a: LatLon, b: LatLon): LatLon => ({ lat: (a.lat + b.lat) / 2, lon: (a.lon + b.lon) / 2 });
+/** The point `t` of the way from `a` to `b`. */
+const along = (a: LatLon, b: LatLon, t: number): LatLon => ({ lat: a.lat + (b.lat - a.lat) * t, lon: a.lon + (b.lon - a.lon) * t });
 
 export class FakeGeoProvider implements GeoProvider {
   readonly name = "fake" as const;
@@ -85,8 +86,8 @@ export class FakeGeoProvider implements GeoProvider {
       // The first stretch and turn name the street the route starts on, as a real provider's do.
       roads: [
         { name: "테스트출발로12번길", distanceM: Math.round(distanceM * 0.1), path: [origin] },
-        { name: "테스트대로", distanceM: Math.round(distanceM * 0.6), path: [midpoint(origin, destination)] },
-        { name: "테스트도착로", distanceM: Math.round(distanceM * 0.3), path: [destination] },
+        { name: "테스트대로", distanceM: Math.round(distanceM * 0.6), path: [along(origin, destination, 0.5)] },
+        { name: "테스트도착로", distanceM: Math.round(distanceM * 0.3), path: [along(origin, destination, 0.99)] },
       ],
       steps: ["테스트출발로12번길에서 테스트대로 방면으로 우회전", "테스트도착로 진입"],
       departAt: (future ? request.departAt! : this.now()).toISOString(),

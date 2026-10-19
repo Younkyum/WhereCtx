@@ -6,6 +6,7 @@ import type { NormalizedReading } from "../normalizer/types.js";
 import { asUserId, type PrivacySettings, type TokenScope } from "../types.js";
 import { TestClock, bootApp } from "../testing/accounts.js";
 import type { GeoCaller } from "./keys.js";
+import { agentRoads } from "./eta.js";
 import type { EtaOutcome, EtaRequest } from "./service.js";
 
 const OWNER = asUserId("owner");
@@ -51,9 +52,13 @@ async function boot(geo: Partial<WhereCtxConfig["geo"]>, fetch?: typeof fetch): 
     {},
     fetch ? { geoFetch: fetch } : {},
   ));
+  booted = true;
 }
 
+let booted = false;
 afterEach(async () => {
+  if (!booted) return;
+  booted = false;
   await ctx.system.geo.settled();
   ctx.handle.client.close();
 });
@@ -76,6 +81,24 @@ const read = (at: { lat: number; lon: number }, motion?: NormalizedReading["moti
     updatedAt: clock.fn().toISOString(),
   });
 const eta = (request: EtaRequest, caller: GeoCaller = agent()): Promise<EtaOutcome> => ctx.system.geo.eta(OWNER, request, caller);
+
+describe("the roads an agent is told", () => {
+  const at = (km: number) => ({ lat: ORIGIN.lat + km / 111, lon: ORIGIN.lon });
+  const road = (name: string, km: number, distanceM = 1000) => ({ name, distanceM, path: [at(km)] });
+
+  it("keeps main roads clear of both ends, drops side streets and roads of unknown whereabouts", () => {
+    const roads = [
+      road("판교역로", 0.5, 5000),
+      road("경부고속도로", 5, 4000),
+      road("테헤란로12길", 5, 3000),
+      { name: "분당내곡로", distanceM: 9000, path: [] },
+      road("서울외곽순환고속도로", 8, 2000),
+      road("목적지앞로", 9.8, 6000),
+    ];
+    expect(agentRoads(roads, [ORIGIN, at(10)])).toEqual(["경부고속도로", "서울외곽순환고속도로"]);
+    expect(agentRoads(roads, [ORIGIN])).toEqual(["목적지앞로", "경부고속도로", "서울외곽순환고속도로"]);
+  });
+});
 
 describe("an agent's route, from the providers' documented samples", () => {
   async function setUp(provider: "kakao" | "naver"): Promise<void> {

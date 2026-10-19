@@ -44,7 +44,7 @@ const config: WhereCtxConfig = {
   events: { retentionHours: 720 },
   sharing: { auditRetentionDays: 365 },
   oauth: { dynamicRegistration: false },
-  geo: { operatorKeys: {}, operatorKeyForAll: false, fake: false },
+  geo: { operatorKeys: {}, operatorKeyForAll: false, operatorDailyCap: 200, fake: false },
   activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
 };
 
@@ -100,6 +100,22 @@ beforeEach(async () => {
     lon: 127.0,
     radiusM: 150,
     type: "home",
+  });
+});
+
+describe("the area a reading keeps", () => {
+  const REGION = { region1: "서울특별시", region2: "중구", region3: "명동", label: "중구 명동" };
+  const AT = { lat: 37.05, lon: 127.0 };
+
+  it("is dropped as a reading more than 200 m from where it was looked up is stored, before any lookup", async () => {
+    await service.processReading(USER, reading(AT.lat, AT.lon));
+    await service.setArea(USER, { region: REGION, forPoint: AT });
+    await service.processReading(USER, reading(AT.lat + 0.0012, AT.lon)); // about 130 m
+    expect((await presenceStore.getCurrent(USER))!.coarse).toMatchObject({ area: "중구 명동", city: "중구" });
+    await service.processReading(USER, reading(AT.lat + 0.0025, AT.lon)); // about 280 m from where it was looked up
+    const current = (await presenceStore.getCurrent(USER))!;
+    expect(current.coarse?.area).toBeUndefined();
+    expect(current.areaFor).toBeUndefined();
   });
 });
 
