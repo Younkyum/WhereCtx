@@ -143,10 +143,10 @@ export function geoRouter(ctx: RouteContext): Hono<AppEnv> {
     if (!query.success) return c.json({ error: "invalid query", detail: zodMessages(query.error) }, 400);
     const { to, pick, departAt, avoid, directions, reason } = query.data;
     decide(c, { reason });
-    const outcome = await c.get("scope").geo.eta(
-      { to, pick, departAt: departAt ? new Date(departAt) : undefined, avoid, directions, reason },
-      callerOf(c),
-    );
+    const request = { to, pick, departAt: departAt ? new Date(departAt) : undefined, avoid, directions, reason };
+    const caller = callerOf(c);
+    const geo = c.get("scope").geo;
+    const outcome = caller.kind === "agent" ? await geo.eta(request, caller) : await geo.ownerEta(request);
     return respond(c, etaReply(outcome), (answer) => ({ eta: answer }));
   });
 

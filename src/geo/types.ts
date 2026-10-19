@@ -68,6 +68,8 @@ export interface RouteResult {
   taxiFare?: number;
   /** Every named stretch in order, with its geometry, so a caller can tell which roads run near a point. */
   roads: RouteRoad[];
+  /** The whole route as the provider drew it, start to end, named stretch or not. */
+  path: LatLon[];
   /** Turn-by-turn instructions in order, when the provider gives them. */
   steps: string[];
   departAt: string;

@@ -11,6 +11,8 @@ import { log } from "../util/log.js";
 import type { AccessAction, AccessDecision, AccessSurface, Credential } from "./types.js";
 
 /** Who to name in the log, or null when the request is not an agent's. */
+export function credentialOf(principal: Exclude<Principal, { via: "session" }>): Credential;
+export function credentialOf(principal: Principal): Credential | null;
 export function credentialOf(principal: Principal): Credential | null {
   switch (principal.via) {
     case "token":

@@ -37,6 +37,8 @@ export type SessionPrincipal = Extract<Principal, { via: "session" }>;
 export type TokenPrincipal = Extract<Principal, { via: "token" }>;
 /** What REST accepts: every principal but OAuth, whose tokens only /mcp honours. */
 export type RestPrincipal = Exclude<Principal, { via: "oauth" }>;
+/** What /mcp accepts: a Bearer secret, never a session. */
+export type McpPrincipal = Exclude<Principal, { via: "session" }>;
 
 export async function resolveTokenPrincipal(
   ctx: Pick<AppContext, "system">,
@@ -61,7 +63,7 @@ export async function resolveTokenPrincipal(
 export async function resolveBearerPrincipal(
   ctx: Pick<AppContext, "system" | "oauth">,
   secret: string | null | undefined,
-): Promise<Principal | null> {
+): Promise<McpPrincipal | null> {
   const token = await resolveTokenPrincipal(ctx, secret);
   if (token || !secret || secret.startsWith(`${TOKEN_PREFIX}_`)) return token;
   const access = await ctx.oauth.verifyAccessToken(secret);

@@ -127,6 +127,7 @@ function scopeFor(system: SystemStores, userId: UserId) {
       "mapConfig",
       "search",
       "eta",
+      "ownerEta",
       "refreshArea",
     ]),
     webhooks: bindFirst(system.webhooks, userId, [

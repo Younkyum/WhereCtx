@@ -34,7 +34,6 @@ import {
   type LatLon,
   type RouteAvoid,
   type RouteResult,
-  type RouteRoad,
 } from "./types.js";
 
 
@@ -51,16 +50,10 @@ export interface EtaRequest {
   reason?: string;
 }
 
-export interface EtaAnswer {
+interface EtaCommon {
   destination: { label: string; kind: "place" | "address" };
   /** The route starts at the current location, or, for the owner near home, at the home place. */
   origin: "current_location" | "home";
-  /**
-   * exact: the provider's numbers and roads (the owner). approximate: minutes
-   * in 5-minute steps, whole kilometres, the arrival to 5 minutes and only
-   * main roads away from the origin and the destination (agents).
-   */
-  precision: "exact" | "approximate";
   durationMin: number;
   distanceKm: number;
   /** live: timed on current traffic. predicted: a future departure, on the provider's forecast. */
@@ -68,14 +61,6 @@ export interface EtaAnswer {
   departAt: string;
   arriveAt: string;
   summary: string[];
-  /** The route as drawn on a map, for the owner only. */
-  path?: LatLon[];
-  /** Turn-by-turn, for the owner, and for an agent that asked and may read the precise location. */
-  steps?: string[];
-  /** Why the steps an agent asked for are left out. */
-  stepsWithheld?: string;
-  tollFare?: number;
-  taxiFare?: number;
   provider: GeoProviderName;
   /** How fresh the reading the route starts from is, and how long ago the server heard it. */
   freshness: Freshness;
@@ -84,13 +69,39 @@ export interface EtaAnswer {
   deepLinks?: { kakaoMap: string; naverMap: string };
 }
 
+/** The owner's answer: the provider's numbers and roads, the steps, the fares, and the route as drawn. */
+export interface OwnerEtaAnswer extends EtaCommon {
+  precision: "exact";
+  /** The whole route as the provider drew it, start to end. */
+  path: LatLon[];
+  steps: string[];
+  tollFare?: number;
+  taxiFare?: number;
+}
+
+/**
+ * An agent's answer: minutes in 5-minute steps, whole kilometres, the
+ * arrival to 5 minutes and only main roads away from the origin and the
+ * destination. It never carries the route's geometry.
+ */
+export interface AgentEtaAnswer extends EtaCommon {
+  precision: "approximate";
+  path?: never;
+  /** Turn-by-turn, for an agent that asked and may read the precise location. */
+  steps?: string[];
+  /** Why the steps an agent asked for are left out. */
+  stepsWithheld?: string;
+}
+
+export type EtaAnswer = OwnerEtaAnswer | AgentEtaAnswer;
+
 /** A search result as the caller may see it: coordinates only for the owner or a place manager. */
 export type CandidateView = Omit<GeocodeCandidate, "lat" | "lon"> & Partial<Pick<GeocodeCandidate, "lat" | "lon">>;
 
 /** What came of an ETA request, each case with what the caller is told. */
-export type EtaOutcome =
+export type EtaOutcome<A extends EtaAnswer = EtaAnswer> =
   /** `precise`: the answer rests on the agent's precise access (an address destination, the steps). */
-  | { kind: "ok"; answer: EtaAnswer; precise: boolean }
+  | { kind: "ok"; answer: A; precise: boolean }
   | { kind: "hidden" }
   | { kind: "denied"; reason: string }
   | { kind: "no_location" }
@@ -100,6 +111,21 @@ export type EtaOutcome =
   | { kind: "rate_limited" }
   | { kind: "unconfigured" }
   | { kind: "failed"; error: GeoErrorKind; message: string };
+
+/** Every way an ETA request ends without an answer. */
+type EtaRefusal = Exclude<EtaOutcome, { kind: "ok" }>;
+
+/** A route timed from where the person is, before it is shaped for whoever asked. */
+interface TimedRoute {
+  route: RouteResult;
+  common: Omit<EtaCommon, "durationMin" | "distanceKm" | "arriveAt" | "summary">;
+  /** Whether an agent's request may read the precise location (always false for the owner). */
+  precise: boolean;
+  /** Points whose roads an agent is not told about: the start, and a registered destination. */
+  avoid: LatLon[];
+}
+
+export type AgentCaller = Extract<GeoCaller, { kind: "agent" }>;
 
 export type SearchOutcome =
   | { kind: "ok"; candidates: GeocodeCandidate[]; provider: GeoProviderName }
@@ -234,16 +260,54 @@ export class GeoService {
   }
 
   /**
-   * Time a car route from where I am to a destination (eta.ts says what each
-   * caller is told). Agents need etaToAgents, a visible presence, a
+   * Time a car route from where I am to a destination, for an agent (eta.ts
+   * says what it is told). Agents need etaToAgents, a visible presence, a
    * registered place as the destination unless they may read the precise
    * location, and are refused at or near home while skipProviderNearHome is
-   * on. Everyone needs the maps switch on and a reading fresh enough to start
-   * from. The owner near home is timed from the home place.
+   * on. The answer never carries the route's geometry.
    */
-  async eta(userId: UserId, request: EtaRequest, caller: GeoCaller): Promise<EtaOutcome> {
+  async eta(userId: UserId, request: EtaRequest, caller: AgentCaller): Promise<EtaOutcome<AgentEtaAnswer>> {
+    const timed = await this.timeRoute(userId, request, caller);
+    if ("kind" in timed) return timed;
+    const { route, common, precise, avoid } = timed;
+    const steps = request.directions
+      ? precise
+        ? { steps: route.steps }
+        : { stepsWithheld: "turn-by-turn steps name the streets around the person; they need precise access (read_precise_location, allowed by the person, and a reason)" }
+      : {};
+    return {
+      kind: "ok",
+      precise: precise && (common.destination.kind === "address" || request.directions === true),
+      answer: { ...common, precision: "approximate", ...agentNumbers(route), summary: agentRoads(route.roads, avoid), ...steps },
+    };
+  }
+
+  /** Time a car route for me in the dashboard: the provider's numbers, the steps, and the route as drawn. Near home it starts at the home place. */
+  async ownerEta(userId: UserId, request: EtaRequest): Promise<EtaOutcome<OwnerEtaAnswer>> {
+    const timed = await this.timeRoute(userId, request, { kind: "owner" });
+    if ("kind" in timed) return timed;
+    const { route, common } = timed;
+    return {
+      kind: "ok",
+      precise: false,
+      answer: {
+        ...common,
+        precision: "exact",
+        ...ownerNumbers(route),
+        summary: mainRoads(route.roads),
+        path: route.path,
+        steps: route.steps,
+        ...(route.tollFare !== undefined ? { tollFare: route.tollFare } : {}),
+        ...(route.taxiFare !== undefined ? { taxiFare: route.taxiFare } : {}),
+      },
+    };
+  }
+
+  /** Everything an ETA needs before it is shaped: the gates, the destination, and the provider's route. */
+  private async timeRoute(userId: UserId, request: EtaRequest, caller: AgentCaller | { kind: "owner" }): Promise<TimedRoute | EtaRefusal> {
     const settings = await this.deps.settings.getOrSeed(userId);
-    if (caller.kind === "agent") {
+    const agent = caller.kind === "agent" ? caller : null;
+    if (agent) {
       if (settings.defaultAgentAccess === "hidden") return { kind: "hidden" };
       if (!settings.etaToAgents) return { kind: "denied", reason: "ETA for agents is turned off in Maps & routes (etaToAgents)" };
     }
@@ -258,7 +322,6 @@ export class GeoService {
     const home = settings.skipProviderNearHome
       ? nearHomePlace(presence.precise, places, this.deps.config.geofence.nearRadiusMultiplier)
       : null;
-    const agent = caller.kind === "agent" ? caller : null;
     if (agent && home) return { kind: "denied", reason: "the person is at or near home, and no route is timed from there" };
     const precise =
       agent !== null &&
@@ -295,42 +358,20 @@ export class GeoService {
     );
     if (routed.kind !== "ok") return failure(routed);
     const route = routed.value;
-    const common = {
-      destination: { label: target.label, kind: target.kind },
-      origin: home ? ("home" as const) : ("current_location" as const),
-      traffic: route.traffic,
-      departAt: route.departAt,
-      provider: resolved.name,
-      freshness: fresh.freshness,
-      originAgeMin,
-      ...(target.showLinks ? { deepLinks: deepLinks(target.label, target.point) } : {}),
-    };
-    if (!agent) {
-      return {
-        kind: "ok",
-        precise: false,
-        answer: {
-          ...common,
-          precision: "exact",
-          ...ownerNumbers(route),
-          summary: mainRoads(route.roads),
-          path: routePath(route.roads),
-          steps: route.steps,
-          ...(route.tollFare !== undefined ? { tollFare: route.tollFare } : {}),
-          ...(route.taxiFare !== undefined ? { taxiFare: route.taxiFare } : {}),
-        },
-      };
-    }
-    const avoid = target.kind === "place" ? [presence.precise, target.point] : [presence.precise];
-    const steps = request.directions
-      ? precise
-        ? { steps: route.steps }
-        : { stepsWithheld: "turn-by-turn steps name the streets around the person; they need precise access (read_precise_location, allowed by the person, and a reason)" }
-      : {};
     return {
-      kind: "ok",
-      precise: precise && (target.kind === "address" || request.directions === true),
-      answer: { ...common, precision: "approximate", ...agentNumbers(route), summary: agentRoads(route.roads, avoid), ...steps },
+      route,
+      precise,
+      avoid: target.kind === "place" ? [presence.precise, target.point] : [presence.precise],
+      common: {
+        destination: { label: target.label, kind: target.kind },
+        origin: home ? "home" : "current_location",
+        traffic: route.traffic,
+        departAt: route.departAt,
+        provider: resolved.name,
+        freshness: fresh.freshness,
+        originAgeMin,
+        ...(target.showLinks ? { deepLinks: deepLinks(target.label, target.point) } : {}),
+      },
     };
   }
 
@@ -354,16 +395,6 @@ export class GeoService {
   prune(): Promise<number> {
     return this.deps.cache.prune();
   }
-}
-
-/** Every road's geometry joined in order, without a point repeated where one road meets the next. */
-export function routePath(roads: readonly RouteRoad[]): LatLon[] {
-  const path: LatLon[] = [];
-  for (const point of roads.flatMap((r) => r.path)) {
-    const last = path.at(-1);
-    if (!last || last.lat !== point.lat || last.lon !== point.lon) path.push({ lat: point.lat, lon: point.lon });
-  }
-  return path;
 }
 
 /** A call that did not answer, as an outcome. */
