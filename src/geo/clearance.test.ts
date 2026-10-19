@@ -100,3 +100,34 @@ describe("which lines an agent hears: all or nothing, one per ride, open labels 
     expect(agentLines([nearStart, clearRide(["마을 서초09", "마을 서초10"])], avoid, true)).toEqual(["간선 100", "마을 서초09"]);
   });
 });
+
+describe("steps and what rests on precise access", () => {
+  const avoid = keepouts([km(-20, 0), km(20, 0)], []);
+  const clearRide = (lines: string[], guidance: string): TransitLeg => ({ ...ride(lines, [km(-5, 5), km(5, 5)]), guidance });
+  const transit = (legs: TransitLeg[]): TransitRoute => ({ mode: "transit", durationSec: 3600, distanceM: 40_000, path: [], departAt: "2026-10-19T00:00:00.000Z", transfers: legs.length - 1, legs });
+
+  it("transit steps, which name stations, go only to precise access, and say why otherwise", () => {
+    const route = transit([clearRide(["2호선"], "2호선 (강남역 > 시청역)")]);
+    expect(agentDetail(route, avoid, { precise: false, directions: true }).detail).toMatchObject({ stepsWithheld: expect.stringContaining("precise access") });
+    expect(agentDetail(route, avoid, { precise: false, directions: true }).detail).not.toHaveProperty("steps");
+    expect(agentDetail(route, avoid, { precise: true, directions: true })).toEqual({
+      detail: { summary: ["2호선"], transfers: 0, walkMin: 0, steps: ["2호선 (강남역 > 시청역)"] },
+      usedPrecise: true,
+    });
+  });
+
+  it("at most 30 steps", () => {
+    const steps = Array.from({ length: 45 }, (_, i) => ({ guidance: `step ${i}`, distanceM: 10, path: [] }));
+    const walk = { mode: "walk" as const, durationSec: 3600, distanceM: 4000, path: [], departAt: "2026-10-19T00:00:00.000Z", steps };
+    expect(agentDetail(walk, avoid, { precise: true, directions: true }).detail.steps).toHaveLength(30);
+  });
+
+  it("precise access is used only when it told more than an agent without it would hear", () => {
+    const open = transit([clearRide(["2호선"], "a")]);
+    expect(agentDetail(open, avoid, { precise: true, directions: false }).usedPrecise).toBe(false);
+    const near = transit([ride(["마을 서초09"], [km(-21, 0), km(-15, 0)])]);
+    expect(agentDetail(near, avoid, { precise: true, directions: false })).toMatchObject({ usedPrecise: true, detail: { summary: ["마을 서초09"], transfers: 0 } });
+    const noSteps = transit([{ ...clearRide(["2호선"], ""), guidance: "" }]);
+    expect(agentDetail(noSteps, avoid, { precise: true, directions: true }).usedPrecise).toBe(false);
+  });
+});

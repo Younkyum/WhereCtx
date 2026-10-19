@@ -4,25 +4,26 @@
  *
  * The owner gets the route as the provider gave it. An agent gets an answer
  * that cannot be worked back to where the person is:
- * - times and distance in coarse steps (5 minutes, whole kilometres), no
- *   fares (a taxi fare is the distance), the arrival rounded to 5 minutes;
- * - main roads only, without any road that runs within
- *   AGENT_ROAD_CLEARANCE_M of the origin or of a registered place it routes
- *   to, without side streets (…번길, …로12길), and without any road whose
- *   geometry the provider did not give;
- * - turn-by-turn steps, which name the street the route starts on, only
- *   when the agent may read the precise location anyway;
- * - for transit, the transfers, the walking minutes in 5-minute steps and
- *   the lines ridden, never a stop name (the first and last stops are the
- *   origin's and the destination's), and without any ride that runs within
- *   AGENT_ROAD_CLEARANCE_M of the origin or a registered destination unless
- *   the agent may read the precise location;
- * - for walking and cycling, no street at all unless the agent may read the
- *   precise location (and asked for the steps).
+ * - the departure floored to 5 minutes, the minutes in 5-minute steps (15
+ *   on foot or by bicycle, from 15 on), the arrival as that departure plus
+ *   those minutes, whole kilometres, no fares (a taxi fare is the distance);
+ * - nothing named that runs within AGENT_ROAD_CLEARANCE_M of the start, the
+ *   destination or any registered place as drawn (clearance.ts), measured
+ *   along every segment;
+ * - by car, main roads only, without side streets (…번길, …로12길) and
+ *   without any road whose geometry the provider did not give;
+ * - by transit, one line per ride and only when every ride may be named
+ *   (agentLines), the transfers only beside them, the walking minutes in
+ *   5-minute steps, never a stop;
+ * - on foot or by bicycle, no street;
+ * - steps (turn-by-turn, or a transit route's legs, which name stations),
+ *   at most AGENT_STEPS_MAX, only to an agent that asked and may read the
+ *   precise location anyway.
  */
 
 import type { PresenceStatus } from "../types.js";
 import type { FreshnessView } from "../presence/freshness.js";
+import { isDeepStrictEqual } from "node:util";
 import { clearOf, type Keepout } from "./clearance.js";
 import { mainRoads } from "./roads.js";
 import type { LatLon, RouteResult, TransitLeg } from "./types.js";
@@ -103,47 +104,60 @@ export function walkingSec(legs: readonly TransitLeg[]): number {
 
 export const STEPS_NEED_PRECISE =
   "turn-by-turn steps name the streets around the person; they need precise access (read_precise_location, allowed by the person, and a reason)";
-export const TRANSIT_STEPS_WITHHELD = "transit steps name the stops around the person and the destination; agents are never told stops";
+export const TRANSIT_STEPS_NEED_PRECISE =
+  "transit steps name the stops and stations around the person and the destination; they need precise access (read_precise_location, allowed by the person, and a reason)";
+/** At most this many steps go to an agent. */
+export const AGENT_STEPS_MAX = 30;
 
-/**
- * What an agent is told about a route beyond its numbers, by mode, and
- * whether that rests on its precise access.
- */
-export function agentDetail(
-  route: RouteResult,
-  avoid: readonly Keepout[],
-  access: { precise: boolean; directions: boolean },
-): {
-  detail: { summary: string[]; steps?: string[]; stepsWithheld?: string; transfers?: number; walkMin?: number };
-  usedPrecise: boolean;
-} {
-  const { precise, directions } = access;
+type AgentAccess = { precise: boolean; directions: boolean };
+
+export interface AgentDetail {
+  summary: string[];
+  steps?: string[];
+  stepsWithheld?: string;
+  transfers?: number;
+  walkMin?: number;
+}
+
+/** The steps, when asked for: the first AGENT_STEPS_MAX with precise access, else why not. */
+function stepsFor(steps: readonly string[], { precise, directions }: AgentAccess, withheld: string): Pick<AgentDetail, "steps" | "stepsWithheld"> {
+  if (!directions) return {};
+  return precise ? { steps: steps.slice(0, AGENT_STEPS_MAX) } : { stepsWithheld: withheld };
+}
+
+function detailFor(route: RouteResult, avoid: readonly Keepout[], access: AgentAccess): AgentDetail {
   switch (route.mode) {
     case "car":
+      return { summary: agentRoads(route.roads, avoid), ...stepsFor(route.steps, access, STEPS_NEED_PRECISE) };
     case "walk":
-    case "bike": {
-      const summary = route.mode === "car" ? agentRoads(route.roads, avoid) : [];
-      const all = route.mode === "car" ? route.steps : route.steps.map((s) => s.guidance).filter(Boolean);
-      if (!directions) return { detail: { summary }, usedPrecise: false };
-      return precise
-        ? { detail: { summary, steps: all }, usedPrecise: true }
-        : { detail: { summary, stepsWithheld: STEPS_NEED_PRECISE }, usedPrecise: false };
-    }
+    case "bike":
+      return { summary: [], ...stepsFor(route.steps.map((s) => s.guidance).filter(Boolean), access, STEPS_NEED_PRECISE) };
     case "transit": {
-      const summary = agentLines(route.legs, avoid, precise);
+      const summary = agentLines(route.legs, avoid, access.precise);
       const rides = route.legs.filter((l) => l.kind !== "walk").length;
       return {
-        detail: {
-          summary,
-          // Only beside named lines, where it is their count less one and says nothing more.
-          ...(summary.length > 0 ? { transfers: rides - 1 } : {}),
-          walkMin: agentMinutes(walkingSec(route.legs)),
-          ...(directions ? { stepsWithheld: TRANSIT_STEPS_WITHHELD } : {}),
-        },
-        usedPrecise: precise,
+        summary,
+        // Only beside named lines, where it is their count less one and says nothing more.
+        ...(summary.length > 0 ? { transfers: rides - 1 } : {}),
+        walkMin: agentMinutes(walkingSec(route.legs)),
+        ...stepsFor(route.legs.map((l) => l.guidance).filter(Boolean), access, TRANSIT_STEPS_NEED_PRECISE),
       };
     }
   }
+}
+
+/**
+ * What an agent is told about a route beyond its numbers, and whether that
+ * rests on its precise access: true only when it hears more than an agent
+ * without precise access would (a line, a transfer count or a step).
+ */
+export function agentDetail(route: RouteResult, avoid: readonly Keepout[], access: AgentAccess): { detail: AgentDetail; usedPrecise: boolean } {
+  const open = detailFor(route, avoid, { ...access, precise: false });
+  if (!access.precise) return { detail: open, usedPrecise: false };
+  const detail = detailFor(route, avoid, access);
+  const usedPrecise =
+    (detail.steps?.length ?? 0) > 0 || detail.transfers !== open.transfers || !isDeepStrictEqual(detail.summary, open.summary);
+  return { detail, usedPrecise };
 }
 
 /** On foot or by bicycle, an agent hears minutes past this in steps of the same size. */

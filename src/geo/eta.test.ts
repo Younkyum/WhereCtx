@@ -220,6 +220,8 @@ describe("a transit, walking or cycling route, from Kakao's documented samples",
     expect(outcome).toMatchObject({ precise: true, answer: { summary: ["신분당선", "간선 472", "지선 7011"], transfers: 2 } });
     const text = JSON.stringify(outcome);
     for (const stop of STOPS) expect(text).not.toContain(stop);
+    const steps = ok(await eta({ to: "city hall", mode: "transit", directions: true, reason: "meeting there" }, agent(["read_presence", "read_precise_location"])));
+    expect(steps).toMatchObject({ precise: true, answer: { steps: expect.arrayContaining([expect.stringContaining("판교")]) } });
   });
 
   it("the owner gets every leg with its stops, the fare and the route as drawn", async () => {
