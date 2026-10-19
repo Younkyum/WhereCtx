@@ -183,4 +183,67 @@ describe("maps in the dashboard", () => {
     expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
     expect(host.textContent).toContain("The map could not load");
   });
+
+  it("Home places me, and a person only after their exact location is opened (the audited read)", async () => {
+    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+    routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true } } }));
+    routes.set("GET /v1/presence", () => ({ status: 200, body: { status: "away", updatedAgoSec: 60, stale: false, freshness: "live" } }));
+    routes.set("GET /v1/presence/precise", () => ({ status: 200, body: { lat: 37.4, lon: 127.1, accuracyM: 10, updatedAgoSec: 60 } }));
+    const mina = { user: { id: "u2", displayName: "Mina" }, level: "precise", paused: false, presence: { status: "away", stale: false, updatedAgoMin: 1 } };
+    routes.set("GET /v1/people", () => ({ status: 200, body: { people: [{ ...mina, precise: "available" }] } }));
+    routes.set("GET /v1/people/u2", () => ({
+      status: 200,
+      body: { person: { ...mina, precise: { lat: 37.55, lon: 126.95, updatedAgoMin: 1 } } },
+    }));
+    await open("#home");
+    expect(live("marker").map((m) => [m.opts.title, ...at(m)])).toEqual([["You", 37.4, 127.1]]);
+    expect(calls).not.toContain("GET /v1/people/u2");
+
+    await act(async () => button("Show exact location").click());
+    await settle();
+    expect(calls).toContain("GET /v1/people/u2");
+    expect(live("marker").map((m) => [m.opts.title, ...at(m)])).toEqual([
+      ["You", 37.4, 127.1],
+      ["Mina", 37.55, 126.95],
+    ]);
+  });
+
+  it("Places draws each place's circle, and a click on the map fills in the new place's coordinates", async () => {
+    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+    await open("#places");
+    expect(live("circle").map((c) => [...at(c), c.opts.radius])).toEqual([[37.5, 127, 100]]);
+    await act(async () => clicks[0]!({ latLng: { getLat: () => 37.1234567, getLng: () => 127.7654321 } }));
+    await settle();
+    const values = [...host.querySelectorAll("input")].map((i) => i.value);
+    expect(values).toContain("37.123457");
+    expect(values).toContain("127.765432");
+    expect(live("marker").map(at)).toEqual([[37.1234567, 127.7654321]]);
+  });
+
+  it("the route tester draws the owner's route", async () => {
+    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+    routes.set("GET /v1/geo", () => ({ status: 200, body: { active: { provider: "kakao", source: "own" }, map: { provider: "kakao", source: "own" }, credentials: [], operator: [], operatorMap: [] } }));
+    routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true, geoProvider: null } } }));
+    const path = [
+      { lat: 37.4, lon: 127.1 },
+      { lat: 37.45, lon: 127.05 },
+      { lat: 37.5, lon: 127 },
+    ];
+    routes.set("GET /v1/geo/eta", () => ({
+      status: 200,
+      body: { eta: { destination: { label: "home", kind: "place" }, origin: "current_location", precision: "exact", durationMin: 12, distanceKm: 6.1, traffic: "live", arriveAt: "2026-10-19T01:00:00Z", summary: [], path, provider: "kakao" } },
+    }));
+    await open("#maps");
+    expect(host.textContent).toContain(`register this site domain: ${location.origin}`);
+    const to = [...host.querySelectorAll("label")].find((l) => l.textContent?.trim() === "To a place name or an address")!;
+    const input = (document.getElementById(to.htmlFor) ?? to.parentElement!.querySelector("input")) as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "home");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => button("Get ETA").click());
+    await settle();
+    expect(live("line").map((l) => l.opts.path.map((p: any) => [p.lat, p.lng]))).toEqual([path.map((p) => [p.lat, p.lon])]);
+    expect(live("marker").map((m) => m.opts.title)).toEqual(["Start", "home"]);
+  });
 });

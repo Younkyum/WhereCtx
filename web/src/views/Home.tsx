@@ -2,6 +2,9 @@
  * My status, "share my location now" (one browser geolocation fix posted as a
  * manual reading), the drive time home when I ask for it, and the people who
  * share with me. Opening someone's exact location is audited on their side.
+ *
+ * With a map key, a map shows where I am and each person whose exact
+ * location I opened here; nobody else is placed on it.
  */
 
 import { Avatar } from "@astryxdesign/core/Avatar";
@@ -14,11 +17,13 @@ import { Heading } from "@astryxdesign/core/Heading";
 import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
 import { Text } from "@astryxdesign/core/Text";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import { geoErrorKey, motionOf, safeHttpUrl, statusOf } from "../lib";
 import type { Eta, Person, Place, PreciseLocation, Presence, PrivacySettings } from "../model";
+import { homeScene } from "../mapSdk";
+import { MapView } from "../MapView";
 import { Empty, Hint, Loaded, Page, Panel, useAction, useFormat, useLoad, useNotify } from "../ui";
 
 type Mine = { presence: Presence | null; problem: "none" | "hidden" | null; paused: boolean; geoEnabled: boolean };
@@ -57,10 +62,15 @@ function locate(t: ReturnType<typeof useApp>["t"]): Promise<GeolocationPosition>
   });
 }
 
+/** My own coordinates (the owner always may), for the map; null before any reading. */
+const loadMyPoint = () => api<PreciseLocation>("/v1/presence/precise").catch(() => null);
+
 export function HomeView() {
   const { t } = useApp();
   const notify = useNotify();
   const [mine, reloadMine] = useLoad(loadMine, []);
+  const [myPoint, reloadMyPoint] = useLoad(loadMyPoint, []);
+  const [opened, setOpened] = useState<Record<string, Person>>({});
   const [people, reloadPeople] = useLoad(() => api<{ people: Person[] }>("/v1/people").then((r) => r.people ?? []), []);
   useEffect(() => {
     const timer = setInterval(() => void reloadPeople(), 30000);
@@ -78,8 +88,19 @@ export function HomeView() {
       },
     });
     notify.ok(t("home.shared", { status: t(`st.${statusOf(r.status)}`) }));
-    await reloadMine();
+    await Promise.all([reloadMine(), reloadMyPoint()]);
   });
+  const me = myPoint.kind === "ready" ? myPoint.data : null;
+  const scene = useMemo(
+    () =>
+      homeScene(
+        me ? { at: { lat: me.lat, lon: me.lon }, title: t("map.me") } : null,
+        Object.values(opened).flatMap((p) =>
+          p.precise && typeof p.precise === "object" ? [{ id: p.user.id, at: { lat: p.precise.lat, lon: p.precise.lon }, title: p.user.displayName }] : [],
+        ),
+      ),
+    [me, opened, t],
+  );
 
   return (
     <Page title={t("home.title")}>
@@ -88,13 +109,14 @@ export function HomeView() {
           {(m) => <MyStatus mine={m} sharing={sharing} onShare={() => void shareNow()} />}
         </Loaded>
       </Card>
+      <MapView scene={scene} />
       <Panel title={t("people.title")}>
         <Loaded state={people}>
           {(list) =>
             list.length ? (
               <Grid columns={{ minWidth: 260, max: 3 }} gap={3}>
                 {list.map((p) => (
-                  <PersonCard key={p.user.id} person={p} />
+                  <PersonCard key={p.user.id} person={p} onOpened={(full) => setOpened((o) => ({ ...o, [full.user.id]: full }))} />
                 ))}
               </Grid>
             ) : (
@@ -169,13 +191,15 @@ function ToHome() {
   );
 }
 
-function PersonCard({ person: p }: { person: Person }) {
+/** `onOpened`: the person as read with their exact location, an audited read on their side. */
+function PersonCard({ person: p, onOpened }: { person: Person; onOpened: (person: Person) => void }) {
   const { t } = useApp();
   const fmt = useFormat();
   const [precise, setPrecise] = useState<Person | null>(null);
   const [opening, open] = useAction(async () => {
     const r = await api<{ person: Person }>("/v1/people/" + encodeURIComponent(p.user.id));
     setPrecise(r.person);
+    onOpened(r.person);
   });
   const pr = p.presence;
   const motion = pr ? motionOf(pr.motion) : null;
