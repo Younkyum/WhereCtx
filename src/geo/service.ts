@@ -17,14 +17,15 @@ import type { SettingsStore } from "../privacy/settingsStore.js";
 import type { PlacesStore } from "../store/placesStore.js";
 import type { PresenceStore } from "../store/presenceStore.js";
 import type { SharesStore } from "../sharing/sharesStore.js";
-import type { Freshness, Place, UserId } from "../types.js";
+import type { Freshness, Place, PrivacySettings, UserId } from "../types.js";
 import { systemClock, type Clock } from "../util/time.js";
 import { AreaRefresher, timerSchedule, type AreaUpdate, type Schedule } from "./area.js";
 import type { GeoCacheStore } from "./cacheStore.js";
 import type { GeoCredentialsStore, StoredGeoCredential } from "./credentialsStore.js";
 import { FakeGeoProvider } from "./fake.js";
 import { GeoKeys, type CallResult, type GeoCallAction, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
-import { agentDetail, agentNumbers, freshEnoughToRoute, ownerDetail, ownerNumbers, type OwnerLeg } from "./eta.js";
+import { AnswerCache } from "./answerCache.js";
+import { AGENT_TIME_STEP_MIN, agentDetail, agentNumbers, freshEnoughToRoute, ownerDetail, ownerNumbers, type OwnerLeg } from "./eta.js";
 import { nearHomePlace } from "../geofence/shape.js";
 import { keepouts, type Keepout } from "./clearance.js";
 import {
@@ -133,6 +134,38 @@ export type EtaOutcome<A extends EtaAnswer = EtaAnswer> =
 /** Every way an ETA request ends without an answer. */
 type EtaRefusal = Exclude<EtaOutcome, { kind: "ok" }>;
 
+/** What the gates found: who may hear what, where the person is, and the destination when it is a registered place. */
+interface Gated {
+  settings: PrivacySettings;
+  start: LatLon;
+  freshness: Freshness;
+  originAgeMin: number;
+  places: Place[];
+  /** The home place the person is at or near, when routes start there (the owner only). */
+  home: Place | null;
+  precise: boolean;
+  place: Place | null;
+}
+
+type AgentEtaOk = Extract<EtaOutcome<AgentEtaAnswer>, { kind: "ok" }>;
+
+/** One credential's identical request: the same answer within AGENT_ANSWER_TTL_MS. */
+function answerKey(userId: UserId, caller: AgentCaller, request: EtaRequest, precise: boolean): string {
+  const stepMs = AGENT_TIME_STEP_MIN * 60_000;
+  return JSON.stringify([
+    userId,
+    caller.credential.kind,
+    caller.credential.id,
+    request.mode,
+    request.to.trim(),
+    request.pick ?? null,
+    request.directions === true,
+    request.departAt ? Math.floor(request.departAt.getTime() / stepMs) : null,
+    [...(request.avoid ?? [])].sort(),
+    precise,
+  ]);
+}
+
 /** A route timed from where the person is, before it is shaped for whoever asked. */
 interface TimedRoute {
   route: RouteResult;
@@ -189,6 +222,7 @@ export class GeoService {
   private readonly clock: Clock;
   private readonly keys: GeoKeys;
   private readonly area: AreaRefresher;
+  private readonly agentAnswers = new AnswerCache<AgentEtaOk>();
   /** Answers every call when GEO_PROVIDER_FAKE is on. */
   readonly fake?: FakeGeoProvider;
 
@@ -262,27 +296,40 @@ export class GeoService {
   }
 
   /**
-   * Time a car route from where I am to a destination, for an agent (eta.ts
+   * Time a route from where I am to a destination, for an agent (eta.ts
    * says what it is told). Agents need etaToAgents, a visible presence, a
    * registered place as the destination unless they may read the precise
    * location, and are refused at or near home while skipProviderNearHome is
-   * on. The answer never carries the route's geometry.
+   * on. The answer never carries the route's geometry. The same credential
+   * asking the same thing within AGENT_ANSWER_TTL_MS hears the same answer,
+   * with no provider call.
    */
   async eta(userId: UserId, request: EtaRequest, caller: AgentCaller): Promise<EtaOutcome<AgentEtaAnswer>> {
-    const timed = await this.timeRoute(userId, request, caller);
+    const gated = await this.gate(userId, request, caller);
+    if ("kind" in gated) return gated;
+    const key = answerKey(userId, caller, request, gated.precise);
+    const now = this.clock().getTime();
+    const kept = this.agentAnswers.get(key, now);
+    if (kept) return kept;
+    const timed = await this.timeRoute(userId, request, caller, gated);
     if ("kind" in timed) return timed;
     const { route, common, precise, avoid } = timed;
     const { detail, usedPrecise } = agentDetail(route, avoid, { precise, directions: request.directions === true });
-    return {
+    const outcome: AgentEtaOk = {
       kind: "ok",
       precise: precise && (common.destination.kind === "address" || usedPrecise),
       answer: { ...common, precision: "approximate", ...agentNumbers(route), ...detail },
     };
+    this.agentAnswers.set(key, outcome, now);
+    return outcome;
   }
 
   /** Time a route for me in the dashboard: the provider's numbers, the steps, the stops, and the route as drawn. Near home it starts at the home place. */
   async ownerEta(userId: UserId, request: EtaRequest): Promise<EtaOutcome<OwnerEtaAnswer>> {
-    const timed = await this.timeRoute(userId, request, { kind: "owner" });
+    const owner = { kind: "owner" } as const;
+    const gated = await this.gate(userId, request, owner);
+    if ("kind" in gated) return gated;
+    const timed = await this.timeRoute(userId, request, owner, gated);
     if ("kind" in timed) return timed;
     const { route, common } = timed;
     return {
@@ -292,8 +339,8 @@ export class GeoService {
     };
   }
 
-  /** Everything an ETA needs before it is shaped: the gates, the destination, and the provider's route. */
-  private async timeRoute(userId: UserId, request: EtaRequest, caller: AgentCaller | { kind: "owner" }): Promise<TimedRoute | EtaRefusal> {
+  /** The gates an ETA passes before any provider is asked, and what they found. */
+  private async gate(userId: UserId, request: EtaRequest, caller: AgentCaller | { kind: "owner" }): Promise<Gated | EtaRefusal> {
     const settings = await this.deps.settings.getOrSeed(userId);
     const agent = caller.kind === "agent" ? caller : null;
     if (agent) {
@@ -316,7 +363,7 @@ export class GeoService {
       agent !== null &&
       authorizePrecise({ scopes: [...agent.scopes], settings, presence, reason: request.reason }).allowed;
 
-    const place = places.find((p: Place) => p.name === request.to);
+    const place = places.find((p: Place) => p.name === request.to) ?? null;
     if (!place && agent && !precise) {
       return {
         kind: "denied",
@@ -324,6 +371,17 @@ export class GeoService {
           "agents may time a route only to a registered place; an address needs precise access (read_precise_location, allowed by the person, and a reason)",
       };
     }
+    return { settings, start: presence.precise, freshness: fresh.freshness, originAgeMin, places, home, precise, place };
+  }
+
+  /** The destination and the provider's route, for a request that passed the gates. */
+  private async timeRoute(
+    userId: UserId,
+    request: EtaRequest,
+    caller: AgentCaller | { kind: "owner" },
+    gated: Gated,
+  ): Promise<TimedRoute | EtaRefusal> {
+    const { settings, start, places, home, precise, place } = gated;
     const resolved = await this.keys.resolve(userId, settings);
     if (!resolved) return { kind: "unconfigured" };
     const supported = PROVIDER_ROUTE_MODES[resolved.name];
@@ -331,7 +389,7 @@ export class GeoService {
       return { kind: "unsupported_mode", mode: request.mode, provider: resolved.name, supported };
     }
 
-    const managesPlaces = !agent || agent.scopes.includes("manage_places");
+    const managesPlaces = caller.kind !== "agent" || caller.scopes.includes("manage_places");
     let target: { label: string; kind: "place" | "address"; point: LatLon; showLinks: boolean };
     if (place) {
       target = { label: place.name, kind: "place", point: place, showLinks: managesPlaces };
@@ -345,7 +403,7 @@ export class GeoService {
       target = { label: chosen.candidate.label, kind: "address", point: chosen.candidate, showLinks: true };
     }
 
-    const origin: LatLon = home ?? presence.precise;
+    const origin: LatLon = home ?? start;
     const routed = await this.keys.call(userId, caller, resolved, ROUTE_ACTION[request.mode], (p) =>
       p.route({ mode: request.mode, origin, destination: target.point, departAt: request.departAt, avoid: request.avoid }),
     );
@@ -354,7 +412,7 @@ export class GeoService {
     return {
       route,
       precise,
-      avoid: keepouts([presence.precise, target.point], places),
+      avoid: keepouts([start, target.point], places),
       common: {
         mode: route.mode,
         destination: { label: target.label, kind: target.kind },
@@ -362,8 +420,8 @@ export class GeoService {
         ...(route.mode === "car" ? { traffic: route.traffic } : {}),
         departAt: route.departAt,
         provider: resolved.name,
-        freshness: fresh.freshness,
-        originAgeMin,
+        freshness: gated.freshness,
+        originAgeMin: gated.originAgeMin,
         ...(target.showLinks ? { deepLinks: deepLinks(target.label, target.point) } : {}),
       },
     };

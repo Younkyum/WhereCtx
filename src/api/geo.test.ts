@@ -393,7 +393,9 @@ describe("ETA", () => {
     expect(used()).toBe(29);
     expect((await eta(AGENT, "to=office")).status).toBe(200);
     expect(used()).toBe(GEO_USER_CALLS_PER_MINUTE);
-    expect((await eta(AGENT, "to=office")).status).toBe(429);
+    // The same question again is the kept answer, and spends nothing.
+    expect((await eta(AGENT, "to=office")).status).toBe(200);
+    expect((await eta(AGENT, "to=office&mode=walk")).status).toBe(429);
     expect((await eta(null, "to=office")).status).toBe(429);
     expect((await owner.browser.json("/v1/geo/credentials/kakao/test", { method: "POST" })).test).toMatchObject({ ok: false, error: "rate_limited" });
     expect(used()).toBe(GEO_USER_CALLS_PER_MINUTE);

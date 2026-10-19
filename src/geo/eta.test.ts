@@ -272,6 +272,73 @@ describe("a transit, walking or cycling route, from Kakao's documented samples",
   });
 });
 
+describe("polling an agent's ETA with a moving clock and a moving phone", () => {
+  const STEP_MS = 5 * 60_000;
+  const TTL_MS = 5 * 60_000;
+  const office = { lat: 37.55, lon: 127.05 };
+
+  it.each([
+    ["car", 5],
+    ["transit", 5],
+    ["walk", 15],
+    ["bike", 15],
+  ] as const)("%s: one answer per 5 minutes, and no pair of fields finer than a %i-minute step", async (mode, stepMin) => {
+    await boot({ fake: true });
+    await place("office", "work", office);
+    await set({ geoEnabled: true, etaToAgents: true });
+    const routeCalls = () => ctx.system.geo.fake!.calls.filter((c) => c.op === "route").length;
+    let window: { start: number; answer: unknown } | null = null;
+    let windows = 0;
+    for (let i = 0; i < 24; i++) {
+      await read({ lat: 37.4 + i * 0.002, lon: 127.0 + i * 0.0013 });
+      const outcome = await eta({ to: "office", mode });
+      if (outcome.kind !== "ok") throw new Error(`expected an answer, got ${outcome.kind}`);
+      const { answer } = outcome;
+      if (!window || clock.now - window.start >= TTL_MS) {
+        window = { start: clock.now, answer };
+        windows += 1;
+      }
+      expect(answer, "the same answer within the window").toEqual(window.answer);
+      expect(Date.parse(answer.departAt) % STEP_MS, "departAt on a 5-minute step").toBe(0);
+      expect(Date.parse(answer.arriveAt) - Date.parse(answer.departAt), "arriveAt is departAt plus the rounded minutes").toBe(answer.durationMin * 60_000);
+      expect(answer.durationMin % (answer.durationMin >= 15 ? stepMin : 5), "minutes in steps").toBe(0);
+      expect(Number.isInteger(answer.distanceKm) && answer.distanceKm >= 1, "whole kilometres").toBe(true);
+      if (answer.walkMin !== undefined) expect(answer.walkMin % 5).toBe(0);
+      clock.advance(37_000);
+    }
+    expect(windows).toBeGreaterThan(2);
+    expect(routeCalls(), "a kept answer asks the provider nothing").toBe(windows);
+  });
+
+  it("each credential, destination and mode is kept apart", async () => {
+    await boot({ fake: true });
+    await place("office", "work", office);
+    await place("gym", "custom", { lat: 37.6, lon: 126.9 });
+    await set({ geoEnabled: true, etaToAgents: true });
+    await read({ lat: 37.4, lon: 127.0 });
+    const routeCalls = () => ctx.system.geo.fake!.calls.filter((c) => c.op === "route").length;
+    const other: AgentCaller = { ...agent(), credential: { kind: "token", id: "tok-2", name: "Other" } };
+    for (const [request, caller] of [
+      [{ to: "office" }, agent()],
+      [{ to: "office" }, agent()],
+      [{ to: "office" }, other],
+      [{ to: "gym" }, agent()],
+      [{ to: "office", mode: "walk" as const }, agent()],
+    ] as const) await eta(request, caller);
+    expect(routeCalls()).toBe(4);
+  });
+
+  it("the owner is never served a kept answer", async () => {
+    await boot({ fake: true });
+    await place("office", "work", office);
+    await set({ geoEnabled: true, etaToAgents: true });
+    await read({ lat: 37.4, lon: 127.0 });
+    await eta({ to: "office" }, { kind: "owner" });
+    await eta({ to: "office" }, { kind: "owner" });
+    expect(ctx.system.geo.fake!.calls.filter((c) => c.op === "route")).toHaveLength(2);
+  });
+});
+
 describe("how fresh a reading must be to start a route from (a connected phone)", () => {
   const OFFICE = { lat: 37.4, lon: 127.1 };
   const CAFE = { lat: 37.56, lon: 126.97 };

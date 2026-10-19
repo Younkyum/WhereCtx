@@ -146,20 +146,34 @@ export function agentDetail(
   }
 }
 
+/** On foot or by bicycle, an agent hears minutes past this in steps of the same size. */
+export const AGENT_ACTIVE_STEP_MIN = 15;
+
 const stepMs = AGENT_TIME_STEP_MIN * 60_000;
 
-/** The numbers an agent is told: minutes in 5-minute steps (at least 5), whole kilometres (at least 1), arrival to 5 minutes. */
-export function agentNumbers(route: Pick<RouteResult, "durationSec" | "distanceM" | "departAt">): {
+/**
+ * The numbers an agent is told. The departure is floored to 5 minutes and
+ * the arrival is that departure plus the rounded minutes, never worked out
+ * from the exact values, so no pair of fields says more than a step. By
+ * car or transit, minutes in 5-minute steps (at least 5); on foot or by
+ * bicycle, in 15-minute steps from 15 on, since its minutes are its
+ * distance. Whole kilometres, at least 1.
+ */
+export function agentNumbers(route: Pick<RouteResult, "mode" | "durationSec" | "distanceM" | "departAt">): {
+  departAt: string;
   durationMin: number;
   distanceKm: number;
   arriveAt: string;
 } {
-  const durationMin = Math.max(AGENT_TIME_STEP_MIN, agentMinutes(route.durationSec));
-  const arrive = Date.parse(route.departAt) + route.durationSec * 1000;
+  const minutes = route.durationSec / 60;
+  const step = (route.mode === "walk" || route.mode === "bike") && minutes >= AGENT_ACTIVE_STEP_MIN ? AGENT_ACTIVE_STEP_MIN : AGENT_TIME_STEP_MIN;
+  const durationMin = Math.max(AGENT_TIME_STEP_MIN, Math.round(minutes / step) * step);
+  const departMs = Math.floor(Date.parse(route.departAt) / stepMs) * stepMs;
   return {
+    departAt: new Date(departMs).toISOString(),
     durationMin,
     distanceKm: Math.max(1, Math.round(route.distanceM / 1000)),
-    arriveAt: new Date(Math.round(arrive / stepMs) * stepMs).toISOString(),
+    arriveAt: new Date(departMs + durationMin * 60_000).toISOString(),
   };
 }
 
