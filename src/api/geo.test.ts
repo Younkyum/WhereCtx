@@ -248,7 +248,7 @@ describe("ETA", () => {
     expect(answer.durationMin % 5).toBe(0);
     expect(Number.isInteger(answer.distanceKm)).toBe(true);
     expect(new Date(answer.arriveAt).getUTCMinutes() % 5).toBe(0);
-    for (const key of ["deepLinks", "steps", "taxiFare", "tollFare", "trafficAware"]) expect(answer).not.toHaveProperty(key);
+    for (const key of ["deepLinks", "steps", "taxiFare", "tollFare", "trafficAware", "path"]) expect(answer).not.toHaveProperty(key);
     for (const n of [AWAY.lat, AWAY.lon, 37.567, 126.978, 37.4, 127.1]) expect(text).not.toContain(String(n));
     expect(routeCalls()[0]!.origin).toEqual({ lat: 37.567, lon: 126.978 });
   });
@@ -259,6 +259,8 @@ describe("ETA", () => {
     expect(answer).toMatchObject({ precision: "exact", freshness: "live", originAgeMin: 0 });
     expect(answer.steps.length).toBeGreaterThan(0);
     expect(answer).toHaveProperty("taxiFare");
+    expect(answer.path).toHaveLength(3);
+    expect(answer.path[0]).toEqual(routeCalls()[0]!.origin);
     expect(answer.summary).toContain("테스트출발로12번길");
   });
 
@@ -504,5 +506,20 @@ describe("the map key and map-config", () => {
     const ana = await invite("Ana");
     await ana.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
     expect(await mapConfig(ana)).toMatchObject({ provider: "kakao", key: OPERATOR_JS });
+  });
+});
+
+describe("the owner's own location, for the Home map", () => {
+  beforeEach(() => boot());
+
+  it("is the owner's to read in the dashboard whatever the agent policy says, and goes unrecorded; agents stay gated", async () => {
+    await ingest(HOME);
+    await settings({ defaultAgentAccess: "hidden" });
+    const mine = await owner.browser.json("/v1/presence/precise");
+    expect(mine).toMatchObject({ lat: HOME.lat, lon: HOME.lon });
+    const agent = await as(AGENT, "/v1/presence/precise?reason=pick%20up");
+    expect(agent.status).toBe(403);
+    expect(await agent.text()).not.toContain(String(HOME.lon));
+    expect((await accessRows()).map((e) => [e.action, e.outcome])).toEqual([["presence.precise", "hidden"]]);
   });
 });

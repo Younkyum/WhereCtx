@@ -34,6 +34,7 @@ import {
   type LatLon,
   type RouteAvoid,
   type RouteResult,
+  type RouteRoad,
 } from "./types.js";
 
 
@@ -67,6 +68,8 @@ export interface EtaAnswer {
   departAt: string;
   arriveAt: string;
   summary: string[];
+  /** The route as drawn on a map, for the owner only. */
+  path?: LatLon[];
   /** Turn-by-turn, for the owner, and for an agent that asked and may read the precise location. */
   steps?: string[];
   /** Why the steps an agent asked for are left out. */
@@ -311,6 +314,7 @@ export class GeoService {
           precision: "exact",
           ...ownerNumbers(route),
           summary: mainRoads(route.roads),
+          path: routePath(route.roads),
           steps: route.steps,
           ...(route.tollFare !== undefined ? { tollFare: route.tollFare } : {}),
           ...(route.taxiFare !== undefined ? { taxiFare: route.taxiFare } : {}),
@@ -350,6 +354,16 @@ export class GeoService {
   prune(): Promise<number> {
     return this.deps.cache.prune();
   }
+}
+
+/** Every road's geometry joined in order, without a point repeated where one road meets the next. */
+export function routePath(roads: readonly RouteRoad[]): LatLon[] {
+  const path: LatLon[] = [];
+  for (const point of roads.flatMap((r) => r.path)) {
+    const last = path.at(-1);
+    if (!last || last.lat !== point.lat || last.lon !== point.lon) path.push({ lat: point.lat, lon: point.lon });
+  }
+  return path;
 }
 
 /** A call that did not answer, as an outcome. */

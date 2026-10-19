@@ -1,7 +1,8 @@
 /**
  * Presence REST API (plan section 9.7).
  *   GET /v1/presence            -> coarse presence (read_presence)
- *   GET /v1/presence/precise    -> precise location, policy-gated (read_precise_location)
+ *   GET /v1/presence/precise    -> precise location, policy-gated (read_precise_location);
+ *                                  the signed-in owner reads their own without the agent policy
  *   GET /v1/presence/history?from=&to=&limit=
  *                               -> raw history in [from, to] (default: the last
  *                                  24 hours, and 5 minutes ahead for clock skew),
@@ -86,12 +87,8 @@ export function presenceRouter(ctx: RouteContext): Hono<AppEnv> {
     const settings = await scope.settings.getOrSeed();
 
     const presence = toPresenceContext(stored);
-    const auth = authorizePrecise({
-      scopes,
-      settings,
-      presence,
-      reason,
-    });
+    // The agent policy is about agents; the owner in the dashboard sees where they are (the Home map).
+    const auth = c.get("principal").via === "session" ? ({ allowed: true } as const) : authorizePrecise({ scopes, settings, presence, reason });
     if (!auth.allowed) {
       decide(c, auth.outcome === "hidden" ? { outcome: "hidden" } : { outcome: "denied", denial: `precise location denied: ${auth.reason}` });
       return c.json({ error: "precise location denied", detail: auth.reason }, 403);
