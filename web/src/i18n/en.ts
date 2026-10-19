@@ -276,7 +276,7 @@ export const EN = {
   "devices.create": "Create connection",
   "devices.list": "Connected devices",
   "devices.empty": "No devices connected yet.",
-  "devices.secretOnce": "This contains the device's secret and is shown only now. Revoke the device below if it leaks.",
+  "devices.secretOnce": "This contains the device's secret and is shown only now. Revoke it from the list if it leaks.",
   "devices.qrAlt": "QR code with the OwnTracks setup link",
   "devices.ot.step1": "Install OwnTracks on the phone.",
   "devices.ot.step2": "Scan this code with the phone's camera, or open this page on the phone and tap the button below.",
@@ -718,6 +718,7 @@ export const EN = {
   "places.mapHint": "Click the map to add a place there: it opens Add by coordinates with the point filled in.",
   "common.done": "Done",
   "agents.createdTitle": "Agent token created",
+  "devices.pairedTitle": "Set up {name}",
 } as const;
 
 export type I18nKey = keyof typeof EN;

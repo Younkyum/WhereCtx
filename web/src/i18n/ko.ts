@@ -278,7 +278,7 @@ export const KO: Record<I18nKey, string> = {
   "devices.create": "연결 만들기",
   "devices.list": "연결된 기기",
   "devices.empty": "연결된 기기가 없어요.",
-  "devices.secretOnce": "기기 비밀값이 들어 있어서 지금 한 번만 보여 줘요. 유출됐다면 아래에서 기기를 폐기하세요.",
+  "devices.secretOnce": "기기 비밀값이 들어 있어서 지금 한 번만 보여 줘요. 유출됐다면 목록에서 폐기하세요.",
   "devices.qrAlt": "OwnTracks 설정 링크가 담긴 QR 코드",
   "devices.ot.step1": "휴대폰에 OwnTracks를 설치하세요.",
   "devices.ot.step2": "휴대폰 카메라로 이 코드를 찍거나, 휴대폰에서 이 페이지를 열고 아래 버튼을 누르세요.",
@@ -720,4 +720,5 @@ export const KO: Record<I18nKey, string> = {
   "places.mapHint": "지도를 클릭하면 그 지점 좌표가 채워진 ‘좌표로 추가’ 창이 열려요.",
   "common.done": "완료",
   "agents.createdTitle": "에이전트 토큰을 만들었어요",
+  "devices.pairedTitle": "{name} 설정하기",
 };
