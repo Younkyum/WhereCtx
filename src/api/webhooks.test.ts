@@ -218,8 +218,8 @@ describe("auth headers on a server without WEBHOOK_ENCRYPTION_KEY", () => {
   });
 
   it("are reported as unavailable", async () => {
-    expect((await plain.browser.json("/v1/webhooks")).capabilities).toEqual({ authHeader: false });
-    expect((await owner.browser.json("/v1/webhooks")).capabilities).toEqual({ authHeader: true });
+    expect((await plain.browser.json("/v1/webhooks")).capabilities).toEqual({ authHeader: false, authHeaderRequiresHttps: false });
+    expect((await owner.browser.json("/v1/webhooks")).capabilities).toEqual({ authHeader: true, authHeaderRequiresHttps: false });
   });
 
   it("are refused on create and on change, saying which setting is missing, and nothing is stored", async () => {
@@ -233,5 +233,38 @@ describe("auth headers on a server without WEBHOOK_ENCRYPTION_KEY", () => {
     expect(((await changed.json()) as any).error).toContain("WEBHOOK_ENCRYPTION_KEY");
     expect((await plain.browser.json("/v1/webhooks")).webhooks).toEqual([expect.not.objectContaining({ authHeader: expect.anything() })]);
     expect((await patch(plain.browser, plainHook, { authHeader: null })).status).toBe(200);
+  });
+});
+
+describe("auth headers when private targets are not allowed", () => {
+  const VALUE = "Bearer n8n-header-credential-9f3k";
+  let strict: Enrolled;
+
+  beforeEach(async () => {
+    const booted = await bootApp(new TestClock(), { webhooks: { allowPrivateTargets: false, encryptionKey: "test-webhook-key" } });
+    strict = await setupOwner(booted.app, booted.setupCode);
+  });
+
+  it("are said to need https", async () => {
+    expect((await strict.browser.json("/v1/webhooks")).capabilities).toEqual({ authHeader: true, authHeaderRequiresHttps: true });
+  });
+
+  it("are refused for an http URL on create, and taken for https", async () => {
+    const http = await strict.browser.send("/v1/webhooks", { body: { url: "http://93.184.216.34/hook", authHeader: { value: VALUE } } });
+    expect(http.status).toBe(400);
+    expect(((await http.json()) as any).error).toContain("https");
+    expect((await strict.browser.json("/v1/webhooks")).webhooks).toEqual([]);
+    const https = await strict.browser.send("/v1/webhooks", { body: { url: "https://93.184.216.34/hook", authHeader: { value: VALUE } } });
+    expect(https.status).toBe(201);
+  });
+
+  it("are refused when added to an http hook, which keeps working without one", async () => {
+    const id = (await strict.browser.json("/v1/webhooks", { body: { url: "http://93.184.216.34/hook" } })).webhook.id;
+    const added = await patch(strict.browser, id, { authHeader: { value: VALUE } });
+    expect(added.status).toBe(400);
+    expect(((await added.json()) as any).error).toContain("https");
+    expect((await strict.browser.json("/v1/webhooks")).webhooks[0]).not.toHaveProperty("authHeader");
+    expect((await patch(strict.browser, id, { active: false })).status).toBe(200);
+    expect((await patch(strict.browser, "no-such-hook", { authHeader: { value: VALUE } })).status).toBe(404);
   });
 });

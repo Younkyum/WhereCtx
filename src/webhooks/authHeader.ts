@@ -79,6 +79,15 @@ export function authHeaderHint(value: string): string {
   return token.length >= HINT_MIN_TOKEN ? `…${token.slice(-4)}` : "…";
 }
 
+/**
+ * Whether a hook at `url` may not carry an auth header: one travels only over
+ * https, unless private targets are allowed, since a LAN receiver often has no
+ * certificate.
+ */
+export function authHeaderNeedsHttps(url: string, allowPrivateTargets: boolean): boolean {
+  return !allowPrivateTargets && !/^https:/i.test(url);
+}
+
 export function viewAuthHeader(header: WebhookAuthHeader): WebhookAuthHeaderView {
   return { name: header.name, hint: authHeaderHint(header.value) };
 }

@@ -26,6 +26,7 @@ import type { EventsStore } from "../store/eventsStore.js";
 import type { Webhook, WebhooksStore } from "../store/webhooksStore.js";
 import type { PresenceEvent } from "../types.js";
 import type { Clock } from "../util/time.js";
+import { authHeaderNeedsHttps } from "./authHeader.js";
 import { WEBHOOK_HEADERS, WEBHOOK_USER_AGENT, eventPayload } from "./payload.js";
 import { assertSafeWebhookUrl, type Resolver } from "./ssrf.js";
 import { connectTransport, type Transport } from "./transport.js";
@@ -243,6 +244,10 @@ export class WebhookDispatcher {
     hook: Webhook,
     ev: PresenceEvent,
   ): Promise<{ ok: true } | { ok: false; error: string }> {
+    // A hook saved before the rule, or under WEBHOOK_ALLOW_PRIVATE_TARGETS.
+    if (hook.authHeader && authHeaderNeedsHttps(hook.url, this.allowPrivateTargets)) {
+      return { ok: false, error: "auth header needs an https URL" };
+    }
     // Re-validate the target at delivery time. For a host name the transport
     // checks again at connect time; for an IP literal this is the check.
     try {

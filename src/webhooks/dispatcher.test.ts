@@ -485,6 +485,24 @@ describe("WebhookDispatcher auth header", () => {
     expect(sent[0]!.init.headers.get("X-Api-Key")).toBe("key-0123456789");
   });
 
+  it("is sent only to an https URL unless private targets are allowed", async () => {
+    await webhooks.create(USER, { url: "http://example.test/plain", events: ["*"], authHeader });
+    await webhooks.create(USER, { url: "https://example.test/tls", events: ["*"], authHeader });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    const sent = await capture(async () => new Response(null, { status: 200 }), { maxAttempts: 1 });
+    expect(sent.map((s) => s.url)).toEqual(["https://example.test/tls"]);
+    expect((await webhooks.listDeadLetters(USER)).map((d) => d.error)).toEqual(["auth header needs an https URL"]);
+  });
+
+  it("is sent over http when private targets are allowed", async () => {
+    await webhooks.create(USER, { url: "http://example.test/plain", events: ["*"], authHeader });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home" });
+    const sent = await capture(async () => new Response(null, { status: 200 }), { allowPrivateTargets: true });
+    expect(sent.map((s) => s.init.headers.get("authorization"))).toEqual([VALUE]);
+  });
+
   it("never reaches a log line or a dead letter when a delivery fails quoting it", async () => {
     const { clearLogs, recentLogs } = await import("../util/log.js");
     clearLogs();

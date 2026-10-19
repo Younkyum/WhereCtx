@@ -16,7 +16,7 @@ import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
 import type { WebhookListing } from "../store/webhooksStore.js";
 import { PRESENCE_EVENT_TYPES } from "../types.js";
-import { AUTH_HEADER_NAME_RULE, authHeaderProblem, DEFAULT_AUTH_HEADER_NAME, viewAuthHeader, type AuthHeaderProblem } from "../webhooks/authHeader.js";
+import { AUTH_HEADER_NAME_RULE, authHeaderNeedsHttps, authHeaderProblem, DEFAULT_AUTH_HEADER_NAME, viewAuthHeader, type AuthHeaderProblem } from "../webhooks/authHeader.js";
 import { assertSafeWebhookUrl, SsrfError } from "../webhooks/ssrf.js";
 import { parseBody } from "./accountHttp.js";
 import { requireScope } from "./middleware.js";
@@ -46,6 +46,8 @@ const AuthHeaderSchema = z
   });
 
 const NO_KEY = "set WEBHOOK_ENCRYPTION_KEY to use auth headers: they are only stored encrypted";
+const NEEDS_HTTPS =
+  "an auth header is sent only to an https URL; set WEBHOOK_ALLOW_PRIVATE_TARGETS=true to send one over http to a LAN receiver";
 
 /** What a client sees of a hook: never a credential, and of an auth header only its name and hint. */
 function publicWebhook(hook: WebhookListing) {
@@ -90,10 +92,12 @@ export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
   app.use("*", requireScope("manage_privacy"));
   /** The store seals auth headers with the box built from this same key. */
   const sealsAuthHeaders = Boolean(ctx.config.webhooks.encryptionKey);
+  const { allowPrivateTargets } = ctx.config.webhooks;
+  const capabilities = { authHeader: sealsAuthHeaders, authHeaderRequiresHttps: !allowPrivateTargets };
 
   app.get("/", async (c) => {
     const hooks = await c.get("scope").webhooks.list();
-    return c.json({ webhooks: hooks.map(publicWebhook), capabilities: { authHeader: sealsAuthHeaders } });
+    return c.json({ webhooks: hooks.map(publicWebhook), capabilities });
   });
 
   app.post("/", async (c) => {
@@ -108,12 +112,12 @@ export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
       return c.json({ error: "invalid webhook", detail: zodMessages(parsed.error) }, 400);
     }
     if (parsed.data.authHeader && !sealsAuthHeaders) return c.json({ error: NO_KEY }, 400);
+    if (parsed.data.authHeader && authHeaderNeedsHttps(parsed.data.url, allowPrivateTargets)) {
+      return c.json({ error: NEEDS_HTTPS }, 400);
+    }
     // SSRF guard: reject URLs that resolve to private/reserved addresses.
     try {
-      await assertSafeWebhookUrl(
-        parsed.data.url,
-        ctx.config.webhooks.allowPrivateTargets,
-      );
+      await assertSafeWebhookUrl(parsed.data.url, allowPrivateTargets);
     } catch (e) {
       if (e instanceof SsrfError) return c.json({ error: e.message }, 400);
       throw e;
@@ -142,7 +146,14 @@ export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
     const body = await parseBody(c, PatchSchema);
     if (body instanceof Response) return body;
     if (body.authHeader && !sealsAuthHeaders) return c.json({ error: NO_KEY }, 400);
-    const updated = await c.get("scope").webhooks.update(c.req.param("id"), body);
+    const scope = c.get("scope");
+    const id = c.req.param("id");
+    if (body.authHeader) {
+      const hook = (await scope.webhooks.list()).find((h) => h.id === id);
+      if (!hook) return c.json({ error: "webhook not found" }, 404);
+      if (authHeaderNeedsHttps(hook.url, allowPrivateTargets)) return c.json({ error: NEEDS_HTTPS }, 400);
+    }
+    const updated = await scope.webhooks.update(id, body);
     if (!updated) return c.json({ error: "webhook not found" }, 404);
     return c.json({ webhook: publicWebhook(updated) });
   });

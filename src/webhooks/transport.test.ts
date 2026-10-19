@@ -93,7 +93,7 @@ describe("a delivery over a real connection", () => {
     const answers: string[][] = [["93.184.216.34"], ["127.0.0.1"]];
     let lookups = 0;
     const urlResolver = async () => answers[Math.min(lookups++, answers.length - 1)]!;
-    await deliverOnce(`http://rebind.test:${r.port}/hook`, { urlResolver });
+    await deliverOnce(`http://rebind.test:${r.port}/hook`, { urlResolver }, { secret: "s3cret-s3cret", auth: false });
     expect(lookups).toBe(2);
     expect(r.requests).toEqual([]);
     const [dead] = await webhooks.listDeadLetters(USER);
