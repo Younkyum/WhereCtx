@@ -52,7 +52,10 @@ const get = async (token, path) => {
 };
 const post = (token, path, body) => fetch(`${BASE}${path}`, { method: "POST", headers: headers(token), body: JSON.stringify(body) });
 
-const STOP_WORDS = ["정류장", "테스트환승역", "테스트중간역", "테스트도착역", "마을 테스트1", "간선 472"];
+const STOP_WORDS = ["정류장", "테스트환승역", "테스트중간역", "테스트도착역", "마을 테스트1"];
+/** The fake's first ride is a village bus beside the start, so no line may be named at all. */
+const LINES = ["2호선", "간선 472"];
+const STEP_MS = 5 * 60_000;
 const STREETS = ["테스트출발로", "테스트도착로"];
 const AWAY = { lat: 37.5665432, lon: 126.9784321 };
 
@@ -73,9 +76,16 @@ try {
   const transit = await get(AGENT, "/v1/geo/eta?to=office&mode=transit");
   const t = JSON.parse(transit.text).eta;
   console.log(`REST transit ${transit.status}: ${JSON.stringify(t)}`);
-  check(transit.status === 200 && t.mode === "transit" && JSON.stringify(t.summary) === '["2호선"]', "transit names only the line clear of both ends");
-  check(t.transfers === 2 && t.walkMin % 5 === 0 && t.durationMin % 5 === 0, "transfers, and minutes in 5-minute steps");
-  check(STOP_WORDS.every((w) => !transit.text.includes(w)), "no stop name, no line near either end");
+  check(transit.status === 200 && t.mode === "transit" && JSON.stringify(t.summary) === "[]" && !("transfers" in t), "a ride near the start hides every line and the transfers");
+  check(t.walkMin % 5 === 0 && t.durationMin % 5 === 0, "minutes in 5-minute steps");
+  check(Date.parse(t.departAt) % STEP_MS === 0 && Date.parse(t.arriveAt) - Date.parse(t.departAt) === t.durationMin * 60_000, "departAt on a 5-minute step, arriveAt is departAt plus the minutes");
+  check([...STOP_WORDS, ...LINES].every((w) => !transit.text.includes(w)), "no stop name, no line");
+  const again = await get(AGENT, "/v1/geo/eta?to=office&mode=transit");
+  check(again.status === 200 && again.text === transit.text, "asked again, the same answer");
+  const later = encodeURIComponent(new Date(Date.now() + 3600_000).toISOString());
+  const option = await get(AGENT, `/v1/geo/eta?to=office&mode=transit&departAt=${later}`);
+  console.log(`REST transit with a later departAt ${option.status}: ${option.text}`);
+  check(option.status === 400 && JSON.parse(option.text).unsupported === "option", "a later departAt for transit is a 400 unsupported_option");
   check(["fare", "legs", "path", "steps"].every((k) => !(k in t)), "no fare, legs, path or steps");
   check(!/37\.56|126\.97|37\.4\b|127\.1\b/.test(transit.text), "no coordinate");
 
@@ -93,7 +103,7 @@ try {
   const tool = await mcp.callTool({ name: "get_directions", arguments: { to: "office", mode: "transit" } });
   const toolText = tool.content[0].text;
   console.log(`MCP get_directions transit: ${toolText}`);
-  check(!tool.isError && JSON.parse(toolText).stepsWithheld && STOP_WORDS.every((w) => !toolText.includes(w)), "MCP transit withholds the steps and names no stop");
+  check(!tool.isError && JSON.parse(toolText).stepsWithheld && [...STOP_WORDS, ...LINES].every((w) => !toolText.includes(w)), "MCP transit withholds the steps and names no stop or line");
   const description = (await mcp.listTools()).tools.find((x) => x.name === "get_eta").description;
   check(/transit/.test(description) && /approximate/.test(description), "get_eta says it takes transit and answers approximately");
   await mcp.close();
@@ -106,6 +116,7 @@ try {
   const naver = await get(AGENT, "/v1/geo/eta?to=office&mode=transit");
   console.log(`REST transit on Naver ${naver.status}: ${naver.text}`);
   check(naver.status === 409 && JSON.parse(naver.text).unsupported === "mode", "Naver answers unsupported_mode");
+  check(/geoProvider\) to kakao/.test(JSON.parse(naver.text).hint ?? ""), "and hints that Kakao, which has a key, routes transit");
   check((await get(AGENT, "/v1/geo/eta?to=office")).status === 200, "Naver still routes a car");
   db.close();
 } catch (e) {
