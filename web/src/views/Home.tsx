@@ -13,7 +13,6 @@ import { Grid } from "@astryxdesign/core/Grid";
 import { Heading } from "@astryxdesign/core/Heading";
 import { HStack, StackItem, VStack } from "@astryxdesign/core/Layout";
 import { Link } from "@astryxdesign/core/Link";
-import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { Text } from "@astryxdesign/core/Text";
 import { useEffect, useState } from "react";
 import { ApiError, api } from "../api";
@@ -115,9 +114,7 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
           <Text type="supporting">{t("home.mine")}</Text>
           <Heading level={2}>{p ? t(`st.${statusOf(p.status)}`) : "—"}</Heading>
           <HStack gap={2} vAlign="center" wrap="wrap">
-            {p && !p.stale ? <StatusDot variant="success" label={t("badge.fresh")} /> : null}
             <Text type="supporting">{meta}</Text>
-            {p?.stale ? <Badge variant="warning" label={t("badge.stale")} /> : null}
             {motion ? <Badge label={t(`motion.${motion}`)} /> : null}
             {mine.paused ? <Badge variant="warning" label={t("badge.pausedAll")} /> : null}
           </HStack>
@@ -162,7 +159,6 @@ function PersonCard({ person: p }: { person: Person }) {
             <Text weight="medium">{t(`st.${statusOf(pr.status)}`)}</Text>
             <Text type="supporting">{fmt.ago(pr.updatedAgoMin)}</Text>
             <HStack gap={1} wrap="wrap">
-              {pr.stale ? <Badge variant="warning" label={t("badge.stale")} /> : null}
               {motion ? <Badge label={t(`motion.${motion}`)} /> : null}
               {p.precise === "available" ? <Badge variant="info" label={t("badge.preciseAvailable")} /> : null}
             </HStack>

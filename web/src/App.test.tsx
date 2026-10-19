@@ -268,6 +268,34 @@ describe("dashboard app", () => {
     location.hash = "";
   });
 
+  it("shows how long ago, never a stale badge, for me and for people who share with me", async () => {
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { sharingPaused: false } } }));
+    route("GET /v1/presence", () => ({
+      status: 200,
+      body: { status: "home", label: "home", motion: "stationary", updatedAgoSec: 12 * 60, stale: true, freshness: "offline", privacy: "coarse" },
+    }));
+    route("GET /v1/people", () => ({
+      status: 200,
+      body: {
+        people: [
+          {
+            user: { id: "u2", displayName: "Mina" },
+            level: "coarse",
+            paused: false,
+            presence: { status: "away", label: "away", motion: "unknown", updatedAgoMin: 3 * 1440, stale: true, freshness: "offline" },
+            precise: null,
+          },
+        ],
+      },
+    }));
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.textContent).toContain("12 min ago");
+    expect(host.textContent).not.toMatch(/stale|fresh/i);
+    expect(host.textContent).not.toMatch(/\d+ d ago/);
+  });
+
   it("on plain http, links the passkey warning to the README section that explains it", async () => {
     vi.stubGlobal("isSecureContext", false);
     route("GET /v1/me", () => ({ status: 401, body: { error: "unauthorized" } }));

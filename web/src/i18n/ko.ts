@@ -65,7 +65,6 @@ export const KO: Record<I18nKey, string> = {
   "age.now": "방금",
   "age.min": "{n}분 전",
   "age.hour": "{n}시간 전",
-  "age.day": "{n}일 전",
 
   "st.home": "집",
   "st.near_home": "집 근처",
@@ -146,8 +145,6 @@ export const KO: Record<I18nKey, string> = {
   "home.shareNowHint": "이 기기의 현재 위치를 한 번 보내요.",
   "home.shareNowPaused": "사람들과의 공유는 일시 중지 상태예요. 에이전트에는 그대로 보여요.",
   "home.shared": "위치를 보냈어요. 지금 상태는 '{status}'예요.",
-  "badge.fresh": "최신",
-  "badge.stale": "오래됨",
   "badge.pausedAll": "공유 일시 중지",
   "badge.preciseAvailable": "정확한 위치",
   "geo.denied": "이 사이트의 위치 권한이 꺼져 있어요. 브라우저 설정에서 허용해 주세요.",

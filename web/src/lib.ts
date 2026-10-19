@@ -174,13 +174,13 @@ export function parseAuthorizeHash(hash: string): string | null {
   return /^#authorize\/([A-Za-z0-9_-]+)$/.exec(hash)?.[1] ?? null;
 }
 
-/** [i18n key, n] for an age in whole minutes. */
-export function ageParts(min: number): [I18nKey, number] {
+/** [i18n key, n] for an age in whole minutes, or null from a day on (show the date instead). */
+export function ageParts(min: number): [I18nKey, number] | null {
   const m = Math.max(0, Math.floor(Number(min) || 0));
   if (m < 1) return ["age.now", 0];
   if (m < 60) return ["age.min", m];
   if (m < 1440) return ["age.hour", Math.floor(m / 60)];
-  return ["age.day", Math.floor(m / 1440)];
+  return null;
 }
 
 export function statusOf(value: unknown): Status {

@@ -63,7 +63,6 @@ export const EN = {
   "age.now": "just now",
   "age.min": "{n} min ago",
   "age.hour": "{n} h ago",
-  "age.day": "{n} d ago",
 
   "st.home": "Home",
   "st.near_home": "Near home",
@@ -144,8 +143,6 @@ export const EN = {
   "home.shareNowHint": "Sends this device's current location once.",
   "home.shareNowPaused": "Sharing with people is paused. Your agents still see this.",
   "home.shared": "Location shared. You're {status}.",
-  "badge.fresh": "fresh",
-  "badge.stale": "stale",
   "badge.pausedAll": "sharing paused",
   "badge.preciseAvailable": "exact location",
   "geo.denied": "Location permission is off for this site. Allow it in your browser settings.",
