@@ -70,6 +70,12 @@ export const ACCESS_ACTIONS = [
   "devices.pair",
   "activity.read",
   "admin.logs",
+  "geo.settings",
+  "geo.credentials.write",
+  "geo.credentials.delete",
+  "geo.credentials.test",
+  "geo.search",
+  "geo.eta",
   /** Any route that only a signed-in person may use; a token is always refused there. */
   "account",
   /** A REST path no route matched, or an MCP tool that does not exist. Never the raw path or name. */

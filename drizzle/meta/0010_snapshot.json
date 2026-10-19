@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "675b2c23-152f-4305-a2bc-6f6887c52644",
+  "id": "fa418550-c291-40cc-9dbb-a6e81ce6eebb",
   "prevId": "95a67eb9-98a0-41a6-a711-f709b05f6119",
   "tables": {
     "access_codes": {
@@ -271,8 +271,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "hint": {
-          "name": "hint",
+        "hints": {
+          "name": "hints",
           "type": "text",
           "primaryKey": false,
           "notNull": true,

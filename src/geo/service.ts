@@ -36,6 +36,7 @@ import { NaverProvider } from "./naver.js";
 import {
   GEO_PROVIDERS,
   GeoError,
+  restCredentials,
   roundPoint,
   type GeocodeCandidate,
   type GeoCredentials,
@@ -82,11 +83,11 @@ export interface GeoStatus {
   operator: GeoProviderName[];
 }
 
-/** Where a route goes: a registered place by name, or an address or place to search. */
-export type Destination = { kind: "place"; name: string } | { kind: "search"; query: string; pick?: number };
-
 export interface EtaRequest {
-  destination: Destination;
+  /** A registered place's name, else an address or a place to search for. */
+  to: string;
+  /** Which search result, numbered from 1, when the search finds several. */
+  pick?: number;
   departAt?: Date;
   avoid?: readonly RouteAvoid[];
 }
@@ -203,7 +204,8 @@ export class GeoService {
     const order = settings.geoProvider ? [settings.geoProvider] : GEO_PROVIDERS;
     for (const name of order) {
       if (own.has(name)) {
-        const credentials = await this.deps.credentials.open(userId, name);
+        const keys = await this.deps.credentials.open(userId, name);
+        const credentials = keys && restCredentials(name, keys);
         if (credentials) return { provider: this.adapter(credentials), name, source: "own" };
       }
       if (operator.has(name)) {
@@ -223,8 +225,9 @@ export class GeoService {
     };
   }
 
-  saveCredential(userId: UserId, credentials: GeoCredentials): Promise<StoredGeoCredential> {
-    return this.deps.credentials.put(userId, credentials);
+  /** Save some of a provider's keys; kinds not named keep their stored value. */
+  saveCredential(userId: UserId, provider: GeoProviderName, keys: Record<string, string>): Promise<StoredGeoCredential> {
+    return this.deps.credentials.put(userId, provider, keys);
   }
 
   deleteCredential(userId: UserId, provider: GeoProviderName): Promise<boolean> {
@@ -233,8 +236,9 @@ export class GeoService {
 
   /** Look up a fixed public landmark with my saved key, never my location. */
   async testCredential(userId: UserId, provider: GeoProviderName): Promise<KeyTestOutcome> {
-    const credentials = await this.deps.credentials.open(userId, provider);
-    if (!credentials) return { ok: false, error: "missing", message: "no key saved for this provider" };
+    const keys = await this.deps.credentials.open(userId, provider);
+    const credentials = keys && restCredentials(provider, keys);
+    if (!credentials) return { ok: false, error: "missing", message: "no REST key saved for this provider" };
     try {
       const region = await this.adapter(credentials).reverse(KEY_TEST_POINT);
       await this.deps.credentials.markUsed(userId, provider, null);
@@ -346,21 +350,19 @@ export class GeoService {
 
     const seesCoordinates = caller.kind !== "agent" || caller.seesPlaceCoordinates;
     let target: { label: string; kind: "place" | "address"; point: LatLon; showLinks: boolean };
-    const { destination } = request;
-    if (destination.kind === "place") {
-      const place = places.find((p: Place) => p.name === destination.name);
-      if (!place) return { kind: "not_found", reason: `no place named "${destination.name}"` };
+    const place = places.find((p: Place) => p.name === request.to);
+    if (place) {
       target = { label: place.name, kind: "place", point: place, showLinks: seesCoordinates };
     } else {
       let candidates: GeocodeCandidate[];
       try {
-        candidates = await this.call(userId, caller, resolved, "geo.geocode", (p) => p.geocode(destination.query));
+        candidates = await this.call(userId, caller, resolved, "geo.geocode", (p) => p.geocode(request.to));
       } catch (e) {
         const error = asGeoError(e);
         return { kind: "failed", error: error.kind, message: error.message };
       }
-      const chosen = pickCandidate(candidates, destination.pick);
-      if (chosen.kind === "none") return { kind: "not_found", reason: `nothing found for "${destination.query}"` };
+      const chosen = pickCandidate(candidates, request.pick);
+      if (chosen.kind === "none") return { kind: "not_found", reason: `no place named, and nothing found for, "${request.to}"` };
       if (chosen.kind === "ambiguous") return { kind: "ambiguous", candidates: candidateViews(candidates, seesCoordinates) };
       // The caller named this address, so linking to it shows them nothing new.
       target = { label: chosen.candidate.label, kind: "address", point: chosen.candidate, showLinks: true };

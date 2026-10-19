@@ -580,10 +580,10 @@ export const ingestLog = sqliteTable(
 );
 
 /**
- * A person's own maps provider key (BYOK), one row per provider. `secret` is
- * the credential JSON sealed with AES-256-GCM under a per-install key from
- * server_secrets; it is never returned. `hint` is the last four characters
- * the dashboard shows.
+ * A person's own maps provider keys (BYOK), one row per provider. `secret` is
+ * the provider's keys by kind (REST keys now, map SDK keys later), one JSON
+ * value sealed with AES-256-GCM under a per-install key from server_secrets;
+ * it is never returned. `hints` names the kinds held for the dashboard.
  */
 export const geoCredentials = sqliteTable(
   "geo_credentials",
@@ -591,7 +591,8 @@ export const geoCredentials = sqliteTable(
     userId: text("user_id").notNull(),
     provider: text("provider").$type<GeoProviderName>().notNull(),
     secret: text("secret").notNull(),
-    hint: text("hint").notNull(),
+    /** Each key kind held, with the last four characters of the non-secret ones. */
+    hints: text("hints", { mode: "json" }).$type<Record<string, string>>().notNull(),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
     lastUsedAt: text("last_used_at"),

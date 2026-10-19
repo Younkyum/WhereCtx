@@ -95,10 +95,35 @@ export class GeoError extends Error {
   }
 }
 
-/** The credential each provider takes. */
+/** The credential a provider's REST calls take. */
 export type GeoCredentials =
   | { provider: "kakao"; restKey: string }
   | { provider: "naver"; clientId: string; clientSecret: string };
+
+/**
+ * Every key kind a person may hold per provider. Today only the REST kinds
+ * are used; the map SDK kinds (a Kakao JavaScript key, a Naver Maps web
+ * client id) can be stored beside them without a schema change, since the
+ * whole bag is sealed as one JSON value.
+ */
+export const GEO_KEY_KINDS = {
+  kakao: ["restKey"],
+  naver: ["clientId", "clientSecret"],
+} as const satisfies Record<GeoProviderName, readonly string[]>;
+export type GeoKeyKind<P extends GeoProviderName> = (typeof GEO_KEY_KINDS)[P][number];
+/** A provider's keys by kind; any may be absent. */
+export type GeoKeyBag = Partial<Record<string, string>>;
+
+/** The REST credential in a key bag, when it holds every kind the REST calls need. */
+export function restCredentials(provider: GeoProviderName, keys: GeoKeyBag): GeoCredentials | null {
+  if (provider === "kakao") return keys.restKey ? { provider, restKey: keys.restKey } : null;
+  return keys.clientId && keys.clientSecret
+    ? { provider, clientId: keys.clientId, clientSecret: keys.clientSecret }
+    : null;
+}
+
+/** Which kinds of a bag the dashboard names, by their last four characters; secrets are never hinted. */
+export const HINTED_KINDS: ReadonlySet<string> = new Set(["restKey", "clientId"]);
 
 /** About 100 m: the precision a coordinate is cut to before it leaves the server. */
 export const OUTBOUND_DECIMALS = 3;

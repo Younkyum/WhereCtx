@@ -12,7 +12,7 @@ CREATE TABLE `geo_credentials` (
 	`user_id` text NOT NULL,
 	`provider` text NOT NULL,
 	`secret` text NOT NULL,
-	`hint` text NOT NULL,
+	`hints` text NOT NULL,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,
 	`last_used_at` text,

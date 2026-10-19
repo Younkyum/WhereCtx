@@ -30,6 +30,7 @@ import { webhooksRouter } from "../api/webhooks.js";
 import { oauthGrantsRouter, oauthRouter } from "../oauth/http.js";
 import { activityRouter } from "../api/activity.js";
 import { adminRouter } from "../api/admin.js";
+import { geoRouter } from "../api/geo.js";
 import { log } from "../util/log.js";
 
 export interface BuildAppOptions {
@@ -116,6 +117,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   mount("/v1/devices", devicesRouter(ctx));
   mount("/v1/activity", activityRouter());
   mount("/v1/admin", adminRouter(ctx));
+  mount("/v1/geo", geoRouter(ctx));
 
   app.notFound((c) => c.json({ error: "not found" }, 404));
   app.onError((err, c) => {

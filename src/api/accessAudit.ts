@@ -48,6 +48,12 @@ export const REST_ACTIONS = {
   "GET /v1/activity/access": "activity.read",
   "GET /v1/activity/ingest": "activity.read",
   "GET /v1/admin/logs": "admin.logs",
+  "GET /v1/geo": "geo.settings",
+  "PUT /v1/geo/credentials/:provider": "geo.credentials.write",
+  "DELETE /v1/geo/credentials/:provider": "geo.credentials.delete",
+  "POST /v1/geo/credentials/:provider/test": "geo.credentials.test",
+  "GET /v1/geo/search": "geo.search",
+  "GET /v1/geo/eta": "geo.eta",
 } as const satisfies Record<string, AccessAction>;
 
 /**
