@@ -100,10 +100,6 @@ export interface GeoCredential {
   provider: GeoProviderName;
   /** unusable: the saved row cannot be opened; save the key again. */
   status: "ok" | "unusable";
-  /** The REST keys are saved. */
-  rest: boolean;
-  /** The map key is saved. */
-  map: boolean;
   /** Each key kind held, with its last four characters ("" for a secret). */
   kinds: Record<string, string>;
   updatedAt: string;
@@ -129,11 +125,8 @@ export type KeyTest =
 
 export interface GeoStatus {
   active: { provider: GeoProviderName; source: "own" | "operator" } | null;
-  /** The provider whose map this dashboard loads, and whose key. */
-  map: { provider: GeoProviderName; source: "own" | "operator" } | null;
   credentials: GeoCredential[];
   operator: GeoProviderName[];
-  operatorMap: GeoProviderName[];
 }
 
 export interface GeoCandidate {

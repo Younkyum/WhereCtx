@@ -599,10 +599,8 @@ describe("maps", () => {
       status: 200,
       body: {
         active: { provider: "kakao", source: "own" },
-        map: null,
-        credentials: [{ provider: "kakao", status: "ok", rest: true, map: false, kinds: { restKey: "cdef" }, updatedAt: "2026-10-19T00:00:00Z", lastUsedAt: null, lastError: null }],
+        credentials: [{ provider: "kakao", status: "ok", kinds: { restKey: "cdef" }, updatedAt: "2026-10-19T00:00:00Z", lastUsedAt: null, lastError: null }],
         operator: [],
-        operatorMap: [],
       },
     }));
     route("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: false, skipProviderNearHome: true, geoProvider: null } } }));
@@ -633,10 +631,8 @@ describe("maps", () => {
       status: 200,
       body: {
         active: { provider: "kakao", source: "own" },
-        map: null,
-        credentials: [{ provider: "kakao", status: "ok", rest: true, map: false, kinds: { restKey: "cdef" }, updatedAt: "2026-10-19T00:00:00Z", lastUsedAt: null, lastError: null }],
+        credentials: [{ provider: "kakao", status: "ok", kinds: { restKey: "cdef" }, updatedAt: "2026-10-19T00:00:00Z", lastUsedAt: null, lastError: null }],
         operator: [],
-        operatorMap: [],
       },
     }));
     route("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true, geoProvider: null } } }));

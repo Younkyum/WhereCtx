@@ -25,11 +25,11 @@ import type { GeoCredentialsStore, StoredGeoCredential } from "./credentialsStor
 import { FakeGeoProvider } from "./fake.js";
 import { GeoKeys, type CallResult, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
 import { agentNumbers, agentRoads, freshEnoughToRoute, nearHomePlace, ownerNumbers } from "./eta.js";
-import { MAP_SDKS, type MapConfig } from "./mapSdk.js";
 import { mainRoads } from "./roads.js";
 import {
   type GeocodeCandidate,
   type GeoErrorKind,
+  type GeoCredentials,
   type GeoProviderName,
   type LatLon,
   type RouteAvoid,
@@ -206,29 +206,13 @@ export class GeoService {
   }
 
   /** Save a provider's keys, replacing those saved for it before. */
-  saveCredential(userId: UserId, provider: GeoProviderName, keys: Record<string, string>): Promise<StoredGeoCredential> {
-    return this.keys.save(userId, provider, keys);
+  saveCredential(userId: UserId, credentials: GeoCredentials): Promise<StoredGeoCredential> {
+    return this.keys.save(userId, credentials);
   }
 
-  /** Save, or with null forget, my map key for a provider (mapSdk.ts). */
-  saveMapKey(userId: UserId, provider: GeoProviderName, key: string | null): Promise<StoredGeoCredential | null> {
-    return this.keys.saveMapKey(userId, provider, key);
-  }
-
-  /**
-   * The map my dashboard loads: the provider's script with my map key, or
-   * none while maps are off or no map key is set up. Only ever sent to my own
-   * signed-in session, which hands the key to the provider to draw tiles.
-   */
-  async mapConfig(userId: UserId): Promise<MapConfig> {
-    const settings = await this.deps.settings.getOrSeed(userId);
-    const map = settings.geoEnabled ? await this.keys.resolveMap(userId, settings) : null;
-    return map ? { provider: map.provider, sdkUrl: MAP_SDKS[map.provider].sdkUrl(map.key) } : { provider: null };
-  }
-
-  /** Forget a provider's REST keys (keeping its map key), and every area answer kept for me. */
+  /** Forget a provider's keys, and every area answer kept for me. */
   async deleteCredential(userId: UserId, provider: GeoProviderName): Promise<boolean> {
-    const deleted = await this.keys.deleteRest(userId, provider);
+    const deleted = await this.keys.forget(userId, provider);
     if (deleted) await this.deps.cache.purge(userId);
     return deleted;
   }

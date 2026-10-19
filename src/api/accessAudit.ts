@@ -52,8 +52,6 @@ export const REST_ACTIONS = {
   "GET /v1/geo/map-config": "geo.map_config",
   "PUT /v1/geo/credentials/:provider": "geo.credentials.write",
   "DELETE /v1/geo/credentials/:provider": "geo.credentials.delete",
-  "PUT /v1/geo/credentials/:provider/map": "geo.credentials.write",
-  "DELETE /v1/geo/credentials/:provider/map": "geo.credentials.delete",
   "POST /v1/geo/credentials/:provider/test": "geo.credentials.test",
   "GET /v1/geo/search": "geo.search",
   "GET /v1/geo/eta": "geo.eta",

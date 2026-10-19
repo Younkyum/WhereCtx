@@ -154,15 +154,10 @@ export type GeoCredentials =
   | { provider: "kakao"; restKey: string }
   | { provider: "naver"; clientId: string; clientSecret: string };
 
-/**
- * Every key kind a person may hold per provider: the REST kinds the server
- * calls with, and the map kind a browser loads the provider's map with (a
- * Kakao JavaScript key, a Naver Maps key id; mapSdk.ts). The whole bag is
- * sealed as one JSON value.
- */
+/** Every key kind a person may hold per provider, all for the REST calls. The whole bag is sealed as one JSON value. */
 export const GEO_KEY_KINDS = {
-  kakao: ["restKey", "jsKey"],
-  naver: ["clientId", "clientSecret", "mapKeyId"],
+  kakao: ["restKey"],
+  naver: ["clientId", "clientSecret"],
 } as const satisfies Record<GeoProviderName, readonly string[]>;
 export type GeoKeyKind<P extends GeoProviderName> = (typeof GEO_KEY_KINDS)[P][number];
 /** A provider's keys by kind; any may be absent. */
@@ -177,7 +172,7 @@ export function restCredentials(provider: GeoProviderName, keys: GeoKeyBag): Geo
 }
 
 /** Which kinds of a bag the dashboard names, by their last four characters; secrets are never hinted. */
-export const HINTED_KINDS: ReadonlySet<string> = new Set(["restKey", "clientId", "jsKey", "mapKeyId"]);
+export const HINTED_KINDS: ReadonlySet<string> = new Set(["restKey", "clientId"]);
 
 /** About 100 m: the precision a coordinate is cut to before it leaves the server. */
 export const OUTBOUND_DECIMALS = 3;
