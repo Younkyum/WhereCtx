@@ -9,7 +9,7 @@
 
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { fitOf, type LatLon, type MapScene } from "./mapScene";
+import { fitOf, type Fit, type LatLon, type MapScene } from "./mapScene";
 
 /** What GET /v1/geo/map-config answers in `tiles`. */
 export interface MapTiles {
@@ -62,6 +62,18 @@ export function createMapCanvas(el: HTMLElement, tiles: MapTiles, onPick: (at: L
   map.on("click", (e: L.LeafletMouseEvent) => pickable && onPick({ lat: e.latlng.lat, lon: e.latlng.lng }));
   const overlays = L.layerGroup().addTo(map);
 
+  let fit: Fit = null;
+  const refit = () => {
+    if (fit?.kind === "center") map.setView(ll(fit.at), 16, { animate: false });
+    else if (fit) map.fitBounds([ll(fit.sw), ll(fit.ne)], { padding: [24, 24], maxZoom: 17, animate: false });
+  };
+  // The element is often laid out after the map is made, or resized with the page: measure again and fit the scene again.
+  const resized = new ResizeObserver(() => {
+    map.invalidateSize({ animate: false });
+    refit();
+  });
+  resized.observe(el);
+
   return {
     draw(scene, canPick) {
       pickable = canPick;
@@ -74,10 +86,12 @@ export function createMapCanvas(el: HTMLElement, tiles: MapTiles, onPick: (at: L
       for (const m of scene.markers) {
         L.circleMarker(ll(m.at), { radius: 7, color: "#ffffff", weight: 2, fillColor: STROKE, fillOpacity: 1 }).bindTooltip(textNode(m.title)).addTo(overlays);
       }
-      const fit = fitOf(scene);
-      if (fit?.kind === "center") map.setView(ll(fit.at), 16);
-      else if (fit) map.fitBounds([ll(fit.sw), ll(fit.ne)], { padding: [24, 24], maxZoom: 17 });
+      fit = fitOf(scene);
+      refit();
     },
-    destroy: () => map.remove(),
+    destroy() {
+      resized.disconnect();
+      map.remove();
+    },
   };
 }
