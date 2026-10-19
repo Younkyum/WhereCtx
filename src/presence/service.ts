@@ -18,7 +18,7 @@ import type { WhereCtxConfig } from "../config.js";
 import { computeGeofence, labelForStatus, statusFor } from "../geofence/engine.js";
 import { encodeGeohash, haversineMeters } from "../geofence/distance.js";
 import { approach } from "../geofence/approach.js";
-import { nearHomePlace } from "../geofence/shape.js";
+import { measurePlace, nearHomePlace } from "../geofence/shape.js";
 import { step, sweepRaw, type DwellState, type DwellTransition } from "../geofence/dwell.js";
 import { AREA_REFRESH_MOVE_M, type AreaUpdate } from "../geo/area.js";
 import type { NormalizedReading } from "../normalizer/types.js";
@@ -263,7 +263,9 @@ export class PresenceService {
     const geo = computeGeofence(args.point.lat, args.point.lon, args.places, this.deps.config.geofence.nearRadiusMultiplier);
     const raw = args.raw === "sweep" ? sweepRaw(args.dwell) : (geo.matchedPlace?.name ?? null);
     const byName = new Map(args.places.map((p) => [p.name, p]));
-    const stepped = step(args.dwell, raw, args.now, (name) => byName.get(name), { holdEnter: args.holdEnter });
+    const current = args.dwell.current === null ? undefined : byName.get(args.dwell.current);
+    const insideCurrent = current !== undefined && measurePlace(current, args.point.lat, args.point.lon, 1).inside;
+    const stepped = step(args.dwell, { raw, insideCurrent }, args.now, (name) => byName.get(name), { holdEnter: args.holdEnter });
     const confirmed = stepped.state.current === null ? undefined : byName.get(stepped.state.current);
     let { status, label } = statusFor(confirmed, geo.outside);
     // Motion refinement: someone who is "away" but clearly moving is in transit.

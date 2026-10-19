@@ -12,10 +12,14 @@ const delays =
   };
 
 /** Step through `(sec, raw)` readings from `state`, collecting every transition. */
-function run(rules: DelaysFor, readings: Array<[sec: number, raw: string | null]>, state: DwellState = NO_DWELL) {
+function run(
+  rules: DelaysFor,
+  readings: Array<[sec: number, raw: string | null, insideCurrent?: boolean]>,
+  state: DwellState = NO_DWELL,
+) {
   const transitions: Array<DwellTransition & { sec: number }> = [];
-  for (const [sec, raw] of readings) {
-    const next = step(state, raw, at(sec), rules);
+  for (const [sec, raw, insideCurrent = false] of readings) {
+    const next = step(state, { raw, insideCurrent }, at(sec), rules);
     state = next.state;
     transitions.push(...next.transitions.map((t) => ({ ...t, sec })));
   }
@@ -108,6 +112,21 @@ describe("dwell step", () => {
     ]);
   });
 
+  it("starts no leave while a reading in another place is still inside the confirmed one, and hands over once that place confirms", () => {
+    const rules = delays({ Home: [0, 600], Garden: [120, 0] });
+    const { state, transitions } = run(rules, [
+      [0, "Home"],
+      [10, "Garden", true],
+      [100, "Garden", true],
+    ]);
+    expect(transitions).toEqual([{ kind: "entered", name: "Home", sec: 0 }]);
+    expect(state).toEqual({ current: "Home", exitSince: null, candidate: { name: "Garden", since: at(10).toISOString() } });
+    expect(run(rules, [[130, "Garden", true]], state).transitions).toEqual([
+      { kind: "left", name: "Home", sec: 130 },
+      { kind: "entered", name: "Garden", sec: 130 },
+    ]);
+  });
+
   it("leaves a deleted confirmed place at once and never enters a deleted candidate", () => {
     const before = run(delays({ A: [0, 600], B: [300, 0] }), [
       [0, "A"],
@@ -115,7 +134,7 @@ describe("dwell step", () => {
     ]);
     expect(before.state).toMatchObject({ current: "A", candidate: { name: "B" } });
     const afterDelete = delays({});
-    const swept = step(before.state, sweepRaw(before.state), at(20), afterDelete);
+    const swept = step(before.state, { raw: sweepRaw(before.state), insideCurrent: false }, at(20), afterDelete);
     expect(swept.transitions).toEqual([{ kind: "left", name: "A" }]);
     expect(swept.state).toEqual(NO_DWELL);
   });
@@ -123,7 +142,7 @@ describe("dwell step", () => {
   it("holds a due enter while told to, and still confirms a due leave", () => {
     const rules = delays({ A: [60, 0], B: [0, 60] });
     const pendingEnter = run(rules, [[0, "A"]]).state;
-    const held = step(pendingEnter, sweepRaw(pendingEnter), at(120), rules, { holdEnter: true });
+    const held = step(pendingEnter, { raw: sweepRaw(pendingEnter), insideCurrent: false }, at(120), rules, { holdEnter: true });
     expect(held.transitions).toEqual([]);
     expect(held.state.candidate?.name).toBe("A");
 
@@ -131,7 +150,7 @@ describe("dwell step", () => {
       [0, "B"],
       [10, null],
     ]).state;
-    const left = step(pendingLeave, sweepRaw(pendingLeave), at(100), rules, { holdEnter: true });
+    const left = step(pendingLeave, { raw: sweepRaw(pendingLeave), insideCurrent: false }, at(100), rules, { holdEnter: true });
     expect(left.transitions).toEqual([{ kind: "left", name: "B" }]);
   });
 });
@@ -148,8 +167,8 @@ describe("sweepRaw", () => {
   it("confirms a pending enter on a sweep once the delay has passed", () => {
     const rules = delays({ A: [60, 0] });
     const pending = run(rules, [[0, "A"]]).state;
-    expect(step(pending, sweepRaw(pending), at(30), rules).transitions).toEqual([]);
-    expect(step(pending, sweepRaw(pending), at(60), rules).transitions).toEqual([{ kind: "entered", name: "A" }]);
+    expect(step(pending, { raw: sweepRaw(pending), insideCurrent: false }, at(30), rules).transitions).toEqual([]);
+    expect(step(pending, { raw: sweepRaw(pending), insideCurrent: false }, at(60), rules).transitions).toEqual([{ kind: "entered", name: "A" }]);
   });
 });
 

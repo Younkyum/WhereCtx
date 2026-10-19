@@ -168,6 +168,34 @@ describe("a delayed leave", () => {
   });
 });
 
+describe("a place inside another", () => {
+  const nested = async (gardenEnterAfterSec: number) => {
+    await places.upsert(USER, { name: "home", type: "home", ...GYM, radiusM: 150 });
+    await places.upsert(USER, { name: "garden", type: "custom", ...north(80), radiusM: 30, enterAfterSec: gardenEnterAfterSec });
+  };
+
+  it("keeps the outer place while the inner one's enter is pending, then hands over directly", async () => {
+    await nested(300);
+    await service.processReading(USER, reading(north(-100)));
+    advance(60);
+    const inGarden = await service.processReading(USER, reading(north(80)));
+    expect(inGarden.presence.status).toBe("home");
+    expect(placeEvents(inGarden.events)).toEqual([]);
+    advance(60);
+    expect(placeEvents((await service.processReading(USER, reading(north(80)))).events)).toEqual([]);
+    advance(240);
+    expect(placeEvents(await service.sweepDwell())).toEqual(["left_place home", "entered_place garden"]);
+    expect((await presence.getCurrent(USER))!).toMatchObject({ status: "custom", currentPlaceName: "garden" });
+  });
+
+  it("hands over on the same reading when nothing is delayed, as a plain geofence does", async () => {
+    await nested(0);
+    await service.processReading(USER, reading(north(-100)));
+    const inGarden = await service.processReading(USER, reading(north(80)));
+    expect(placeEvents(inGarden.events)).toEqual(["left_place home", "entered_place garden"]);
+  });
+});
+
 describe("place rules", () => {
   it("records only the place event types the place emits", async () => {
     await gym({ emits: ["presence.left_place"] });

@@ -593,7 +593,9 @@ The owner asked to see things on a map. Agents still get none.
 - **Dwell is a reducer with one confirmed place.** `step(state, raw, now,
   delaysFor)` keeps the singular current place. Delays count from the
   first reading inside or outside; a reading back in the confirmed place
-  cancels. A deleted place leaves at once and is never entered. The status
+  cancels. While the point is still inside the confirmed place no leave is
+  pending, so a place within a place takes over directly once its own enter
+  is confirmed, instead of passing through "near home". A deleted place leaves at once and is never entered. The status
   follows the confirmed place, so all-zero delays reproduce the old
   geofence exactly.
 - **Dwell resolves to the sweep.** `sweepDwell` runs on the existing

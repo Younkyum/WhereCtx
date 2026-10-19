@@ -109,7 +109,10 @@ anchor, so a polygon shows as its circumcircle for now.
 The dwell reducer (`src/geofence/dwell.ts`) holds one confirmed place. A
 leave waits out the place's `exitAfterSec` from the first reading outside;
 an enter waits out `enterAfterSec` from the first reading inside; a reading
-back in the confirmed place cancels both. Its state lives on the presence
+back in the confirmed place cancels both. A reading in a place that lies
+inside the confirmed one (a garden inside home) starts no leave: the inner
+place is a candidate, and once its enter is confirmed it takes over
+directly (left home, entered garden). Its state lives on the presence
 row (`current_place_name`, `pending_exit_since`, `pending_place_name`,
 `pending_place_since`), so a restart keeps a pending transition. With
 every delay at 0 a step confirms at once, a plain geofence. The status,
