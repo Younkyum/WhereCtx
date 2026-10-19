@@ -103,8 +103,9 @@ circle, the centroid and circumradius of a polygon, computed when the
 polygon is saved. Overlapping places rank by anchor distance.
 `src/geofence/polygon.ts` validates a ring and measures in a local metric
 projection around the centroid; a polygon's near band is the band an
-equal-area circle gets. The dashboard maps draw every place from its
-anchor, so a polygon shows as its circumcircle for now.
+equal-area circle gets. The dashboard maps on Places and History draw a
+polygon along its ring and a circle at its radius; Home's near-home place
+and History's tile-less track still show a polygon as its anchor circle.
 
 The dwell reducer (`src/geofence/dwell.ts`) holds one confirmed place. A
 leave waits out the place's `exitAfterSec` from the first reading outside;

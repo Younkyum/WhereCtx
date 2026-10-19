@@ -129,6 +129,7 @@ describe("maps in the dashboard", () => {
     expect(lastScene()).toEqual({
       markers: [{ id: "latest", at: { lat: 37.52, lon: 127.03 }, title: "Latest point" }],
       circles: [{ id: "place:home", at: { lat: 37.5, lon: 127 }, radiusM: 100, title: "home" }],
+      polygons: [],
       lines: [{ id: "track", points: [{ lat: 37.5, lon: 127 }, { lat: 37.52, lon: 127.03 }] }],
     });
     expect(live()[0]!.draws.every((d) => !d.pickable)).toBe(true);
@@ -275,6 +276,20 @@ describe("maps in the dashboard", () => {
     expect(values).toContain("37.123457");
     expect(values).toContain("127.765432");
     expect(lastScene().markers.map((m) => [m.at.lat, m.at.lon])).toEqual([[37.1234567, 127.7654321]]);
+  });
+
+  it("Places draws a polygon place along its outline, not as the circle around it", async () => {
+    withTiles();
+    const ring: Array<[number, number]> = [[127, 37.5], [127.002, 37.5], [127.002, 37.502], [127, 37.5]];
+    routes.set("GET /v1/places", () => ({
+      status: 200,
+      body: { places: [...PLACES, { name: "park", type: "custom", lat: 37.5007, lon: 127.0013, radiusM: 180, polygon: ring }] },
+    }));
+    await open("#places");
+    expect(lastScene().circles.map((c) => c.title)).toEqual(["home"]);
+    expect(lastScene().polygons).toEqual([
+      { id: "place:park", ring: ring.map(([lon, lat]) => ({ lat, lon })), title: "park" },
+    ]);
   });
 
   describe("Maps & routes", () => {
