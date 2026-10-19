@@ -60,3 +60,43 @@ describe("assertSafeWebhookUrl", () => {
     expect(url.hostname).toBe("192.168.1.50");
   });
 });
+
+describe("IPv6 targets, as a URL spells them", () => {
+  const noLookup = async (): Promise<string[]> => {
+    throw new Error("an IP literal is never resolved");
+  };
+  const check = (url: string) => assertSafeWebhookUrl(url, false, noLookup);
+
+  it.each([
+    ["IPv4-mapped loopback", "http://[::ffff:127.0.0.1]/", "[::ffff:7f00:1]"],
+    ["IPv4-mapped metadata", "http://[::ffff:169.254.169.254]/", "[::ffff:a9fe:a9fe]"],
+    ["IPv4-mapped RFC 1918", "http://[::ffff:10.0.0.1]/", "[::ffff:a00:1]"],
+    ["IPv4-compatible loopback", "http://[::127.0.0.1]/", "[::7f00:1]"],
+    ["NAT64 loopback", "http://[64:ff9b::127.0.0.1]/", "[64:ff9b::7f00:1]"],
+    ["NAT64 metadata", "http://[64:ff9b::169.254.169.254]/", "[64:ff9b::a9fe:a9fe]"],
+    ["local-use NAT64", "http://[64:ff9b:1::808:808]/", "[64:ff9b:1::808:808]"],
+    ["6to4 of loopback", "http://[2002:7f00:1::1]/", "[2002:7f00:1::1]"],
+    ["6to4 of metadata", "http://[2002:a9fe:a9fe::]/", "[2002:a9fe:a9fe::]"],
+    ["Teredo to a private client", "http://[2001:0:5ef5:79fb::f5ff:fffe]/", "[2001:0:5ef5:79fb::f5ff:fffe]"],
+    ["Teredo through a private server", "http://[2001:0:a00:1::f7f7:f7f7]/", "[2001:0:a00:1::f7f7:f7f7]"],
+    ["loopback", "http://[0:0:0:0:0:0:0:1]/", "[::1]"],
+    ["unspecified", "http://[::]/", "[::]"],
+    ["link-local", "http://[fe80::1]/", "[fe80::1]"],
+    ["link-local high in fe80::/10", "http://[febf::1]/", "[febf::1]"],
+    ["unique local", "http://[fd12:3456::1]/", "[fd12:3456::1]"],
+    ["multicast", "http://[ff02::1]/", "[ff02::1]"],
+  ])("refuses %s", async (_case, url, hostname) => {
+    expect(new URL(url).hostname).toBe(hostname);
+    await expect(check(url)).rejects.toBeInstanceOf(SsrfError);
+  });
+
+  it.each([
+    ["a public IPv6", "http://[2606:4700:4700::1111]/"],
+    ["IPv4-mapped public", "http://[::ffff:8.8.8.8]/"],
+    ["NAT64 of a public IPv4", "http://[64:ff9b::8.8.8.8]/"],
+    ["6to4 of a public IPv4", "http://[2002:808:808::1]/"],
+    ["Teredo between public addresses", "http://[2001:0:5ef5:79fb::f7f7:f7f7]/"],
+  ])("accepts %s", async (_case, url) => {
+    await expect(check(url)).resolves.toBeInstanceOf(URL);
+  });
+});

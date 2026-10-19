@@ -36,16 +36,60 @@ function ipv4IsPrivateOrReserved(ip: string): boolean {
   return false;
 }
 
+/** The 16 bytes of an address `isIP` already accepted as IPv6 (zone id dropped). */
+function ipv6Bytes(ip: string): Uint8Array {
+  let text = ip.split("%")[0]!;
+  const bytes = new Uint8Array(16);
+  const lastColon = text.lastIndexOf(":");
+  const dotted = text.slice(lastColon + 1).includes(".") ? text.slice(lastColon + 1).split(".").map(Number) : null;
+  if (dotted) text = `${text.slice(0, lastColon + 1)}0:0`;
+  const [head, tail] = text.split("::") as [string, string | undefined];
+  const left = head ? head.split(":") : [];
+  const right = tail === undefined ? [] : tail ? tail.split(":") : [];
+  const groups = tail === undefined ? left : [...left, ...Array<string>(8 - left.length - right.length).fill("0"), ...right];
+  groups.forEach((group, i) => {
+    const n = Number.parseInt(group, 16);
+    bytes[2 * i] = n >> 8;
+    bytes[2 * i + 1] = n & 0xff;
+  });
+  if (dotted) bytes.set(dotted, 12);
+  return bytes;
+}
+
+function startsWith(bytes: Uint8Array, prefix: readonly number[]): boolean {
+  return prefix.every((b, i) => bytes[i] === b);
+}
+
+function embeddedV4(bytes: Uint8Array, at: number, mask = 0): string {
+  return [0, 1, 2, 3].map((i) => bytes[at + i]! ^ mask).join(".");
+}
+
+const ZEROS_80 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+/**
+ * IPv6 is judged on its bytes, so every spelling of an address
+ * (`::ffff:127.0.0.1`, `::ffff:7f00:1`, `[::7f00:1]`) gets the same answer.
+ * Addresses that carry an IPv4 address and reach it get that address's rule.
+ */
 function ipv6IsPrivateOrReserved(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  if (lower === "::1" || lower === "::") return true; // loopback / unspecified
-  // IPv4-mapped (::ffff:a.b.c.d) -> validate the embedded v4.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped) return ipv4IsPrivateOrReserved(mapped[1]!);
-  if (lower.startsWith("fe8") || lower.startsWith("fe9") || lower.startsWith("fea") || lower.startsWith("feb")) {
-    return true; // fe80::/10 link-local
+  const b = ipv6Bytes(ip);
+  // ::ffff:0:0/96 IPv4-mapped.
+  if (startsWith(b, [...ZEROS_80, 0xff, 0xff])) return ipv4IsPrivateOrReserved(embeddedV4(b, 12));
+  // ::/96 IPv4-compatible, which also covers :: and ::1.
+  if (startsWith(b, [...ZEROS_80, 0, 0])) return ipv4IsPrivateOrReserved(embeddedV4(b, 12));
+  // 64:ff9b::/96 NAT64: the gateway forwards to the embedded IPv4.
+  if (startsWith(b, [0, 0x64, 0xff, 0x9b, 0, 0, 0, 0, 0, 0, 0, 0])) return ipv4IsPrivateOrReserved(embeddedV4(b, 12));
+  // 64:ff9b:1::/48 local-use NAT64 (RFC 8215): a site's own translator.
+  if (startsWith(b, [0, 0x64, 0xff, 0x9b, 0, 1])) return true;
+  // 2002::/16 6to4: the relay forwards to the IPv4 in bytes 2-5.
+  if (startsWith(b, [0x20, 0x02])) return ipv4IsPrivateOrReserved(embeddedV4(b, 2));
+  // 2001::/32 Teredo: the server's IPv4 in bytes 4-7, the client's inverted in 12-15.
+  if (startsWith(b, [0x20, 0x01, 0, 0])) {
+    return ipv4IsPrivateOrReserved(embeddedV4(b, 4)) || ipv4IsPrivateOrReserved(embeddedV4(b, 12, 0xff));
   }
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // fc00::/7 ULA
+  if (b[0] === 0xff) return true; // ff00::/8 multicast
+  if (b[0] === 0xfe && (b[1]! & 0xc0) === 0x80) return true; // fe80::/10 link-local
+  if ((b[0]! & 0xfe) === 0xfc) return true; // fc00::/7 unique local
   return false;
 }
 
