@@ -2,16 +2,20 @@
  * Webhook subscription management API (plan section 9.7/9.8).
  *   GET    /v1/webhooks      -> list (manage_privacy)
  *   POST   /v1/webhooks      -> create (manage_privacy)
- *   PATCH  /v1/webhooks/:id  -> change {events?, active?} (manage_privacy)
+ *   PATCH  /v1/webhooks/:id  -> change {events?, active?, authHeader?} (manage_privacy)
  *   DELETE /v1/webhooks/:id  -> delete with its dead letters (manage_privacy)
  *
- * Delivery itself is handled by the dispatcher in Phase 4.
+ * Delivery itself is handled by the dispatcher in Phase 4. A response never
+ * carries a hook's credentials: no signing secret, and of the auth header only
+ * its name and hint.
  */
 
 import { Hono } from "hono";
 import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
+import type { Webhook } from "../store/webhooksStore.js";
 import { PRESENCE_EVENT_TYPES } from "../types.js";
+import { authHeaderProblem, DEFAULT_AUTH_HEADER_NAME, viewAuthHeader, type AuthHeaderProblem } from "../webhooks/authHeader.js";
 import { assertSafeWebhookUrl, SsrfError } from "../webhooks/ssrf.js";
 import { parseBody } from "./accountHttp.js";
 import { requireScope } from "./middleware.js";
@@ -23,6 +27,28 @@ const EVENT_TYPES = [...PRESENCE_EVENT_TYPES, "*"] as const;
 /** Per-user cap: each hook is drained on every dispatcher tick. */
 const MAX_WEBHOOKS = 20;
 
+const AUTH_HEADER_MESSAGES: Record<AuthHeaderProblem, string> = {
+  name: "authHeader.name must be a header name (letters, digits and !#$%&'*+-.^_`|~), at most 64 characters",
+  reserved: "authHeader.name is a header the server sets or a hop-by-hop header; choose another name",
+  value: "authHeader.value must be 1 to 1024 printable ASCII characters, with no line breaks",
+};
+
+const AuthHeaderSchema = z
+  .object({
+    name: z.string().trim().default(DEFAULT_AUTH_HEADER_NAME),
+    value: z.string().trim(),
+  })
+  .strict()
+  .superRefine((h, ctx) => {
+    const problem = authHeaderProblem(h.name, h.value);
+    if (problem) ctx.addIssue({ code: "custom", message: AUTH_HEADER_MESSAGES[problem] });
+  });
+
+/** What a client sees of a hook. */
+function publicWebhook({ secret: _secret, authHeader, ...rest }: Webhook) {
+  return { ...rest, ...(authHeader ? { authHeader: viewAuthHeader(authHeader) } : {}) };
+}
+
 const WebhookSchema = z.object({
   url: z
     .string()
@@ -32,16 +58,18 @@ const WebhookSchema = z.object({
     }),
   events: z.array(z.enum(EVENT_TYPES)).optional(),
   secret: z.string().min(8).max(256).optional(),
+  authHeader: AuthHeaderSchema.nullish(),
 });
 
 const PatchSchema = z
   .object({
     events: z.array(z.enum(EVENT_TYPES)).min(1).optional(),
     active: z.boolean().optional(),
+    authHeader: AuthHeaderSchema.nullable().optional(),
   })
   .strict()
-  .refine((p) => p.events !== undefined || p.active !== undefined, {
-    message: "nothing to change (events or active)",
+  .refine((p) => p.events !== undefined || p.active !== undefined || p.authHeader !== undefined, {
+    message: "nothing to change (events, active or authHeader)",
   });
 
 export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
@@ -50,8 +78,7 @@ export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
 
   app.get("/", async (c) => {
     const hooks = await c.get("scope").webhooks.list();
-    // Never echo secrets back.
-    return c.json({ webhooks: hooks.map(({ secret: _s, ...rest }) => rest) });
+    return c.json({ webhooks: hooks.map(publicWebhook) });
   });
 
   app.post("/", async (c) => {
@@ -83,9 +110,9 @@ export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
       url: parsed.data.url,
       events: parsed.data.events ?? ["*"],
       secret: parsed.data.secret,
+      authHeader: parsed.data.authHeader ?? undefined,
     });
-    const { secret: _s, ...rest } = created;
-    return c.json({ webhook: rest }, 201);
+    return c.json({ webhook: publicWebhook(created) }, 201);
   });
 
   // Dead-letter log: events permanently undeliverable after max attempts.
@@ -100,8 +127,7 @@ export function webhooksRouter(ctx: RouteContext): Hono<AppEnv> {
     if (body instanceof Response) return body;
     const updated = await c.get("scope").webhooks.update(c.req.param("id"), body);
     if (!updated) return c.json({ error: "webhook not found" }, 404);
-    const { secret: _s, ...rest } = updated;
-    return c.json({ webhook: rest });
+    return c.json({ webhook: publicWebhook(updated) });
   });
 
   app.delete("/:id", async (c) => {
