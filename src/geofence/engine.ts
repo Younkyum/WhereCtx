@@ -49,7 +49,6 @@ export function labelForStatus(status: PresenceStatus): string {
   return STATUS_LABELS[status];
 }
 
-
 export function computeGeofence(
   lat: number,
   lon: number,
@@ -68,7 +67,7 @@ export function computeGeofence(
   // ranked[0] exists because places.length > 0.
   const nearest = { nearestPlace: ranked[0]!.place, nearestDistanceM: ranked[0]!.anchorDistanceM };
 
-  // Considering "near" for home/work places only.
+  // Only home and work places have a near status.
   const near = ranked.find((r) => r.near && (r.place.type === "home" || r.place.type === "work"));
   const outsideStatus: PresenceStatus = near ? (near.place.type === "home" ? "near_home" : "near_work") : "away";
   const outside = { status: outsideStatus, label: STATUS_LABELS[outsideStatus] };

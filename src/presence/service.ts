@@ -399,14 +399,10 @@ export class PresenceService {
    * per user so it cannot race a concurrent ingest.
    */
   async reevaluateCurrent(userId: UserId): Promise<ProcessResult | null> {
-    const result = await this.reevaluateLocked(userId);
+    const result = await this.rejudge(userId, "reevaluate");
     // A new or moved place can put the person at or near home: bring the area up to date too.
     if (result) this.deps.afterReading?.(userId);
     return result;
-  }
-
-  private reevaluateLocked(userId: UserId): Promise<ProcessResult | null> {
-    return this.rejudge(userId, "reevaluate");
   }
 
   /**
