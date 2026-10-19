@@ -148,6 +148,16 @@ export interface PreciseLocation {
   mapUrl?: string;
 }
 
+/** My own point (GET /v1/presence/precise, signed in). */
+export interface MyPoint {
+  lat: number;
+  lon: number;
+  accuracyM?: number | null;
+  updatedAgoSec: number;
+  /** I am near this home place while the map provider is kept away from there: a map shows the place, not my point. */
+  nearHome?: { name: string; lat: number; lon: number; radiusM: number };
+}
+
 export interface Person {
   user: UserRef;
   level: GrantedLevel;

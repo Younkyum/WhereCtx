@@ -173,11 +173,22 @@ type PlaceLike = { name: string; lat: number; lon: number; radiusM: number };
 const placeCircles = (places: readonly PlaceLike[]): MapCircle[] =>
   places.map((p) => ({ id: `place:${p.name}`, at: { lat: p.lat, lon: p.lon }, radiusM: p.radiusM, title: p.name }));
 
-/** Home: me where I am, and each person whose exact location I opened (and only those). */
-export function homeScene(me: { at: LatLon; title: string } | null, opened: readonly { id: string; at: LatLon; title: string }[]): MapScene {
+/**
+ * Home: me, and each person whose exact location I opened (and only those).
+ * Me is my point, or, while I am near home and the provider is kept away
+ * from there, my home place's circle and no point.
+ */
+export function homeScene(
+  me: { kind: "point"; at: LatLon; title: string } | { kind: "nearHome"; place: PlaceLike } | null,
+  opened: readonly { id: string; at: LatLon; title: string }[],
+): MapScene {
   return {
     ...EMPTY_SCENE,
-    markers: [...(me ? [{ id: "me", ...me }] : []), ...opened.map((p) => ({ id: `person:${p.id}`, at: p.at, title: p.title }))],
+    circles: me?.kind === "nearHome" ? placeCircles([me.place]) : [],
+    markers: [
+      ...(me?.kind === "point" ? [{ id: "me", at: me.at, title: me.title }] : []),
+      ...opened.map((p) => ({ id: `person:${p.id}`, at: p.at, title: p.title })),
+    ],
   };
 }
 

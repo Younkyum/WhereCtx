@@ -208,29 +208,107 @@ describe("maps in the dashboard", () => {
     expect(host.textContent).toContain("Naver refused the map key");
   });
 
-  it("Home places me, and a person only after their exact location is opened (the audited read)", async () => {
-    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
-    routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true } } }));
-    routes.set("GET /v1/presence", () => ({ status: 200, body: { status: "away", updatedAgoSec: 60, stale: false, freshness: "live" } }));
-    routes.set("GET /v1/presence/precise", () => ({ status: 200, body: { lat: 37.4, lon: 127.1, accuracyM: 10, updatedAgoSec: 60 } }));
+  describe("Home", () => {
     const mina = { user: { id: "u2", displayName: "Mina" }, level: "precise", paused: false, presence: { status: "away", stale: false, updatedAgoMin: 1 } };
-    routes.set("GET /v1/people", () => ({ status: 200, body: { people: [{ ...mina, precise: "available" }] } }));
-    routes.set("GET /v1/people/u2", () => ({
-      status: 200,
-      body: { person: { ...mina, precise: { lat: 37.55, lon: 126.95, updatedAgoMin: 1 } } },
-    }));
-    await open("#home");
-    await frameReady();
-    expect(lastScene().markers.map((m) => [m.title, m.at.lat, m.at.lon])).toEqual([["You", 37.4, 127.1]]);
-    expect(calls).not.toContain("GET /v1/people/u2");
+    let minaAvailable: boolean;
 
-    await act(async () => button("Show exact location").click());
-    await settle();
-    expect(calls).toContain("GET /v1/people/u2");
-    expect(lastScene().markers.map((m) => [m.title, m.at.lat, m.at.lon])).toEqual([
-      ["You", 37.4, 127.1],
-      ["Mina", 37.55, 126.95],
-    ]);
+    beforeEach(() => {
+      minaAvailable = true;
+      routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true } } }));
+      routes.set("GET /v1/presence", () => ({ status: 200, body: { status: "away", updatedAgoSec: 60, stale: false, freshness: "live" } }));
+      routes.set("GET /v1/presence/precise", () => ({ status: 200, body: { lat: 37.4, lon: 127.1, accuracyM: 10, updatedAgoSec: 60 } }));
+      routes.set("GET /v1/people", () => ({ status: 200, body: { people: [{ ...mina, precise: minaAvailable ? "available" : null }] } }));
+      routes.set("GET /v1/people/u2", () => ({ status: 200, body: { person: { ...mina, precise: { lat: 37.55, lon: 126.95, updatedAgoMin: 3 } } } }));
+    });
+
+    const markers = () => lastScene().markers.map((m) => [m.title, m.at.lat, m.at.lon]);
+    async function openMina() {
+      await act(async () => button("Show exact location").click());
+      await settle();
+    }
+
+    it("without a map, never reads my point", async () => {
+      routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { provider: null } }));
+      await open("#home");
+      expect(calls).toContain("GET /v1/geo/map-config");
+      expect(calls).not.toContain("GET /v1/presence/precise");
+      expect(frames()).toEqual([]);
+    });
+
+    it("places me, and a person only after their exact location is opened (the audited read), with its age", async () => {
+      routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+      await open("#home");
+      await frameReady();
+      expect(markers()).toEqual([["You", 37.4, 127.1]]);
+      expect(calls).not.toContain("GET /v1/people/u2");
+
+      await openMina();
+      expect(calls).toContain("GET /v1/people/u2");
+      expect(markers()).toEqual([
+        ["You", 37.4, 127.1],
+        ["Mina · 3 min ago", 37.55, 126.95],
+      ]);
+    });
+
+    it("near home, while the provider is kept away from there, shows my home place and not my point", async () => {
+      routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+      routes.set("GET /v1/presence/precise", () => ({
+        status: 200,
+        body: { lat: 37.5004, lon: 127.0003, updatedAgoSec: 60, nearHome: { name: "home", lat: 37.5, lon: 127, radiusM: 100 } },
+      }));
+      await open("#home");
+      await frameReady();
+      expect(lastScene().markers).toEqual([]);
+      expect(lastScene().circles).toEqual([{ id: "place:home", at: { lat: 37.5, lon: 127 }, radiusM: 100, title: "home" }]);
+      expect(JSON.stringify(scenes())).not.toContain("37.5004");
+      expect(host.textContent).toContain("You are near home, so the map shows that place, not your position.");
+    });
+
+    it("drops an opened person when the list stops saying their exact location is available, and after five minutes", async () => {
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+      try {
+        routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+        await open("#home");
+        await frameReady();
+        await openMina();
+        expect(markers().map((m) => m[0])).toEqual(["You", "Mina · 3 min ago"]);
+        const preciseReads = () => calls.filter((c) => c === "GET /v1/presence/precise").length;
+        const before = preciseReads();
+
+        await act(async () => vi.advanceTimersByTime(30_000));
+        await settle();
+        expect(markers().map((m) => m[0])).toEqual(["You", "Mina · 3 min ago"]);
+        expect(preciseReads()).toBe(before + 1);
+
+        minaAvailable = false;
+        await act(async () => vi.advanceTimersByTime(30_000));
+        await settle();
+        expect(markers().map((m) => m[0])).toEqual(["You"]);
+        expect(host.textContent).not.toContain("37.55");
+
+        minaAvailable = true;
+        await act(async () => vi.advanceTimersByTime(30_000));
+        await settle();
+        await openMina();
+        expect(markers().map((m) => m[0])).toEqual(["You", "Mina · 3 min ago"]);
+        await act(async () => vi.advanceTimersByTime(4 * 60_000));
+        await settle();
+        expect(markers().map((m) => m[0])).toEqual(["You", "Mina · 7 min ago"]);
+        await act(async () => vi.advanceTimersByTime(60_000));
+        await settle();
+        expect(markers().map((m) => m[0])).toEqual(["You"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reads my status even while agents are kept from it, and says they are", async () => {
+      routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { provider: null } }));
+      routes.set("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true, defaultAgentAccess: "hidden" } } }));
+      await open("#home");
+      expect(host.textContent).toContain("hidden from agents");
+      expect(host.textContent).toContain("Away");
+    });
   });
 
   it("Places draws each place's circle, and a click in the frame fills in the new place's coordinates", async () => {

@@ -4,7 +4,11 @@
  * share with me. Opening someone's exact location is audited on their side.
  *
  * With a map key, a map shows where I am and each person whose exact
- * location I opened here; nobody else is placed on it.
+ * location I opened here; nobody else is placed on it. An opened person
+ * stays on it for OPENED_TTL_MS at most, and leaves as soon as the people
+ * list stops saying their exact location is available. While I am near home
+ * and the provider is kept away from there, the map shows my home place,
+ * not my point.
  */
 
 import { Avatar } from "@astryxdesign/core/Avatar";
@@ -21,22 +25,21 @@ import { useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import { geoErrorKey, motionOf, safeHttpUrl, statusOf } from "../lib";
-import type { Eta, Person, Place, PreciseLocation, Presence, PrivacySettings } from "../model";
+import type { Eta, MyPoint, Person, Place, PreciseLocation, Presence, PrivacySettings } from "../model";
 import { homeScene } from "../mapScene";
 import { MapView, useMapConfig } from "../MapView";
 import { Empty, Hint, Loaded, Page, Panel, useAction, useFormat, useLoad, useNotify } from "../ui";
 
-type Mine = { presence: Presence | null; problem: "none" | "hidden" | null; paused: boolean; geoEnabled: boolean };
+type Mine = { presence: Presence | null; paused: boolean; geoEnabled: boolean; hiddenFromAgents: boolean };
 
+/** My own status; I read it whatever agents may. */
 async function loadMine(): Promise<Mine> {
-  const privacy = await api<{ settings: PrivacySettings }>("/v1/privacy");
-  const paused = Boolean(privacy.settings?.sharingPaused);
-  const geoEnabled = Boolean(privacy.settings?.geoEnabled);
+  const { settings } = await api<{ settings: PrivacySettings }>("/v1/privacy");
+  const flags = { paused: Boolean(settings?.sharingPaused), geoEnabled: Boolean(settings?.geoEnabled), hiddenFromAgents: settings?.defaultAgentAccess === "hidden" };
   try {
-    return { presence: await api<Presence>("/v1/presence"), problem: null, paused, geoEnabled };
+    return { presence: await api<Presence>("/v1/presence"), ...flags };
   } catch (e) {
-    if (e instanceof ApiError && e.status === 404) return { presence: null, problem: "none", paused, geoEnabled };
-    if (e instanceof ApiError && e.status === 403) return { presence: null, problem: "hidden", paused, geoEnabled };
+    if (e instanceof ApiError && e.status === 404) return { presence: null, ...flags };
     throw e;
   }
 }
@@ -62,21 +65,48 @@ function locate(t: ReturnType<typeof useApp>["t"]): Promise<GeolocationPosition>
   });
 }
 
-/** My own coordinates (the owner always may), for the map; null before any reading. */
-const loadMyPoint = () => api<PreciseLocation>("/v1/presence/precise").catch(() => null);
+/** How often the people list (and my point on the map) is read again. */
+const REFRESH_MS = 30_000;
+/** How long an opened person stays on the map: an exact location is a moment, not a feed. */
+export const OPENED_TTL_MS = 5 * 60_000;
+
+/** A person whose exact location I opened, and when. */
+type Opened = { person: Person; at: PreciseLocation; openedAt: number };
 
 export function HomeView() {
   const { t } = useApp();
+  const fmt = useFormat();
   const notify = useNotify();
   const [mine, reloadMine] = useLoad(loadMine, []);
   const mapConfig = useMapConfig();
-  const [myPoint, reloadMyPoint] = useLoad(loadMyPoint, []);
-  const [opened, setOpened] = useState<Record<string, Person>>({});
+  const mapped = Boolean(mapConfig?.provider);
+  // My point is read only for a map that will be drawn.
+  const [myPoint, reloadMyPoint] = useLoad(
+    () => (mapped ? api<MyPoint>("/v1/presence/precise").catch(() => null) : Promise.resolve(null)),
+    [mapped],
+  );
+  const [opened, setOpened] = useState<Record<string, Opened>>({});
+  const [now, setNow] = useState(() => Date.now());
   const [people, reloadPeople] = useLoad(() => api<{ people: Person[] }>("/v1/people").then((r) => r.people ?? []), []);
   useEffect(() => {
-    const timer = setInterval(() => void reloadPeople(), 30000);
+    const timer = setInterval(() => {
+      setNow(Date.now());
+      void reloadPeople();
+      if (mapped) void reloadMyPoint();
+    }, REFRESH_MS);
     return () => clearInterval(timer);
-  }, [reloadPeople]);
+  }, [reloadPeople, reloadMyPoint, mapped]);
+  const list = people.kind === "ready" ? people.data : null;
+  useEffect(() => {
+    setOpened((o) => {
+      const kept = Object.fromEntries(
+        Object.entries(o).filter(
+          ([id, entry]) => now - entry.openedAt < OPENED_TTL_MS && (!list || list.find((p) => p.user.id === id)?.precise === "available"),
+        ),
+      );
+      return Object.keys(kept).length === Object.keys(o).length ? o : kept;
+    });
+  }, [list, now]);
   const [sharing, shareNow] = useAction(async () => {
     const pos = await locate(t);
     const r = await api<{ status: string }>("/v1/ingest", {
@@ -95,13 +125,26 @@ export function HomeView() {
   const scene = useMemo(
     () =>
       homeScene(
-        me ? { at: { lat: me.lat, lon: me.lon }, title: t("map.me") } : null,
-        Object.values(opened).flatMap((p) =>
-          p.precise && typeof p.precise === "object" ? [{ id: p.user.id, at: { lat: p.precise.lat, lon: p.precise.lon }, title: p.user.displayName }] : [],
-        ),
+        me?.nearHome
+          ? { kind: "nearHome", place: me.nearHome }
+          : me
+            ? { kind: "point", at: { lat: me.lat, lon: me.lon }, title: t("map.me") }
+            : null,
+        Object.values(opened).map(({ person, at, openedAt }) => ({
+          id: person.user.id,
+          at: { lat: at.lat, lon: at.lon },
+          title: `${person.user.displayName} · ${fmt.ago(at.updatedAgoMin + Math.floor(Math.max(0, now - openedAt) / 60_000))}`,
+        })),
       ),
-    [me, opened, t],
+    // fmt follows t (the language); it is a new object each render.
+    [me, opened, now, t],
   );
+  const open = (person: Person) => {
+    if (person.precise && typeof person.precise === "object") {
+      const at = person.precise;
+      setOpened((o) => ({ ...o, [person.user.id]: { person, at, openedAt: Date.now() } }));
+    }
+  };
 
   return (
     <Page title={t("home.title")}>
@@ -110,14 +153,14 @@ export function HomeView() {
           {(m) => <MyStatus mine={m} sharing={sharing} onShare={() => void shareNow()} />}
         </Loaded>
       </Card>
-      <MapView config={mapConfig} scene={scene} />
+      <MapView config={mapConfig} scene={scene} hint={me?.nearHome ? t("map.nearHome", { place: me.nearHome.name }) : undefined} />
       <Panel title={t("people.title")}>
         <Loaded state={people}>
           {(list) =>
             list.length ? (
               <Grid columns={{ minWidth: 260, max: 3 }} gap={3}>
                 {list.map((p) => (
-                  <PersonCard key={p.user.id} person={p} onOpened={(full) => setOpened((o) => ({ ...o, [full.user.id]: full }))} />
+                  <PersonCard key={p.user.id} person={p} opened={opened[p.user.id]?.person ?? null} onOpened={open} />
                 ))}
               </Grid>
             ) : (
@@ -137,7 +180,7 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
   const motion = p ? motionOf(p.motion) : null;
   const meta = p
     ? t("home.updated", { age: fmt.ago(Math.floor(p.updatedAgoSec / 60)) }) + (p.freshness === "offline" ? ` · ${t("home.offline")}` : "")
-    : t(mine.problem === "hidden" ? "home.hiddenFromAgents" : "home.none");
+    : t("home.none");
   return (
     <HStack gap={4} wrap="wrap" vAlign="center">
       <StackItem size="fill">
@@ -150,6 +193,7 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
             <Text type="supporting">{meta}</Text>
             {motion ? <Badge label={t(`motion.${motion}`)} /> : null}
             {mine.paused ? <Badge variant="warning" label={t("badge.pausedAll")} /> : null}
+            {mine.hiddenFromAgents ? <Badge variant="warning" label={t("badge.hiddenFromAgents")} /> : null}
           </HStack>
         </VStack>
       </StackItem>
@@ -192,14 +236,15 @@ function ToHome() {
   );
 }
 
-/** `onOpened`: the person as read with their exact location, an audited read on their side. */
-function PersonCard({ person: p, onOpened }: { person: Person; onOpened: (person: Person) => void }) {
+/**
+ * `opened`: the person as read with their exact location (an audited read on
+ * their side), while it is still shown; `onOpened` gets each such read.
+ */
+function PersonCard({ person: p, opened: precise, onOpened }: { person: Person; opened: Person | null; onOpened: (person: Person) => void }) {
   const { t } = useApp();
   const fmt = useFormat();
-  const [precise, setPrecise] = useState<Person | null>(null);
   const [opening, open] = useAction(async () => {
     const r = await api<{ person: Person }>("/v1/people/" + encodeURIComponent(p.user.id));
-    setPrecise(r.person);
     onOpened(r.person);
   });
   const pr = p.presence;
