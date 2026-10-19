@@ -555,8 +555,8 @@ export const EN = {
   "webhooks.authRemove": "Remove",
   "webhooks.authKeep": "Keep it",
   "webhooks.authRemoving": "The auth header is removed when you save.",
-  "webhooks.authErr.name": "Use letters, digits and - _ . only (at most 64 characters).",
-  "webhooks.authErr.reserved": "This header is set by the server or by the connection itself. Choose another name.",
+  "webhooks.authErr.name": "Use letters, digits and hyphens only (at most 64 characters).",
+  "webhooks.authErr.notAllowed": "Use Authorization, Api-Key, X-Api-Key, or an X- name ending in -Token, -Key, -Auth, -Authorization, -Secret or -Signature.",
   "webhooks.authErr.value": "Use 1 to 1024 printable ASCII characters, with no line breaks.",
 
   "header.name": "Header name",

@@ -26,8 +26,16 @@ beforeEach(async () => {
 describe("authHeaderProblem", () => {
   it.each([
     ["Authorization", "Bearer abc"],
+    ["authorization", "Bearer abc"],
+    ["Api-Key", "k"],
     ["X-Api-Key", "k"],
     ["x-n8n-auth", "a value with spaces ~!@#"],
+    ["X-Auth-Token", "t"],
+    ["X-Service-Key", "k"],
+    ["X-Partner-Api-Key", "k"],
+    ["X-Hub-Authorization", "a"],
+    ["X-Client-Secret", "s"],
+    ["X-Receiver-Signature", "s"],
   ])("accepts %s", (name, value) => {
     expect(authHeaderProblem(name, value)).toBeNull();
   });
@@ -37,21 +45,31 @@ describe("authHeaderProblem", () => {
     ["a name with a space", "X Api", "v", "name"],
     ["a name with a colon", "X-Api:", "v", "name"],
     ["a name with CRLF", "X-Api\r\nHost", "v", "name"],
-    ["a name over 64 characters", "X".repeat(65), "v", "name"],
-    ["Host", "Host", "v", "reserved"],
-    ["content-length", "Content-Length", "v", "reserved"],
-    ["Content-Type", "content-type", "v", "reserved"],
-    ["Transfer-Encoding", "Transfer-Encoding", "v", "reserved"],
-    ["Connection", "CONNECTION", "v", "reserved"],
-    ["Upgrade", "Upgrade", "v", "reserved"],
-    ["TE", "te", "v", "reserved"],
-    ["Trailer", "Trailer", "v", "reserved"],
-    ["Keep-Alive", "Keep-Alive", "v", "reserved"],
-    ["a proxy header", "Proxy-Authorization", "v", "reserved"],
-    ["Cookie", "Cookie", "v", "reserved"],
-    ["User-Agent", "User-Agent", "v", "reserved"],
-    ["the dispatcher's signature header", "X-WhereCtx-Signature", "v", "reserved"],
-    ["the dispatcher's event header", "x-wherectx-event", "v", "reserved"],
+    ["a name with an underscore", "X_Api_Key", "v", "name"],
+    ["__proto__", "__proto__", "v", "name"],
+    ["a name over 64 characters", `X-${"a".repeat(59)}-token`, "v", "name"],
+    ["Host", "Host", "v", "notAllowed"],
+    ["Content-Length", "Content-Length", "v", "notAllowed"],
+    ["Content-Type", "content-type", "v", "notAllowed"],
+    ["Transfer-Encoding", "Transfer-Encoding", "v", "notAllowed"],
+    ["Connection", "CONNECTION", "v", "notAllowed"],
+    ["Cookie", "Cookie", "v", "notAllowed"],
+    ["User-Agent", "User-Agent", "v", "notAllowed"],
+    ["Proxy-Authorization", "Proxy-Authorization", "v", "notAllowed"],
+    ["Forwarded", "Forwarded", "v", "notAllowed"],
+    ["X-Forwarded-For", "X-Forwarded-For", "v", "notAllowed"],
+    ["X-Forwarded-Host", "X-Forwarded-Host", "v", "notAllowed"],
+    ["X-Real-IP", "X-Real-IP", "v", "notAllowed"],
+    ["X-HTTP-Method-Override", "X-HTTP-Method-Override", "v", "notAllowed"],
+    ["X-Original-URL", "X-Original-URL", "v", "notAllowed"],
+    ["Metadata", "Metadata", "v", "notAllowed"],
+    ["Metadata-Flavor", "Metadata-Flavor", "v", "notAllowed"],
+    ["Origin", "Origin", "v", "notAllowed"],
+    ["Referer", "Referer", "v", "notAllowed"],
+    ["a bare X-Token", "X-Token", "v", "notAllowed"],
+    ["a suffix without the X- prefix", "Service-Token", "v", "notAllowed"],
+    ["the dispatcher's signature header", "X-WhereCtx-Signature", "v", "notAllowed"],
+    ["a WhereCtx-prefixed token", "x-wherectx-auth-token", "v", "notAllowed"],
     ["an empty value", "Authorization", "", "value"],
     ["a value with CRLF", "Authorization", "Bearer a\r\nX-Evil: 1", "value"],
     ["a value with LF", "Authorization", "Bearer a\nb", "value"],
@@ -64,14 +82,27 @@ describe("authHeaderProblem", () => {
   });
 
   it("accepts a 64-character name and a 1024-character value", () => {
-    expect(authHeaderProblem("X".repeat(64), "x".repeat(1024))).toBeNull();
+    const name = `X-${"a".repeat(56)}-token`;
+    expect(name).toHaveLength(64);
+    expect(authHeaderProblem(name, "x".repeat(1024))).toBeNull();
   });
 });
 
 describe("authHeaderHint", () => {
-  it("shows the last four characters of a long value, nothing of a short one", () => {
-    expect(authHeaderHint(VALUE)).toBe("…9f3k");
-    expect(authHeaderHint("Bearer abc")).toBe("…");
+  const token20 = "abcdefghijklmnop1234";
+  const token40 = `${"z".repeat(36)}9f3k`;
+
+  it.each([
+    ["a short bearer token", "Bearer abcde", "…"],
+    ["a 19-character token", `Bearer ${token20.slice(1)}`, "…"],
+    ["a 20-character token", `Bearer ${token20}`, "…1234"],
+    ["a 40-character token", `Bearer ${token40}`, "…9f3k"],
+    ["a 20-character value without a scheme", token20, "…1234"],
+    ["a scheme that would pad a short token past 20", "Bearer-scheme-long abc", "…"],
+    ["Basic credentials", `Basic ${Buffer.from("user:correct-horse-battery").toString("base64")}`, "…"],
+    ["Basic in another case", `basic ${"Q".repeat(40)}`, "…"],
+  ])("shows %s as %s", (_case, value, hint) => {
+    expect(authHeaderHint(value)).toBe(hint);
   });
 });
 

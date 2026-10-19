@@ -24,50 +24,59 @@ export const DEFAULT_AUTH_HEADER_NAME = "Authorization";
 export const MAX_AUTH_HEADER_NAME = 64;
 export const MAX_AUTH_HEADER_VALUE = 1024;
 
-/** RFC 9110 field-name token characters. */
-const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+/** Letters, digits and hyphens: every allowed name is spelled this way. */
+const NAME = /^[A-Za-z0-9-]+$/;
 /** Visible ASCII and the space; no control characters, so no CR/LF. */
 const VISIBLE = /^[\x20-\x7e]+$/;
 
 /**
- * Names a delivery cannot carry: framing and hop-by-hop headers, the ones the
- * dispatcher sets itself, and cookies.
+ * The names a credential travels in. An allow-list, not a blocklist: a name
+ * that steers a proxy or the receiver (Forwarded, X-Forwarded-*, X-Real-IP,
+ * X-HTTP-Method-Override, Origin, Metadata-Flavor) is refused because it is
+ * not on it, not because someone remembered it.
  */
-const RESERVED = new Set([
-  "host",
-  "content-length",
-  "content-type",
-  "content-encoding",
-  "transfer-encoding",
-  "connection",
-  "upgrade",
-  "te",
-  "trailer",
-  "trailers",
-  "keep-alive",
-  "expect",
-  "cookie",
-  "user-agent",
-]);
-const RESERVED_PREFIXES = ["proxy-", "x-wherectx-"];
+const ALLOWED_NAMES = new Set(["authorization", "api-key", "x-api-key"]);
+const ALLOWED_X_SUFFIXES = ["-token", "-key", "-api-key", "-auth", "-authorization", "-secret", "-signature"];
+/** The dispatcher's own headers, which the X- rule would otherwise admit. */
+const RESERVED_PREFIX = "x-wherectx-";
 
-export type AuthHeaderProblem = "name" | "reserved" | "value";
+export const AUTH_HEADER_NAME_RULE =
+  "Authorization, Api-Key, X-Api-Key, or an X- name ending in -Token, -Key, -Auth, -Authorization, -Secret or -Signature (not X-WhereCtx-)";
+
+export type AuthHeaderProblem = "name" | "notAllowed" | "value";
+
+function nameAllowed(lower: string): boolean {
+  if (ALLOWED_NAMES.has(lower)) return true;
+  if (!lower.startsWith("x-") || lower.startsWith(RESERVED_PREFIX)) return false;
+  const rest = lower.slice(2);
+  return ALLOWED_X_SUFFIXES.some((suffix) => rest.endsWith(suffix));
+}
 
 /** Why `name` and `value` cannot be an auth header, or null when they can. Expects a trimmed value. */
 export function authHeaderProblem(name: string, value: string): AuthHeaderProblem | null {
-  if (name.length === 0 || name.length > MAX_AUTH_HEADER_NAME || !TOKEN.test(name)) return "name";
-  const lower = name.toLowerCase();
-  if (RESERVED.has(lower) || RESERVED_PREFIXES.some((p) => lower.startsWith(p))) return "reserved";
+  if (name.length === 0 || name.length > MAX_AUTH_HEADER_NAME || !NAME.test(name)) return "name";
+  if (!nameAllowed(name.toLowerCase())) return "notAllowed";
   if (value.length === 0 || value.length > MAX_AUTH_HEADER_VALUE || !VISIBLE.test(value)) return "value";
   return null;
 }
 
-/** Below this length the last four characters are too much of the value to show. */
-const HINT_MIN_LENGTH = 12;
+/**
+ * The shortest token whose last four characters are at most a fifth of it.
+ * Shorter tokens show nothing: four characters would be too much of them.
+ */
+const HINT_MIN_TOKEN = 20;
 
-/** "…" and the value's last four characters, or "…" alone for a short value. */
+/**
+ * "…" and the last four characters of the token, or "…" alone. The token is
+ * the value after an optional scheme ("Bearer "), so the hint never counts the
+ * scheme toward the length. A Basic value is base64 of user:password, whose
+ * tail is the password, so it shows nothing.
+ */
 export function authHeaderHint(value: string): string {
-  return value.length >= HINT_MIN_LENGTH ? `…${value.slice(-4)}` : "…";
+  const scheme = /^(\S+)\s+/.exec(value);
+  if (scheme && scheme[1]!.toLowerCase() === "basic") return "…";
+  const token = scheme ? value.slice(scheme[0].length) : value;
+  return token.length >= HINT_MIN_TOKEN ? `…${token.slice(-4)}` : "…";
 }
 
 export function viewAuthHeader(header: WebhookAuthHeader): WebhookAuthHeaderView {

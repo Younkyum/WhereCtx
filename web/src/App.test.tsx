@@ -554,7 +554,7 @@ describe("log views", () => {
     expect(example()).not.toContain("credential");
 
     await fill(nameInput, "X-WhereCtx-Signature");
-    expect(dialog().textContent).toContain("set by the server");
+    expect(dialog().textContent).toContain("an X- name ending in -Token");
     expect(buttonIn(dialog(), "Add").disabled).toBe(true);
     await fill(nameInput, "Authorization");
 

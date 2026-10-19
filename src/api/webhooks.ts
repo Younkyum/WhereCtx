@@ -15,7 +15,7 @@ import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
 import type { Webhook } from "../store/webhooksStore.js";
 import { PRESENCE_EVENT_TYPES } from "../types.js";
-import { authHeaderProblem, DEFAULT_AUTH_HEADER_NAME, viewAuthHeader, type AuthHeaderProblem } from "../webhooks/authHeader.js";
+import { AUTH_HEADER_NAME_RULE, authHeaderProblem, DEFAULT_AUTH_HEADER_NAME, viewAuthHeader, type AuthHeaderProblem } from "../webhooks/authHeader.js";
 import { assertSafeWebhookUrl, SsrfError } from "../webhooks/ssrf.js";
 import { parseBody } from "./accountHttp.js";
 import { requireScope } from "./middleware.js";
@@ -28,8 +28,8 @@ const EVENT_TYPES = [...PRESENCE_EVENT_TYPES, "*"] as const;
 const MAX_WEBHOOKS = 20;
 
 const AUTH_HEADER_MESSAGES: Record<AuthHeaderProblem, string> = {
-  name: "authHeader.name must be a header name (letters, digits and !#$%&'*+-.^_`|~), at most 64 characters",
-  reserved: "authHeader.name is a header the server sets or a hop-by-hop header; choose another name",
+  name: "authHeader.name must be letters, digits and hyphens, at most 64 characters",
+  notAllowed: `authHeader.name must be ${AUTH_HEADER_NAME_RULE}`,
   value: "authHeader.value must be 1 to 1024 printable ASCII characters, with no line breaks",
 };
 

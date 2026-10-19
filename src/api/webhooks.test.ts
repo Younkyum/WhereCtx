@@ -136,6 +136,8 @@ describe("a webhook's auth header over the API", () => {
     ["Cookie", { name: "Cookie", value: VALUE }],
     ["a proxy header", { name: "Proxy-Authorization", value: VALUE }],
     ["the signature header", { name: "X-WhereCtx-Signature", value: VALUE }],
+    ["X-Forwarded-For", { name: "X-Forwarded-For", value: VALUE }],
+    ["__proto__", { name: "__proto__", value: VALUE }],
     ["a name with CRLF", { name: "X-A\r\nHost", value: VALUE }],
     ["a value with CRLF", { name: "Authorization", value: "Bearer n8n-header\r\nX-Evil: 1" }],
     ["an empty value", { name: "Authorization", value: "  " }],

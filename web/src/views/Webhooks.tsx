@@ -115,7 +115,7 @@ function readAuthDraft(draft: AuthDraft): { header: WebhookAuthHeader | null; pr
 function AuthHeaderFields({ draft, onChange }: { draft: AuthDraft; onChange: (draft: AuthDraft) => void }) {
   const { t } = useApp();
   const { problem } = readAuthDraft(draft);
-  const nameProblem = problem === "name" || problem === "reserved" ? problem : null;
+  const nameProblem = problem === "name" || problem === "notAllowed" ? problem : null;
   return (
     <VStack gap={2}>
       <HStack gap={2} wrap="wrap" vAlign="start">

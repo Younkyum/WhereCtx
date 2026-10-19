@@ -557,8 +557,8 @@ export const KO: Record<I18nKey, string> = {
   "webhooks.authRemove": "제거",
   "webhooks.authKeep": "유지",
   "webhooks.authRemoving": "저장하면 인증 헤더가 제거돼요.",
-  "webhooks.authErr.name": "영문자, 숫자, - _ . 만 쓸 수 있어요 (최대 64자).",
-  "webhooks.authErr.reserved": "서버나 연결이 직접 정하는 헤더예요. 다른 이름을 고르세요.",
+  "webhooks.authErr.name": "영문자, 숫자, 하이픈만 쓸 수 있어요 (최대 64자).",
+  "webhooks.authErr.notAllowed": "Authorization, Api-Key, X-Api-Key, 또는 -Token, -Key, -Auth, -Authorization, -Secret, -Signature로 끝나는 X- 이름을 쓰세요.",
   "webhooks.authErr.value": "줄바꿈 없이 출력 가능한 ASCII 문자 1~1024자로 입력하세요.",
 
   "header.name": "헤더 이름",
