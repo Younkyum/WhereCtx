@@ -7,6 +7,7 @@
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
+import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { useState } from "react";
 import { api } from "../api";
@@ -14,7 +15,76 @@ import { addPasskey } from "../auth";
 import { useApp, useMe } from "../context";
 import { deviceLabel } from "../lib";
 import type { Me } from "../model";
-import { Empty, Hint, Page, Panel, RecoveryCodes, Row, Rows, useAction, useConfirm, useFormat, useNotify } from "../ui";
+import { DialogForm, DialogResult, Empty, FormDialog, Hint, Page, Panel, RecoveryCodes, Row, Rows, useConfirm, useFormat, useNotify } from "../ui";
+
+/** Which form the dialog holds, if any. */
+type AccountDialog = "name" | "passkey" | "codes" | null;
+
+function EditName({ onClose }: { onClose: () => void }) {
+  const { t, refreshMe } = useApp();
+  const me = useMe();
+  const notify = useNotify();
+  const [name, setName] = useState(me.user.displayName);
+  const save = async () => {
+    await api("/v1/me", { method: "PATCH", body: { displayName: name.trim() } });
+    notify.ok(t("toast.saved"));
+    await refreshMe();
+  };
+  return (
+    <DialogForm
+      title={t("account.editName")}
+      submitLabel={t("common.save")}
+      canSubmit={name.trim() !== "" && name.trim() !== me.user.displayName}
+      onSubmit={save}
+      onClose={onClose}
+    >
+      <TextInput label={t("account.displayName")} value={name} onChange={setName} isRequired autoComplete="name" />
+    </DialogForm>
+  );
+}
+
+function AddPasskey({ onClose }: { onClose: () => void }) {
+  const { t, refreshMe } = useApp();
+  const notify = useNotify();
+  const add = async () => {
+    await addPasskey();
+    notify.ok(t("account.passkeyAdded"));
+    await refreshMe();
+  };
+  return (
+    <DialogForm title={t("account.addPasskey")} submitLabel={t("account.addPasskeyButton")} canSubmit onSubmit={add} onClose={onClose}>
+      <Text>{t("account.addPasskeyDesc")}</Text>
+    </DialogForm>
+  );
+}
+
+function NewRecoveryCodes({ onClose }: { onClose: () => void }) {
+  const { t } = useApp();
+  const notify = useNotify();
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const make = async () => {
+    setCodes((await api<{ recoveryCodes: string[] }>("/v1/me/recovery-codes", { method: "POST" })).recoveryCodes);
+  };
+  if (codes) {
+    return (
+      <DialogResult title={t("account.recovery")} mustConfirm onClose={onClose}>
+        <Text>{t("codes.desc")}</Text>
+        <RecoveryCodes
+          codes={codes}
+          onDone={() => {
+            notify.ok(t("toast.saved"));
+            onClose();
+          }}
+        />
+      </DialogResult>
+    );
+  }
+  return (
+    <DialogForm title={t("account.newCodes")} submitLabel={t("account.newCodesButton")} canSubmit keepOpen onSubmit={make} onClose={onClose}>
+      <Text>{t("account.codesConfirm")}</Text>
+    </DialogForm>
+  );
+}
 
 export function AccountView() {
   const { t, refreshMe, signOut } = useApp();
@@ -22,19 +92,8 @@ export function AccountView() {
   const notify = useNotify();
   const confirm = useConfirm();
   const fmt = useFormat();
-  const [name, setName] = useState(me.user.displayName);
-  const [codes, setCodes] = useState<string[] | null>(null);
-
-  const [renaming, rename] = useAction(async () => {
-    await api("/v1/me", { method: "PATCH", body: { displayName: name.trim() } });
-    notify.ok(t("toast.saved"));
-    await refreshMe();
-  });
-  const [adding, add] = useAction(async () => {
-    await addPasskey();
-    notify.ok(t("account.passkeyAdded"));
-    await refreshMe();
-  });
+  const [dialog, setDialog] = useState<AccountDialog>(null);
+  const close = () => setDialog(null);
   const guarded = (fn: () => Promise<void>) => async () => {
     try {
       await fn();
@@ -68,30 +127,15 @@ export function AccountView() {
     notify.ok(t("account.endedOthers", { n: r.revoked }));
     await refreshMe();
   });
-  const newCodes = guarded(async () => {
-    if (!(await confirm({ title: t("account.codesConfirm"), action: t("account.newCodes") }))) return;
-    const r = await api<{ recoveryCodes: string[] }>("/v1/me/recovery-codes", { method: "POST" });
-    setCodes(r.recoveryCodes);
-  });
 
   const single = me.passkeys.length <= 1;
   const workspaces = me.workspaces.map((w) => t("account.workspaceItem", { name: w.name, role: t(`role.${w.role}`) })).join(", ");
 
   return (
     <Page title={t("account.title")}>
-      <Panel title={t("account.profile")}>
+      <Panel title={t("account.profile")} actions={<Button label={t("account.editName")} size="sm" onClick={() => setDialog("name")} />}>
         <VStack gap={4}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (name.trim()) void rename();
-            }}
-          >
-            <HStack gap={2} wrap="wrap" vAlign="end">
-              <TextInput label={t("account.displayName")} value={name} onChange={setName} isRequired width={280} autoComplete="name" />
-              <Button type="submit" label={t("common.save")} variant="primary" isLoading={renaming} isDisabled={!name.trim()} />
-            </HStack>
-          </form>
+          <Row title={me.user.displayName} subtitle={t("account.displayName")} />
           {workspaces ? <Hint>{t("account.workspaces", { list: workspaces })}</Hint> : null}
           <HStack>
             <Button label={t("account.signOut")} clickAction={() => signOut(true)} />
@@ -100,7 +144,7 @@ export function AccountView() {
       </Panel>
       <Panel
         title={t("account.passkeys")}
-        actions={<Button label={t("account.addPasskey")} size="sm" isLoading={adding} onClick={() => void add()} />}
+        actions={<Button label={t("account.addPasskey")} size="sm" onClick={() => setDialog("passkey")} />}
       >
         {me.passkeys.length ? (
           <VStack gap={2}>
@@ -148,21 +192,14 @@ export function AccountView() {
       <Panel title={t("account.recovery")}>
         <VStack gap={3}>
           <Hint>{t("account.recoveryDesc")}</Hint>
-          {codes ? (
-            <RecoveryCodes
-              codes={codes}
-              onDone={() => {
-                setCodes(null);
-                notify.ok(t("toast.saved"));
-              }}
-            />
-          ) : (
-            <HStack>
-              <Button label={t("account.newCodes")} clickAction={newCodes} />
-            </HStack>
-          )}
+          <HStack>
+            <Button label={t("account.newCodes")} onClick={() => setDialog("codes")} />
+          </HStack>
         </VStack>
       </Panel>
+      <FormDialog isOpen={dialog !== null} onClose={close}>
+        {dialog === "name" ? <EditName onClose={close} /> : dialog === "passkey" ? <AddPasskey onClose={close} /> : dialog === "codes" ? <NewRecoveryCodes onClose={close} /> : null}
+      </FormDialog>
     </Page>
   );
 }

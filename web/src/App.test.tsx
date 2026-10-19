@@ -727,16 +727,20 @@ describe("log views", () => {
       body: { kind: "shortcut", url: "https://where.example/v1/ingest/shortcut", token: "wctx_tok", headers: { Authorization: "Bearer wctx_tok" } },
     }));
     await open("#devices");
-    const name = host.querySelector<HTMLInputElement>('input[placeholder="e.g. My iPhone"]')!;
+    expect(host.querySelector('input[placeholder="e.g. My iPhone"]')).toBeNull();
+    await act(async () => button("Connect a phone").click());
+    await settle();
+    const name = openDialog()!.querySelector<HTMLInputElement>('input[placeholder="e.g. My iPhone"]')!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(name, "iPhone");
       name.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    const shortcut = [...host.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find((r) => r.value === "shortcut")!;
+    const shortcut = [...openDialog()!.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find((r) => r.value === "shortcut")!;
     await act(async () => shortcut.click());
-    await act(async () => button("Create connection").click());
+    await act(async () => dialogButton("Create connection").click());
     await settle();
-    const block = host.querySelector('[data-testid="bearer-header"]')!;
+    expect(openDialog()!.textContent).toContain("Set up iPhone");
+    const block = openDialog()!.querySelector('[data-testid="bearer-header"]')!;
     const codes = [...block.querySelectorAll("pre, code")].map((c) => c.textContent?.trim()).filter(Boolean);
     expect(codes).toContain("Authorization");
     const values = [...block.querySelectorAll("code")].map((c) => c.textContent?.trim() ?? "").filter((c) => c.includes("wctx_tok"));
@@ -1204,5 +1208,318 @@ describe("place rules and webhook places", () => {
     await fill(openDialog()!.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
     await click(dialogButton("Add"));
     expect(created).toEqual({ url: "https://n8n.example/hook", events: ["presence.entered_place", "presence.left_place"], places: ["*"] });
+  });
+});
+
+describe("create and edit dialogs", () => {
+  async function open(hash: string, me: unknown = ME) {
+    route("GET /v1/me", () => ({ status: 200, body: me }));
+    location.hash = hash;
+    await act(async () => root.render(<App />));
+    await settle();
+  }
+
+  async function click(target: HTMLElement) {
+    await act(async () => target.click());
+    await settle();
+  }
+
+  /** Enter in a field submits its form, as the browser does for a form with a submit button. */
+  async function pressEnterIn(input: HTMLInputElement) {
+    await act(async () => input.form!.requestSubmit());
+    await settle();
+  }
+
+  async function pressEscape() {
+    await act(async () => {
+      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    await settle();
+  }
+
+  async function choose(scope: ParentNode, option: string) {
+    await click(scope.querySelector<HTMLElement>('[role="combobox"]')!);
+    await click([...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) => o.textContent?.trim() === option)!);
+  }
+
+  const dialog = () => {
+    const d = openDialog();
+    if (!d) throw new Error(`no open dialog in: ${host.textContent}`);
+    return d;
+  };
+
+  afterEach(() => {
+    location.hash = "";
+  });
+
+  it("Agents creates a token in a dialog and shows its secret there once, then lists it", async () => {
+    let tokens: unknown[] = [];
+    let posted: unknown;
+    route("GET /v1/tokens", () => ({ status: 200, body: { tokens } }));
+    route("GET /v1/oauth/grants", () => ({ status: 200, body: { grants: [] } }));
+    route("POST /v1/tokens", (b) => {
+      posted = b;
+      tokens = [{ id: "k1", name: "Claude Desktop", role: "agent", lastUsedAt: null }];
+      return { status: 201, body: { secret: "wctx_agent_secret", mcpConfig: { mcpServers: {} } } };
+    });
+    await open("#agents");
+    expect(host.querySelector("form")).toBeNull();
+
+    await click(button("New agent token"));
+    await fill(inputLabelled(dialog(), "Name"), "Claude Desktop");
+    await pressEnterIn(inputLabelled(dialog(), "Name"));
+    expect(posted).toEqual({ name: "Claude Desktop", role: "agent" });
+    expect(dialog().textContent).toContain("wctx_agent_secret");
+    expect(dialog().textContent).toContain("MCP config");
+    expect(host.textContent).toContain("Claude Desktop");
+
+    await click(dialogButton("Done"));
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).not.toContain("wctx_agent_secret");
+  });
+
+  it("Devices pairs a phone in a dialog: the QR code shows there, and an unusable BASE_URL keeps the form open", async () => {
+    let unusable = true;
+    route("GET /v1/devices", () => ({ status: 200, body: { devices: [] } }));
+    route("GET /v1/activity/ingest?limit=20", () => ({ status: 200, body: { entries: [] } }));
+    route("POST /v1/devices/pair", () =>
+      unusable
+        ? { status: 400, body: { error: "BASE_URL is http://localhost", code: "base_url_unusable" } }
+        : {
+            status: 201,
+            body: { kind: "owntracks", link: "owntracks:///config?inline=x", config: {}, qrSvg: '<svg viewBox="0 0 10 10"><path d="M0 0h1v1H0z"/></svg>' },
+          },
+    );
+    await open("#devices");
+    await click(button("Connect a phone"));
+    await fill(inputLabelled(dialog(), "Device name"), "Pixel");
+    await pressEnterIn(inputLabelled(dialog(), "Device name"));
+    expect(dialog().textContent).toContain("Phones can't reach this server's address");
+    expect(dialog().textContent).toContain("BASE_URL is http://localhost");
+    expect(inputLabelled(dialog(), "Device name").value).toBe("Pixel");
+
+    unusable = false;
+    await click(dialogButton("Create connection"));
+    expect(dialog().textContent).toContain("Set up Pixel");
+    expect(dialog().querySelector('svg[role="img"]')).not.toBeNull();
+    expect(calls.filter((c) => c === "GET /v1/devices").length).toBeGreaterThan(1);
+    await click(dialogButton("Done"));
+    expect(openDialog()).toBeUndefined();
+  });
+
+  function serveWorkspace() {
+    const sent: Record<string, unknown[]> = { rename: [], role: [], invite: [], create: [] };
+    let wsName = "Home";
+    route("GET /v1/workspaces", () => ({ status: 200, body: { workspaces: [{ id: "w1", name: wsName, role: "owner" }] } }));
+    route("GET /v1/workspaces/w1/members", () => ({
+      status: 200,
+      body: {
+        members: [
+          { userId: "u1", displayName: "Me", role: "owner", joinedAt: "2026-01-01T00:00:00.000Z" },
+          { userId: "u2", displayName: "Kim", role: "member", joinedAt: "2026-01-02T00:00:00.000Z" },
+        ],
+      },
+    }));
+    route("GET /v1/workspaces/w1/invites", () => ({ status: 200, body: { invites: [] } }));
+    route("PATCH /v1/workspaces/w1", (b: any) => (sent.rename!.push(b), (wsName = b.name), { status: 200, body: { ok: true } }));
+    route("PATCH /v1/workspaces/w1/members/u2", (b) => (sent.role!.push(b), { status: 200, body: { ok: true } }));
+    route("POST /v1/workspaces/w1/invites", (b) => (
+      sent.invite!.push(b), { status: 201, body: { url: "https://where.example/invite/abc", expiresAt: "2026-10-26T00:00:00.000Z" } }
+    ));
+    route("POST /v1/workspaces", (b) => (sent.create!.push(b), { status: 403, body: { error: "forbidden", code: "forbidden" } }));
+    return sent;
+  }
+
+  it("Workspace renames, changes a member's role, and invites in dialogs; nothing is edited on the page", async () => {
+    const sent = serveWorkspace();
+    await open("#workspace");
+    expect(host.querySelector("form")).toBeNull();
+    expect(host.textContent).toContain("Member");
+
+    await click(button("Rename"));
+    expect(dialogButton("Save").disabled).toBe(true);
+    await fill(inputLabelled(dialog(), "Workspace name"), "Family");
+    await pressEnterIn(inputLabelled(dialog(), "Workspace name"));
+    expect(sent.rename).toEqual([{ name: "Family" }]);
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).toContain("Family");
+
+    await click(button("Change role"));
+    expect(dialog().textContent).toContain("Change Kim's role");
+    await choose(dialog(), "Admin");
+    await click(dialogButton("Save"));
+    expect(sent.role).toEqual([{ role: "admin" }]);
+    expect(openDialog()).toBeUndefined();
+
+    await click(button("Create invite link"));
+    await click(dialogButton("Create invite link"));
+    expect(sent.invite).toEqual([{ role: "member" }]);
+    expect(dialog().textContent).toContain("https://where.example/invite/abc");
+    await click(dialogButton("Done"));
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).not.toContain("https://where.example/invite/abc");
+  });
+
+  it("Workspace says inside the dialog when this server lets only owners and admins create a workspace", async () => {
+    const sent = serveWorkspace();
+    await open("#workspace");
+    await click(button("New workspace"));
+    await fill(inputLabelled(dialog(), "Workspace name"), "Club");
+    await click(dialogButton("Create"));
+    expect(sent.create).toEqual([{ name: "Club" }]);
+    expect(dialog().textContent).toContain("Only workspace owners and admins can create workspaces on this server.");
+  });
+
+  it("Account changes the display name in a dialog submitted with Enter", async () => {
+    let me = { ...ME, user: { id: "u1", displayName: "Jin" } };
+    const sent: unknown[] = [];
+    route("PATCH /v1/me", (b: any) => (sent.push(b), (me = { ...me, user: { ...me.user, displayName: b.displayName } }), { status: 200, body: { ok: true } }));
+    route("GET /v1/me", () => ({ status: 200, body: me }));
+    location.hash = "#account";
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.querySelector("form")).toBeNull();
+    await click(button("Change display name"));
+    await fill(inputLabelled(dialog(), "Display name"), "Younkyum");
+    await pressEnterIn(inputLabelled(dialog(), "Display name"));
+    expect(sent).toEqual([{ displayName: "Younkyum" }]);
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).toContain("Younkyum");
+  });
+
+  it("Account keeps a cancelled passkey prompt inside the Add a passkey dialog", async () => {
+    route("POST /v1/me/passkeys/options", () => ({ status: 200, body: { ceremony: "c1", options: { challenge: "AQID", user: { id: "AQ" } } } }));
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true,
+      value: { create: vi.fn(async () => Promise.reject(Object.assign(new Error("cancelled"), { name: "NotAllowedError" }))) },
+    });
+    await open("#account");
+    await click(button("Add a passkey"));
+    await click(dialogButton("Create passkey"));
+    expect(calls).not.toContain("POST /v1/me/passkeys/verify");
+    expect(dialog().textContent).toMatch(/cancel/i);
+    expect(dialogButton("Create passkey").disabled).toBe(false);
+  });
+
+  it("Account makes new recovery codes after a passkey step-up, and holds the dialog until they are saved", async () => {
+    let reauthed = false;
+    route("POST /v1/me/reauth/options", () => ({ status: 200, body: { ceremony: "c1", options: { challenge: "AQID" } } }));
+    route("POST /v1/me/reauth/verify", () => ((reauthed = true), { status: 200, body: { ok: true } }));
+    route("POST /v1/me/recovery-codes", () =>
+      reauthed
+        ? { status: 200, body: { recoveryCodes: ["aaaa-bbbb", "cccc-dddd"] } }
+        : { status: 403, body: { error: "confirm with your passkey first", code: "reauth_required" } },
+    );
+    await open("#account");
+    await click(button("Make new recovery codes"));
+    expect(dialog().textContent).toContain("Your current codes stop working.");
+    await click(dialogButton("Make new codes"));
+    expect(calls).toContain("POST /v1/me/reauth/verify");
+    expect(dialog().textContent).toContain("aaaa-bbbb");
+    expect(dialog().querySelector('button[aria-label="Close"]')).toBeNull();
+    dialog().querySelector<HTMLInputElement>('input[type="checkbox"]')!.focus();
+    await pressEscape();
+    expect(dialog().textContent).toContain("aaaa-bbbb");
+    expect(dialogButton("Continue").disabled).toBe(true);
+    await click(dialog().querySelector<HTMLInputElement>('input[type="checkbox"]')!);
+    await click(dialogButton("Continue"));
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).not.toContain("aaaa-bbbb");
+  });
+
+  it("Sharing edits what a person sees in a dialog and sends only what changed", async () => {
+    let outgoing: any[] = [{ viewer: { id: "u2", displayName: "Kim" }, level: "coarse", hideHomeExact: true, showArea: false }];
+    const sent: string[] = [];
+    route("GET /v1/shares", () => ({ status: 200, body: { outgoing, incoming: [] } }));
+    route("GET /v1/workspaces", () => ({ status: 200, body: { workspaces: [{ id: "w1", name: "Home" }] } }));
+    route("GET /v1/workspaces/w1/members", () => ({
+      status: 200,
+      body: { members: [{ userId: "u1", displayName: "Me" }, { userId: "u2", displayName: "Kim" }, { userId: "u3", displayName: "Lee" }] },
+    }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { sharingPaused: false, hideHomeExactCoordinates: true, areaToPeople: false } } }));
+    route("GET /v1/shares/audit?limit=50", () => ({ status: 200, body: { audit: [] } }));
+    route("PUT /v1/shares/u2", (b) => (sent.push(`PUT u2 ${JSON.stringify(b)}`), (outgoing = [{ ...outgoing[0], ...(b as object) }]), { status: 200, body: {} }));
+    route("PUT /v1/shares/u3", (b) => (sent.push(`PUT u3 ${JSON.stringify(b)}`), { status: 200, body: {} }));
+    route("DELETE /v1/shares/u2", () => (sent.push("DELETE u2"), (outgoing = []), { status: 200, body: { ok: true } }));
+    await open("#sharing");
+    expect(host.querySelector('[role="combobox"]')).toBeNull();
+    expect(host.textContent).toContain("Status only");
+
+    await click(button("Edit"));
+    expect(dialog().textContent).toContain("Sharing with Kim");
+    expect(dialogButton("Save").disabled).toBe(true);
+    await choose(dialog(), "Exact location");
+    expect(dialog().textContent).toContain("Hide my exact location at home");
+    await click(dialogButton("Save"));
+    expect(sent).toEqual(['PUT u2 {"level":"precise"}']);
+    expect(openDialog()).toBeUndefined();
+    expect(host.textContent).toContain("Exact location (hidden at home)");
+
+    const lee = [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Edit")[1]!;
+    await click(lee);
+    expect(dialog().textContent).toContain("Sharing with Lee");
+    await choose(dialog(), "Status only");
+    await click(dialogButton("Save"));
+    expect(sent[1]).toBe('PUT u3 {"level":"coarse"}');
+
+    await click(button("Edit"));
+    await choose(dialog(), "Not sharing");
+    await click(dialogButton("Save"));
+    expect(sent[2]).toBe("DELETE u2");
+  });
+
+  it("Privacy shows the settings read-only, edits agent access in a dialog, and pauses sharing with one switch", async () => {
+    let settings: any = {
+      defaultAgentAccess: "coarse",
+      allowPreciseLocation: false,
+      preciseRequiresReason: true,
+      preciseRequiresApproval: false,
+      hideHomeExactCoordinates: true,
+      protectHomePlace: true,
+      storeRawHistory: false,
+      retentionHours: 24,
+      sharingPaused: false,
+    };
+    const puts: unknown[] = [];
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings } }));
+    route("PUT /v1/privacy", (b: any) => (puts.push(b), (settings = { ...settings, ...b }), { status: 200, body: { settings } }));
+    await open("#privacy");
+    expect(host.querySelector("form")).toBeNull();
+    expect(host.querySelector('input[type="checkbox"]:not([role="switch"])')).toBeNull();
+    expect(host.textContent).toContain("Keep history for (hours)24");
+
+    await click(button("Edit privacy settings"));
+    await click(inputLabelled(dialog(), "Keep raw location history"));
+    await click(dialogButton("Save"));
+    expect(puts).toEqual([
+      {
+        defaultAgentAccess: "coarse",
+        retentionHours: 24,
+        allowPreciseLocation: false,
+        preciseRequiresReason: true,
+        preciseRequiresApproval: false,
+        hideHomeExactCoordinates: true,
+        protectHomePlace: true,
+        storeRawHistory: true,
+      },
+    ]);
+    expect(openDialog()).toBeUndefined();
+
+    await click(host.querySelector<HTMLInputElement>('input[role="switch"]')!);
+    expect(puts[1]).toEqual({ sharingPaused: true });
+  });
+
+  it("Agents shows a refused create inside the dialog and keeps the name", async () => {
+    route("GET /v1/tokens", () => ({ status: 200, body: { tokens: [] } }));
+    route("GET /v1/oauth/grants", () => ({ status: 200, body: { grants: [] } }));
+    route("POST /v1/tokens", () => ({ status: 400, body: { error: "name too long" } }));
+    await open("#agents");
+    await click(button("New agent token"));
+    await fill(inputLabelled(dialog(), "Name"), "x");
+    await click(dialogButton("Create token"));
+    expect(dialog().textContent).toContain("Some of the values aren't valid.");
+    expect(inputLabelled(dialog(), "Name").value).toBe("x");
+    await pressEscape();
+    expect(openDialog()).toBeUndefined();
   });
 });

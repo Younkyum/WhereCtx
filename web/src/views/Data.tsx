@@ -9,6 +9,7 @@ import { Grid } from "@astryxdesign/core/Grid";
 import { HStack, VStack } from "@astryxdesign/core/Layout";
 import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { Selector } from "@astryxdesign/core/Selector";
+import { Switch } from "@astryxdesign/core/Switch";
 import { Table } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
@@ -17,6 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "@astryxdesign/core/Link";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
+import type { Translate } from "../i18n";
 import {
   AGENT_ACCESS,
   PLACE_TYPES,
@@ -278,73 +280,88 @@ function AddByCoordinates({ picked, onClose, onAdded }: AddProps & { picked: Lat
 
 export function PrivacyView() {
   const { t } = useApp();
+  const notify = useNotify();
   const [state, reload] = useLoad(() => api<{ settings: PrivacySettings }>("/v1/privacy").then((r) => r.settings), []);
+  const [editing, setEditing] = useState(false);
+  const close = () => setEditing(false);
+  const pause = async (on: boolean) => {
+    try {
+      await api("/v1/privacy", { method: "PUT", body: { sharingPaused: on } });
+      notify.ok(t(on ? "sharing.pausedOn" : "sharing.pausedOff"));
+    } catch (e) {
+      notify.fail(e);
+    }
+    await reload();
+  };
   return (
     <Page title={t("privacy.title")} description={t("privacy.desc")}>
-      <Loaded state={state}>{(s) => <PrivacyForm initial={s} onSaved={reload} />}</Loaded>
+      <Loaded state={state}>
+        {(s) => (
+          <VStack gap={6}>
+            <Panel title={t("privacy.agents")} actions={<Button label={t("privacy.edit")} variant="primary" onClick={() => setEditing(true)} />}>
+              <Rows items={[...PRIVACY_SUMMARY]} keyOf={(k) => k}>
+                {(k) => (
+                  <Row title={t(`privacy.${k}`)}>
+                    <Text>{privacyValue(s, k, t)}</Text>
+                  </Row>
+                )}
+              </Rows>
+            </Panel>
+            <Panel title={t("privacy.people")}>
+              <Switch label={t("sharing.pause.label")} description={t("privacy.peopleHint")} value={s.sharingPaused} changeAction={pause} />
+            </Panel>
+            <FormDialog isOpen={editing} onClose={close}>
+              <EditPrivacy initial={s} onClose={close} onSaved={reload} />
+            </FormDialog>
+          </VStack>
+        )}
+      </Loaded>
     </Page>
   );
 }
 
-function PrivacyForm({ initial, onSaved }: { initial: PrivacySettings; onSaved: () => Promise<void> }) {
+const PRIVACY_SUMMARY = ["defaultAgentAccess", ...PRIVACY_FLAGS, "retentionHours"] as const;
+
+function privacyValue(s: PrivacySettings, k: (typeof PRIVACY_SUMMARY)[number], t: Translate): string {
+  if (k === "defaultAgentAccess") return t(`access.${s.defaultAgentAccess}`);
+  if (k === "retentionHours") return String(s.retentionHours);
+  return t(s[k] ? "common.yes" : "common.no");
+}
+
+function EditPrivacy({ initial, onClose, onSaved }: { initial: PrivacySettings; onClose: () => void; onSaved: () => Promise<void> }) {
   const { t } = useApp();
   const notify = useNotify();
   const [s, setS] = useState(initial);
-  const [busy, save] = useAction(async () => {
-    const body: Partial<PrivacySettings> = {
-      defaultAgentAccess: s.defaultAgentAccess,
-      retentionHours: s.retentionHours,
-      sharingPaused: s.sharingPaused,
-    };
+  const save = async () => {
+    const body: Partial<PrivacySettings> = { defaultAgentAccess: s.defaultAgentAccess, retentionHours: s.retentionHours };
     for (const k of PRIVACY_FLAGS) body[k] = s[k];
     await api("/v1/privacy", { method: "PUT", body });
     notify.ok(t("toast.saved"));
     await onSaved();
-  });
+  };
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        void save();
-      }}
-    >
-      <VStack gap={6}>
-        <Panel title={t("privacy.agents")}>
-          <VStack gap={4}>
-            <Selector
-              label={t("privacy.defaultAgentAccess")}
-              value={s.defaultAgentAccess}
-              options={AGENT_ACCESS.map((k) => ({ value: k, label: t(`access.${k}`) }))}
-              onChange={(v) => oneOf<AgentAccess>(AGENT_ACCESS, v) && setS({ ...s, defaultAgentAccess: v })}
-              width={260}
-            />
-            <VStack gap={2}>
-              {PRIVACY_FLAGS.map((k) => (
-                <CheckboxInput key={k} label={t(`privacy.${k}`)} value={Boolean(s[k])} onChange={(on) => setS({ ...s, [k]: on })} />
-              ))}
-            </VStack>
-            <NumberInput
-              label={t("privacy.retentionHours")}
-              value={s.retentionHours}
-              onChange={(v) => setS({ ...s, retentionHours: v })}
-              min={0}
-              max={8760}
-              isIntegerOnly
-              width={200}
-            />
-          </VStack>
-        </Panel>
-        <Panel title={t("privacy.people")}>
-          <VStack gap={2}>
-            <CheckboxInput label={t("sharing.pause.label")} value={s.sharingPaused} onChange={(on) => setS({ ...s, sharingPaused: on })} />
-            <Hint>{t("privacy.peopleHint")}</Hint>
-          </VStack>
-        </Panel>
-        <HStack>
-          <Button type="submit" label={t("common.save")} variant="primary" isLoading={busy} />
-        </HStack>
+    <DialogForm title={t("privacy.editTitle")} submitLabel={t("common.save")} canSubmit onSubmit={save} onClose={onClose}>
+      <Selector
+        label={t("privacy.defaultAgentAccess")}
+        value={s.defaultAgentAccess}
+        options={AGENT_ACCESS.map((k) => ({ value: k, label: t(`access.${k}`) }))}
+        onChange={(v) => oneOf<AgentAccess>(AGENT_ACCESS, v) && setS({ ...s, defaultAgentAccess: v })}
+      />
+      <VStack gap={2}>
+        {PRIVACY_FLAGS.map((k) => (
+          <CheckboxInput key={k} label={t(`privacy.${k}`)} value={Boolean(s[k])} onChange={(on) => setS({ ...s, [k]: on })} />
+        ))}
       </VStack>
-    </form>
+      <NumberInput
+        label={t("privacy.retentionHours")}
+        value={s.retentionHours}
+        onChange={(v) => setS({ ...s, retentionHours: v })}
+        min={0}
+        max={8760}
+        isIntegerOnly
+        width={200}
+      />
+    </DialogForm>
   );
 }
 
