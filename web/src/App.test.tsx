@@ -627,6 +627,42 @@ describe("maps", () => {
     expect(bodies).toContainEqual({ geoEnabled: true });
   });
 
+  it("says what the provider refused when a key test fails, what to fix, and the provider's own words", async () => {
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/geo", () => ({
+      status: 200,
+      body: {
+        active: { provider: "kakao", source: "own" },
+        map: null,
+        credentials: [{ provider: "kakao", status: "ok", rest: true, map: false, kinds: { restKey: "cdef" }, updatedAt: "2026-10-19T00:00:00Z", lastUsedAt: null, lastError: null }],
+        operator: [],
+        operatorMap: [],
+      },
+    }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: true, geoProvider: null } } }));
+    route("POST /v1/geo/credentials/kakao/test", () => ({
+      status: 200,
+      body: {
+        test: {
+          ok: false,
+          error: "auth",
+          message: "Kakao Map is turned off for this app",
+          api: "geocoding",
+          code: "map_service_disabled",
+          providerMessage: "App(WhereCtx) disabled OPEN_MAP_AND_LOCAL service.",
+        },
+      },
+    }));
+    location.hash = "#maps";
+    await act(async () => root.render(<App />));
+    await settle();
+    await act(async () => button("Test").click());
+    await settle();
+    expect(host.textContent).toContain("Kakao turned down the address lookup.");
+    expect(host.textContent).toContain("제품 설정, 카카오맵, set 사용 설정 to ON");
+    expect(host.textContent).toContain("Kakao said: \u201cApp(WhereCtx) disabled OPEN_MAP_AND_LOCAL service.\u201d");
+  });
+
   it("asks for the drive time home only when the button is pressed", async () => {
     route("GET /v1/me", () => ({ status: 200, body: ME }));
     route("GET /v1/privacy", () => ({ status: 200, body: { settings: { sharingPaused: false, geoEnabled: true } } }));

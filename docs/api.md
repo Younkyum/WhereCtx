@@ -102,7 +102,7 @@ PUT    /v1/geo/credentials/naver             # session, step-up: { "clientId":"�
 DELETE /v1/geo/credentials/:provider         # session, step-up: the REST keys; the map key stays
 PUT    /v1/geo/credentials/:provider/map     # session, step-up: { "key":"…" } the map key
 DELETE /v1/geo/credentials/:provider/map     # session: the map key only; none saved changes nothing
-POST   /v1/geo/credentials/:provider/test    # session: looks up Seoul City Hall with the saved key
+POST   /v1/geo/credentials/:provider/test    # session: looks up Seoul City Hall, then times a route to Seoul Station, with the saved key
 GET    /v1/geo/search?q=                     # manage_places, maps on: address or place search, with coordinates
 GET    /v1/geo/eta?to=&pick=&departAt=&avoid=&directions=&reason=
                                              # read_presence: drive time from my current location
@@ -144,6 +144,24 @@ a browser key the provider restricts to registered domains, sent only to the
 signed-in owner. A token gets `403` (`geo.map_config` in the access log). `status` is `unusable` (with
 `lastError`) when the saved row cannot be opened; calls skip it, and it can
 still be replaced or removed. The key test counts against the maps limits.
+
+The key test tries the address API (Kakao Local, Naver Reverse Geocoding),
+then the route API (Kakao Mobility, Naver Directions 5), and stops at the
+first that fails. A refusal says which and what to fix:
+
+```json
+{ "test": { "ok": false, "error": "auth", "api": "geocoding", "code": "map_service_disabled",
+  "providerMessage": "App(…) disabled OPEN_MAP_AND_LOCAL service.",
+  "message": "Kakao Map is turned off for this app" } }
+```
+
+`code` is one of `key_invalid`, `map_service_disabled` (Kakao's 카카오맵
+product is off for the app), `service_not_enabled` (the API is not enabled or
+selected for the app; Naver answers this as `429 Quota Exceeded`),
+`review_required`, `quota`, `rejected`, `timeout`, `upstream`.
+`providerMessage` is the provider's own error text with every key masked
+(Kakao repeats the key it was sent), at most 300 characters; the dashboard
+shows it beside a fix for the `code`. Success is `{ "ok": true, "label": "…" }`.
 
 `GET /v1/geo/search` needs maps on (`403` otherwise); a token also needs a
 presence it may see.

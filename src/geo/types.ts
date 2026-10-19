@@ -93,14 +93,59 @@ export interface GeoProvider {
 export const GEO_ERROR_KINDS = ["auth", "quota", "no_route", "unsupported", "bad_request", "timeout", "upstream"] as const;
 export type GeoErrorKind = (typeof GEO_ERROR_KINDS)[number];
 
-/** A provider failure. The message never holds coordinates or a key. */
+/**
+ * What a person has to fix when a provider refuses or fails, read from the
+ * provider's own error body (problems.ts). The dashboard turns each into a
+ * concrete step.
+ *
+ * key_invalid: the provider does not know the key (or it is another kind of key).
+ * map_service_disabled: Kakao's 카카오맵 product is off for the app, which Local needs.
+ * service_not_enabled: the API is not enabled or selected for the app.
+ * review_required: the API needs the provider's review first.
+ * quota: a quota or rate limit was reached.
+ * rejected: the provider turned the request down for another reason.
+ * timeout, upstream: the provider did not answer, or failed.
+ */
+export const KEY_PROBLEMS = [
+  "key_invalid",
+  "map_service_disabled",
+  "service_not_enabled",
+  "review_required",
+  "quota",
+  "rejected",
+  "timeout",
+  "upstream",
+] as const;
+export type KeyProblem = (typeof KEY_PROBLEMS)[number];
+
+/** The problem a failure means when the provider said nothing more. */
+const PROBLEM_OF_KIND: Record<GeoErrorKind, KeyProblem> = {
+  auth: "key_invalid",
+  quota: "quota",
+  no_route: "rejected",
+  unsupported: "rejected",
+  bad_request: "rejected",
+  timeout: "timeout",
+  upstream: "upstream",
+};
+
+/**
+ * A provider failure. The message never holds coordinates or a key.
+ * `providerMessage` is the provider's own words, with every key masked.
+ */
 export class GeoError extends Error {
+  readonly problem: KeyProblem;
+  readonly providerMessage?: string;
+
   constructor(
     readonly kind: GeoErrorKind,
     message: string,
+    detail?: { problem?: KeyProblem; providerMessage?: string },
   ) {
     super(message);
     this.name = "GeoError";
+    this.problem = detail?.problem ?? PROBLEM_OF_KIND[kind];
+    if (detail?.providerMessage) this.providerMessage = detail.providerMessage;
   }
 }
 

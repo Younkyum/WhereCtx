@@ -26,6 +26,7 @@ import {
   type GeoCredential,
   type GeoProviderName,
   type GeoStatus,
+  type KeyTest,
   type PrivacySettings,
 } from "../model";
 import { routeScene } from "../mapScene";
@@ -188,10 +189,13 @@ function KeyRow({
     notify.ok(t("maps.keySaved"));
     await onChanged();
   });
+  const [refusal, setRefusal] = useState<Extract<KeyTest, { ok: false }> | null>(null);
   const [testing, test] = useAction(async () => {
-    const r = await api<{ test: { ok: boolean; label?: string; message?: string } }>(`/v1/geo/credentials/${provider}/test`, { method: "POST" });
-    if (r.test.ok) notify.ok(t("maps.testOk", { place: r.test.label ?? "" }));
-    else notify.fail(new Error(t("maps.testFailed", { why: r.test.message ?? "" })));
+    setRefusal(null);
+    const r = await api<{ test: KeyTest }>(`/v1/geo/credentials/${provider}/test`, { method: "POST" });
+    if (r.test.ok) notify.ok(t("maps.testOk", { place: r.test.label }));
+    else if (r.test.code) setRefusal(r.test);
+    else notify.fail(new Error(t("maps.testFailed", { why: r.test.message })));
     await onChanged();
   });
   const remove = async () => {
@@ -236,6 +240,7 @@ function KeyRow({
         {saved ? <Button label={t("maps.test")} size="sm" isLoading={testing} onClick={() => void test()} /> : null}
         {saved ? <Button label={t("common.delete")} size="sm" variant="destructive" clickAction={remove} /> : null}
       </Row>
+      {refusal?.code ? <Refusal provider={provider} refusal={refusal} onDismiss={() => setRefusal(null)} /> : null}
       <form onSubmit={submit}>
         <HStack gap={2} wrap="wrap" vAlign="end">
           {fields.map((f) => (
@@ -253,6 +258,26 @@ function KeyRow({
         </HStack>
       </form>
     </VStack>
+  );
+}
+
+/** A key test the provider turned down: which API, what to fix, and what the provider said. */
+function Refusal({ provider, refusal, onDismiss }: { provider: GeoProviderName; refusal: Extract<KeyTest, { ok: false }>; onDismiss: () => void }) {
+  const { t } = useApp();
+  const name = t(`maps.p.${provider}`);
+  return (
+    <Banner
+      status="warning"
+      title={t("maps.testRefused", { provider: name, api: t(`maps.testApi.${refusal.api ?? "geocoding"}`) })}
+      description={
+        <VStack gap={1}>
+          <Text>{t(`maps.problem.${provider}.${refusal.code ?? "upstream"}`)}</Text>
+          {refusal.providerMessage ? <Text type="supporting">{t("maps.providerSaid", { provider: name, words: refusal.providerMessage })}</Text> : null}
+        </VStack>
+      }
+      isDismissable
+      onDismiss={onDismiss}
+    />
   );
 }
 

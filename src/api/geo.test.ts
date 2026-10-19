@@ -5,7 +5,8 @@ import type { AppContext } from "../app/context.js";
 import type { WhereCtxConfig } from "../config.js";
 import { OWNER_ADMIN, TestClock, bootApp, reauth, setupOwner, signUpByInvite, type Enrolled } from "../testing/accounts.js";
 import type { FakeGeoProvider } from "../geo/fake.js";
-import { GEO_USER_CALLS_PER_MINUTE, KEY_TEST_POINT } from "../geo/keys.js";
+import { GEO_USER_CALLS_PER_MINUTE, KEY_TEST_DESTINATION, KEY_TEST_POINT } from "../geo/keys.js";
+import { recentLogs } from "../util/log.js";
 import { roundCoord } from "../geo/types.js";
 
 const AGENT = "agent-token-strong-0123456789abcdef-eta";
@@ -158,23 +159,71 @@ describe("the switches that send more out", () => {
 });
 
 describe("testing a key", () => {
-  it("looks up Seoul City Hall with my key, not where I am, and notes how it went", async () => {
+  const read = (name: string) => JSON.parse(readFileSync(new URL(`../geo/fixtures/${name}`, import.meta.url), "utf8"));
+
+  /** A provider network that answers each path with a status and a body, and keeps every URL asked for. */
+  function network(answers: Record<string, [number, unknown]>) {
     const sent: URL[] = [];
-    const region = JSON.parse(readFileSync(new URL("../geo/fixtures/kakao-coord2regioncode.json", import.meta.url), "utf8"));
-    const geoFetch = (async (input: URL | string) => {
-      sent.push(new URL(String(input)));
-      return new Response(JSON.stringify(region));
+    const fetch = (async (input: URL | string) => {
+      const url = new URL(String(input));
+      sent.push(url);
+      const [status, body] = answers[url.pathname] ?? [404, {}];
+      return new Response(JSON.stringify(body), { status });
     }) as typeof fetch;
-    await boot({ fake: false }, geoFetch);
+    return { sent, fetch };
+  }
+
+  async function testKakao(answers: Record<string, [number, unknown]>) {
+    const net = network(answers);
+    await boot({ fake: false }, net.fetch);
     await settings({ geoEnabled: true, skipProviderNearHome: true });
     await ingest(HOME);
     await owner.browser.json("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: KAKAO_KEY } });
-    const { test } = await owner.browser.json("/v1/geo/credentials/kakao/test", { method: "POST" });
+    const res = await owner.browser.send("/v1/geo/credentials/kakao/test", { method: "POST" });
+    const text = await res.text();
+    return { status: res.status, text, test: JSON.parse(text).test, sent: net.sent };
+  }
+
+  it("looks up Seoul City Hall and times a route from it with my key, never where I am, and notes how it went", async () => {
+    const { test, sent } = await testKakao({
+      "/v2/local/geo/coord2regioncode.json": [200, read("kakao-coord2regioncode.json")],
+      "/v1/directions": [200, read("kakao-directions.json")],
+    });
     expect(test).toEqual({ ok: true, label: "성남시 분당구 삼평동" });
-    expect(sent.map((u) => [u.searchParams.get("y"), u.searchParams.get("x")])).toEqual([
-      [String(roundCoord(KEY_TEST_POINT.lat)), String(roundCoord(KEY_TEST_POINT.lon))],
+    expect(sent.map((u) => u.pathname)).toEqual(["/v2/local/geo/coord2regioncode.json", "/v1/directions"]);
+    expect([sent[0]!.searchParams.get("y"), sent[0]!.searchParams.get("x")]).toEqual([
+      String(roundCoord(KEY_TEST_POINT.lat)),
+      String(roundCoord(KEY_TEST_POINT.lon)),
     ]);
+    expect(sent[1]!.searchParams.get("origin")).toBe(`${roundCoord(KEY_TEST_POINT.lon)},${roundCoord(KEY_TEST_POINT.lat)}`);
+    expect(sent[1]!.searchParams.get("destination")).toBe(`${roundCoord(KEY_TEST_DESTINATION.lon)},${roundCoord(KEY_TEST_DESTINATION.lat)}`);
     expect((await owner.browser.json("/v1/geo")).credentials[0].lastUsedAt).not.toBeNull();
+  });
+
+  it("says what Kakao refused and why, in Kakao's words without the key, and stops there", async () => {
+    const echoing = { errorType: "AccessDeniedError", message: `appKey(${KAKAO_KEY}) does not exist` };
+    const { test, text, sent } = await testKakao({ "/v2/local/geo/coord2regioncode.json": [401, echoing] });
+    expect(test).toEqual({
+      ok: false,
+      error: "auth",
+      api: "geocoding",
+      code: "key_invalid",
+      providerMessage: "appKey(••••) does not exist",
+      message: "the maps provider does not know this key",
+    });
+    expect(text).not.toContain(KAKAO_KEY);
+    expect(JSON.stringify(recentLogs())).not.toContain(KAKAO_KEY);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("names the 카카오맵 product being off, and a Mobility API not enabled", async () => {
+    const local = await testKakao({ "/v2/local/geo/coord2regioncode.json": [403, read("kakao-error-map-disabled.json")] });
+    expect(local.test).toMatchObject({ ok: false, api: "geocoding", code: "map_service_disabled" });
+    const mobility = await testKakao({
+      "/v2/local/geo/coord2regioncode.json": [200, read("kakao-coord2regioncode.json")],
+      "/v1/directions": [403, { code: -3, msg: "disabled feature" }],
+    });
+    expect(mobility.test).toMatchObject({ ok: false, api: "directions", code: "service_not_enabled", providerMessage: "disabled feature" });
   });
 });
 
