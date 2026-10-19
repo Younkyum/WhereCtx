@@ -1,7 +1,9 @@
 /**
  * Webhook subscriptions repository (plan section 9.8).
  * Each subscription has a target URL, a list of event types (or ["*"]), and an
- * optional shared secret used to sign deliveries (HMAC) in Phase 4.
+ * optional shared secret used to sign deliveries (HMAC) in Phase 4, and an
+ * optional auth header sent with each delivery. Both are credentials: sealed
+ * at rest when a key is configured, never returned to a client.
  *
  * User-facing CRUD is scoped to the owning user. The dispatcher's `listActive`
  * and the boot-time secret hygiene helpers are deliberately cross-user; each
@@ -15,6 +17,7 @@ import type { Database } from "../db/index.js";
 import { webhookDeliveries, webhooks } from "../db/schema.js";
 import { asUserId, type PresenceEvent, type UserId } from "../types.js";
 import { isEncryptedSecret, type SecretBox } from "../webhooks/secretBox.js";
+import type { WebhookAuthHeader } from "../webhooks/authHeader.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 import { log } from "../util/log.js";
 
@@ -47,6 +50,7 @@ export interface Webhook {
   url: string;
   events: string[];
   secret?: string;
+  authHeader?: WebhookAuthHeader;
   active: boolean;
   /** ISO createdAt of the last event delivered to this hook (delivery cursor). */
   cursor?: string;
@@ -59,6 +63,7 @@ interface WebhookRow {
   url: string;
   events: string[];
   secret: string | null;
+  authHeader: string | null;
   active: boolean;
   cursor: string | null;
   createdAt: string;
@@ -72,25 +77,52 @@ export class WebhooksStore {
     private readonly secretBox?: SecretBox,
   ) {}
 
+  /** The auth header is bound to its hook and owner: a sealed value copied to another row does not open. */
+  private static authAad(row: Pick<WebhookRow, "id" | "userId">): string {
+    return `webhook-auth|${row.userId}|${row.id}`;
+  }
+
+  private seal(plaintext: string, aad?: string): string {
+    return this.secretBox ? this.secretBox.encrypt(plaintext, aad) : plaintext;
+  }
+
+  /** A stored credential in the clear, or null (logged) when it cannot be opened. */
+  private unseal(stored: string, webhookId: string, aad?: string): string | null {
+    if (isEncryptedSecret(stored) && !this.secretBox) {
+      log.error("webhook credential is encrypted but WEBHOOK_ENCRYPTION_KEY is not set; skipping hook", undefined, { webhookId });
+      return null;
+    }
+    try {
+      return this.secretBox ? this.secretBox.decrypt(stored, aad) : stored;
+    } catch {
+      log.error("webhook credential failed to decrypt (wrong WEBHOOK_ENCRYPTION_KEY?); skipping hook", undefined, { webhookId });
+      return null;
+    }
+  }
+
+  private sealAuthHeader(row: Pick<WebhookRow, "id" | "userId">, header: WebhookAuthHeader): string {
+    return this.seal(JSON.stringify({ name: header.name, value: header.value }), WebhooksStore.authAad(row));
+  }
+
   /**
-   * Map a row to the domain object, decrypting the secret when needed. Returns
-   * null (and logs loudly) when a stored secret cannot be decrypted — e.g. the
-   * encryption key changed, or rows are encrypted but no key is configured.
-   * Failing closed here means we never deliver with a wrong/garbage signature.
+   * Map a row to the domain object, opening its credentials. Returns null (and
+   * logs loudly) when one cannot be opened, e.g. the encryption key changed or
+   * rows are encrypted but no key is configured. Failing closed here means we
+   * never deliver with a wrong signature or without the receiver's credential.
    */
   private rowToWebhook(row: WebhookRow): Webhook | null {
     let secret: string | undefined;
     if (row.secret !== null) {
-      if (isEncryptedSecret(row.secret) && !this.secretBox) {
-        log.error("webhook secret is encrypted but WEBHOOK_ENCRYPTION_KEY is not set; skipping hook", undefined, { webhookId: row.id });
-        return null;
-      }
-      try {
-        secret = this.secretBox ? this.secretBox.decrypt(row.secret) : row.secret;
-      } catch {
-        log.error("webhook secret failed to decrypt (wrong WEBHOOK_ENCRYPTION_KEY?); skipping hook", undefined, { webhookId: row.id });
-        return null;
-      }
+      const opened = this.unseal(row.secret, row.id);
+      if (opened === null) return null;
+      secret = opened;
+    }
+    let authHeader: WebhookAuthHeader | undefined;
+    if (row.authHeader !== null) {
+      const opened = this.unseal(row.authHeader, row.id, WebhooksStore.authAad(row));
+      if (opened === null) return null;
+      const parsed = JSON.parse(opened) as WebhookAuthHeader;
+      authHeader = { name: parsed.name, value: parsed.value };
     }
     return {
       id: row.id,
@@ -98,6 +130,7 @@ export class WebhooksStore {
       url: row.url,
       events: row.events,
       secret,
+      authHeader,
       active: row.active,
       cursor: row.cursor ?? undefined,
       createdAt: row.createdAt,
@@ -110,22 +143,20 @@ export class WebhooksStore {
       url: string;
       events: string[];
       secret?: string;
+      authHeader?: WebhookAuthHeader;
     },
   ): Promise<Webhook> {
     // Start the delivery cursor at "now" (with the max event id) so a new hook
     // receives future events only, not the entire historical backlog.
     const now = nowIso(this.clock);
+    const id = randomBytes(16).toString("hex");
     const record: WebhookRow = {
-      id: randomBytes(16).toString("hex"),
+      id,
       userId,
       url: input.url,
       events: normalizeEvents(input.events),
-      secret:
-        input.secret === undefined
-          ? null
-          : this.secretBox
-            ? this.secretBox.encrypt(input.secret)
-            : input.secret,
+      secret: input.secret === undefined ? null : this.seal(input.secret),
+      authHeader: input.authHeader ? this.sealAuthHeader({ id, userId }, input.authHeader) : null,
       active: true,
       cursor: formatCursor(now, MAX_ID),
       createdAt: now,
@@ -140,41 +171,48 @@ export class WebhooksStore {
       url: record.url,
       events: record.events,
       secret: input.secret,
+      authHeader: input.authHeader,
       active: record.active,
       cursor: record.cursor ?? undefined,
       createdAt: record.createdAt,
     };
   }
 
+  private async credentialRows(): Promise<Array<Pick<WebhookRow, "id" | "userId" | "secret" | "authHeader">>> {
+    return (await this.db
+      .select({ id: webhooks.id, userId: webhooks.userId, secret: webhooks.secret, authHeader: webhooks.authHeader })
+      .from(webhooks)
+      .where(or(isNotNull(webhooks.secret), isNotNull(webhooks.authHeader)))) as Array<
+      Pick<WebhookRow, "id" | "userId" | "secret" | "authHeader">
+    >;
+  }
+
   /**
    * One-time boot migration: when an encryption key is configured, re-encrypt
-   * any legacy plaintext secrets in place. Idempotent; returns rows updated.
+   * any legacy plaintext secrets and auth headers in place. Idempotent;
+   * returns rows updated.
    */
   async encryptLegacySecrets(): Promise<number> {
     if (!this.secretBox) return 0;
-    const rows = (await this.db
-      .select({ id: webhooks.id, secret: webhooks.secret })
-      .from(webhooks)
-      .where(isNotNull(webhooks.secret))) as Array<{ id: string; secret: string }>;
     let updated = 0;
-    for (const row of rows) {
-      if (isEncryptedSecret(row.secret)) continue;
-      await this.db
-        .update(webhooks)
-        .set({ secret: this.secretBox.encrypt(row.secret) })
-        .where(eq(webhooks.id, row.id));
+    for (const row of await this.credentialRows()) {
+      const set: Partial<Pick<WebhookRow, "secret" | "authHeader">> = {};
+      if (row.secret !== null && !isEncryptedSecret(row.secret)) set.secret = this.seal(row.secret);
+      if (row.authHeader !== null && !isEncryptedSecret(row.authHeader)) {
+        set.authHeader = this.seal(row.authHeader, WebhooksStore.authAad(row));
+      }
+      if (Object.keys(set).length === 0) continue;
+      await this.db.update(webhooks).set(set).where(eq(webhooks.id, row.id));
       updated += 1;
     }
     return updated;
   }
 
-  /** Whether any stored webhook has a (plaintext) secret — used for the boot warning. */
+  /** Whether any stored webhook has a plaintext secret or auth header — used for the boot warning. */
   async hasPlaintextSecrets(): Promise<boolean> {
-    const rows = (await this.db
-      .select({ secret: webhooks.secret })
-      .from(webhooks)
-      .where(isNotNull(webhooks.secret))) as Array<{ secret: string }>;
-    return rows.some((r) => !isEncryptedSecret(r.secret));
+    return (await this.credentialRows()).some(
+      (r) => (r.secret !== null && !isEncryptedSecret(r.secret)) || (r.authHeader !== null && !isEncryptedSecret(r.authHeader)),
+    );
   }
 
   /**
@@ -295,14 +333,15 @@ export class WebhooksStore {
   }
 
   /**
-   * Change an owned hook's event selection or pause it. Turning a paused hook
-   * back on moves its cursor to now, so it does not replay what happened while
-   * it was off. Returns the hook, or null when the user has no such hook.
+   * Change an owned hook's event selection, pause it, or replace or remove
+   * (null) its auth header. Turning a paused hook back on moves its cursor to
+   * now, so it does not replay what happened while it was off. Returns the
+   * hook, or null when the user has no such hook.
    */
   async update(
     userId: UserId,
     id: string,
-    patch: { events?: string[]; active?: boolean },
+    patch: { events?: string[]; active?: boolean; authHeader?: WebhookAuthHeader | null },
   ): Promise<Webhook | null> {
     const owned = and(eq(webhooks.userId, userId), eq(webhooks.id, id));
     const fresh = formatCursor(nowIso(this.clock), MAX_ID);
@@ -311,6 +350,9 @@ export class WebhooksStore {
       .set({
         ...(patch.events ? { events: normalizeEvents(patch.events) } : {}),
         ...(patch.active === undefined ? {} : { active: patch.active }),
+        ...(patch.authHeader === undefined
+          ? {}
+          : { authHeader: patch.authHeader === null ? null : this.sealAuthHeader({ id, userId }, patch.authHeader) }),
         // SET reads the row as it was, so this sees whether the hook was off.
         ...(patch.active
           ? { cursor: sql`CASE WHEN ${webhooks.active} THEN ${webhooks.cursor} ELSE ${fresh} END` }

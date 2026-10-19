@@ -236,6 +236,8 @@ export const webhooks = sqliteTable(
     // JSON array of PresenceEventType, or ["*"] for all events.
     events: text("events", { mode: "json" }).$type<string[]>().notNull(),
     secret: text("secret"),
+    /** JSON {name, value} sent as a request header on every delivery; sealed like `secret`. */
+    authHeader: text("auth_header"),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
     /** Delivery cursor: ISO createdAt of the last event delivered to this hook. */
     cursor: text("cursor"),

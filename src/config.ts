@@ -139,9 +139,10 @@ export interface Config {
     /** Allow webhook delivery to private/reserved IPs (LAN Home Assistant etc.). */
     allowPrivateTargets: boolean;
     /**
-     * Optional key used to encrypt webhook signing secrets at rest (AES-256-GCM;
-     * the key is derived from this string via SHA-256). When unset, secrets are
-     * stored as plaintext (with a startup warning if any hook has a secret).
+     * Optional key used to encrypt webhook signing secrets and auth headers at
+     * rest (AES-256-GCM; the key is derived from this string via SHA-256). When
+     * unset, they are stored as plaintext (with a startup warning if any hook
+     * has one).
      */
     encryptionKey?: string;
   };

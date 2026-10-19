@@ -75,11 +75,11 @@ ${RULE}
   if (config.webhooks.encryptionKey) {
     const migrated = await ctx.system.webhooks.encryptLegacySecrets();
     if (migrated > 0) {
-      log.info("encrypted legacy webhook secrets at rest", { count: migrated });
+      log.info("encrypted legacy webhook credentials at rest", { count: migrated });
     }
   } else if (await ctx.system.webhooks.hasPlaintextSecrets()) {
     log.warn(
-      "webhook signing secrets are stored as plaintext; set WEBHOOK_ENCRYPTION_KEY to encrypt them at rest",
+      "webhook signing secrets or auth headers are stored as plaintext; set WEBHOOK_ENCRYPTION_KEY to encrypt them at rest",
     );
   }
 

@@ -256,6 +256,7 @@ describe("migration 0009 on an install that ran the activity logs", () => {
       "0009_oauth_store",
       "0010_geo",
       "0011_presence_freshness_area",
+      "0012_webhook_auth_header",
     ]);
   });
 
@@ -274,5 +275,20 @@ describe("migration 0009 on an install that ran the activity logs", () => {
     expect(kept.rows.map((r) => ({ ...r }))).toEqual([{ id: "al1", credential_name: "Claude" }]);
     const tables = await ctx.handle.client.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'oauth_store'");
     expect(tables.rows).toHaveLength(1);
+  });
+});
+
+describe("migration 0012 on an install with webhooks", () => {
+  it("keeps each hook and its signing secret, with no auth header", async () => {
+    const handle = createDb(dbUrl);
+    await migrate(handle.db, { migrationsFolder: firstMigrations(12) });
+    await handle.client.execute({
+      sql: "INSERT INTO webhooks (id, user_id, url, events, secret, active, cursor, created_at) VALUES (?, ?, ?, ?, ?, 1, NULL, ?)",
+      args: ["h1", "default", "https://example.test/hook", '["*"]', "legacy-secret", new Date().toISOString()],
+    });
+    await migrate(handle.db, { migrationsFolder: migrationsFolder() });
+    const rows = await handle.client.execute("SELECT secret, auth_header FROM webhooks WHERE id = 'h1'");
+    expect(rows.rows[0]).toMatchObject({ secret: "legacy-secret", auth_header: null });
+    handle.client.close();
   });
 });
