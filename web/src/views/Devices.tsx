@@ -1,7 +1,8 @@
 /**
  * Connecting phones (OwnTracks by QR code, the iOS Shortcut by URL and
- * header) and agents (a token plus its MCP config). Secrets appear once, right
- * after creation; the lists show tokens without them.
+ * header) and agents (a token plus its MCP config, or an app connected by
+ * OAuth sign-in). Secrets appear once, right after creation; the lists show
+ * tokens without them.
  */
 
 import { Badge, type BadgeProps } from "@astryxdesign/core/Badge";
@@ -17,8 +18,8 @@ import { Timestamp } from "@astryxdesign/core/Timestamp";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
-import { qrFromSvg } from "../lib";
-import type { ApiToken, DeviceSummary, IngestEntry, IngestOutcome, Pairing } from "../model";
+import { hostOf, qrFromSvg } from "../lib";
+import type { ApiToken, ConnectedApp, DeviceSummary, IngestEntry, IngestOutcome, Pairing } from "../model";
 import { BearerHeader, Empty, Hint, Loaded, Page, Panel, Row, Rows, Secret, download, useAction, useConfirm, useFormat, useLoad, useNotify, usePaged } from "../ui";
 
 function useTokens(keep: (k: ApiToken) => boolean) {
@@ -293,6 +294,59 @@ function QrCode({ svg, label }: { svg: string; label: string }) {
   );
 }
 
+function ConnectedApps() {
+  const { t } = useApp();
+  const notify = useNotify();
+  const confirm = useConfirm();
+  const [apps, reload] = useLoad(() => api<{ grants: ConnectedApp[] }>("/v1/oauth/grants").then((r) => r.grants), []);
+  const disconnect = async (app: ConnectedApp, name: string) => {
+    if (!(await confirm({ title: t("agents.disconnectConfirm", { name }), action: t("common.revoke") }))) return;
+    try {
+      await api(`/v1/oauth/grants/${encodeURIComponent(app.id)}`, { method: "DELETE" });
+      notify.ok(t("toast.revoked"));
+    } catch (e) {
+      notify.fail(e);
+    }
+    await reload();
+  };
+  return (
+    <Panel title={t("agents.apps")}>
+      <Hint>{t("agents.appsDesc")}</Hint>
+      <Loaded state={apps}>
+        {(list) =>
+          list.length ? (
+            <Table
+              data={list.map((a) => ({ ...a, name: a.clientName ?? a.clientId }))}
+              idKey="id"
+              columns={[
+                { key: "name", header: t("agents.app") },
+                { key: "clientId", header: t("agents.appId"), renderCell: (a) => <Code>{hostOf(a.clientId) ?? a.clientId}</Code> },
+                { key: "scopes", header: t("agents.access"), renderCell: (a) => a.scopes.map((s) => t(`scope.${s}`)).join(", ") },
+                { key: "createdAt", header: t("agents.connected"), renderCell: (a) => <Timestamp value={a.createdAt} format="date" /> },
+                {
+                  key: "expiresAt",
+                  header: t("agents.expires"),
+                  renderCell: (a) => (a.expiresAt ? <Timestamp value={a.expiresAt} format="date" /> : null),
+                },
+                {
+                  key: "actions",
+                  header: "",
+                  align: "end",
+                  renderCell: (a) => (
+                    <Button label={t("common.revoke")} variant="destructive" size="sm" clickAction={() => disconnect(a, a.name)} />
+                  ),
+                },
+              ]}
+            />
+          ) : (
+            <Empty text={t("agents.appsEmpty")} />
+          )
+        }
+      </Loaded>
+    </Panel>
+  );
+}
+
 export function AgentsView() {
   const { t } = useApp();
   const [tokens, reload] = useTokens((k) => k.role !== "device");
@@ -338,6 +392,7 @@ export function AgentsView() {
           ) : null}
         </VStack>
       </Panel>
+      <ConnectedApps />
       <Panel title={t("agents.list")}>
         <Loaded state={tokens}>{(list) => <TokenTable tokens={list} emptyText={t("agents.empty")} onChanged={reload} />}</Loaded>
       </Panel>

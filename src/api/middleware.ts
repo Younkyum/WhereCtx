@@ -25,7 +25,7 @@ import type { AppContext } from "../app/context.js";
 import {
   resolveSessionPrincipal,
   resolveTokenPrincipal,
-  type Principal,
+  type RestPrincipal,
 } from "../auth/principal.js";
 import { hasFreshAuth } from "../accounts/types.js";
 import type { TokenScope } from "../types.js";
@@ -68,7 +68,7 @@ async function authenticateRequest(
   ctx: AppContext,
   c: Context,
   deviceCredentials: boolean,
-): Promise<Principal | Response> {
+): Promise<RestPrincipal | Response> {
   const presented = presentedCredential(c, deviceCredentials);
   if (presented.via === "token") {
     return (

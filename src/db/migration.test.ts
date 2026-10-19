@@ -42,6 +42,7 @@ function config(defaultUserId: string): WhereCtxConfig {
     webhooks: { allowPrivateTargets: true },
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
+    oauth: { dynamicRegistration: false },
     activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
   };
 }
@@ -239,5 +240,35 @@ describe("migration 0005 on a phase-1 install", () => {
     expect(await ownership(ctx)).toEqual([
       { user: "carol", ws: expect.any(String), name: "Default", role: "owner" },
     ]);
+  });
+});
+
+describe("migration 0009 on an install that ran the activity logs", () => {
+  const ACTIVITY_LOG_MIGRATIONS = 9;
+
+  it("comes after 0007_access_log and 0008_ingest_log", () => {
+    const journal = JSON.parse(readFileSync(join(migrationsFolder(), "meta", "_journal.json"), "utf8"));
+    expect(journal.entries.slice(7).map((e: { tag: string }) => e.tag)).toEqual([
+      "0007_access_log",
+      "0008_ingest_log",
+      "0009_oauth_store",
+    ]);
+  });
+
+  it("adds oauth_store and keeps the access log", async () => {
+    const handle = createDb(dbUrl);
+    await migrate(handle.db, { migrationsFolder: firstMigrations(ACTIVITY_LOG_MIGRATIONS) });
+    const now = new Date().toISOString();
+    await handle.client.execute({
+      sql: "INSERT INTO access_log (id, user_id, credential_kind, credential_id, credential_name, surface, action, precise, outcome, created_at, last_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      args: ["al1", "alice", "token", "tok1", "Claude", "mcp", "get_presence", 0, "allowed", now, now],
+    });
+    handle.client.close();
+
+    const { ctx } = await boot("alice");
+    const kept = await ctx.handle.client.execute("SELECT id, credential_name FROM access_log");
+    expect(kept.rows.map((r) => ({ ...r }))).toEqual([{ id: "al1", credential_name: "Claude" }]);
+    const tables = await ctx.handle.client.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'oauth_store'");
+    expect(tables.rows).toHaveLength(1);
   });
 });

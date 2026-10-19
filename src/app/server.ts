@@ -1,6 +1,7 @@
 /**
  * HTTP application assembly. Mounts every REST router plus health/info routes
- * onto a single Hono app. The MCP endpoint is mounted separately in Phase 4.
+ * onto a single Hono app. The MCP endpoint and the OAuth protocol endpoints
+ * are routed beside it (app/listener.ts).
  */
 
 import { Hono } from "hono";
@@ -8,6 +9,7 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
+import { SECURE_HEADERS_OPTIONS } from "./securityHeaders.js";
 import { RateLimiter, authFailureGuard } from "../api/rateLimit.js";
 import { authenticate, sessionAuth } from "../api/middleware.js";
 import { auditAccess, restActionOf } from "../api/accessAudit.js";
@@ -25,6 +27,7 @@ import { privacyRouter } from "../api/privacy.js";
 import { tokensRouter } from "../api/tokens.js";
 import { devicesRouter } from "../api/devices.js";
 import { webhooksRouter } from "../api/webhooks.js";
+import { oauthGrantsRouter, oauthRouter } from "../oauth/http.js";
 import { activityRouter } from "../api/activity.js";
 import { adminRouter } from "../api/admin.js";
 import { log } from "../util/log.js";
@@ -44,26 +47,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
 
   // Security headers (defense-in-depth on the admin dashboard especially): CSP,
   // nosniff, frame-deny, no referrer leakage (review finding D3).
-  app.use(
-    "*",
-    secureHeaders({
-      contentSecurityPolicy: {
-        defaultSrc: ["'self'"],
-        scriptSrc: ["'self'"], // dashboard JS is a built file under /dashboard/assets/ (M5)
-        // The design system adds a few <style> elements at runtime (overlay
-        // motion, code highlighting), so inline styles stay allowed.
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        imgSrc: ["'self'"],
-        connectSrc: ["'self'"],
-        frameAncestors: ["'none'"],
-        baseUri: ["'none'"],
-        formAction: ["'self'"],
-      },
-      xFrameOptions: "DENY",
-      xContentTypeOptions: "nosniff",
-      referrerPolicy: "no-referrer",
-    }),
-  );
+  app.use("*", secureHeaders(SECURE_HEADERS_OPTIONS));
 
   // Cap request bodies well above any legitimate payload (ingest/admin bodies
   // are tiny) to close the OOM/DoS vector on an internet-exposed bind (P8).
@@ -96,6 +80,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   app.get("/healthz", (c) => c.json({ status: "ok" }));
 
   app.route("/", dashboardRouter(options.dashboardDir));
+  app.route("/", oauthRouter(ctx));
 
   // Auth is mounted here, the one REST place holding the full context; routers
   // get only the user scope `authenticate` attaches (from a token or a session
@@ -117,6 +102,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   mountSession("/v1/workspaces", workspacesRouter());
   mountSession("/v1/shares", sharesRouter());
   mountSession("/v1/people", peopleRouter());
+  mountSession("/v1/oauth", oauthGrantsRouter());
   // Device clients (Shortcut/OwnTracks) may pass the token via ?token= or Basic
   // auth on ingest only. Ingest keeps its own log (ingest_log), not this one.
   app.use("/v1/ingest/*", authenticate(ctx, { deviceCredentials: true }));

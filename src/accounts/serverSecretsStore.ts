@@ -1,17 +1,27 @@
 /**
  * Per-install secrets kept in the database, so every instance sharing it
- * agrees: the key that signs WebAuthn ceremony state, and the hash of the
- * first-owner setup code.
+ * agrees: the key that signs WebAuthn ceremony state, the OAuth server's token
+ * signing key and cookie key, and the hash of the first-owner setup code.
  */
 
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
+import type { JWK } from "oidc-provider";
 import { eq } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { serverSecrets } from "../db/schema.js";
 import { nowIso, type Clock, systemClock } from "../util/time.js";
 
 const CEREMONY_KEY = "ceremony_key";
+const OAUTH_SIGNING_KEY = "oauth_signing_jwk";
+const OAUTH_COOKIE_KEY = "oauth_cookie_key";
 const SETUP_CODE_HASH = "setup_code_hash";
+
+export interface OAuthKeys {
+  /** Private JWK the authorization server signs with (published at /oauth/jwks). */
+  signingKey: JWK;
+  /** Signs the authorization server's cookies. */
+  cookieKey: string;
+}
 
 export class ServerSecretsStore {
   constructor(
@@ -19,21 +29,21 @@ export class ServerSecretsStore {
     private readonly clock: Clock = systemClock,
   ) {}
 
-  /**
-   * The ceremony signing key, created on first boot. Insert-if-absent then
-   * read, so instances booting together converge on one key.
-   */
+  /** The ceremony signing key, created on first boot. */
   async ceremonyKey(): Promise<Buffer> {
-    await this.db
-      .insert(serverSecrets)
-      .values({
-        name: CEREMONY_KEY,
-        value: randomBytes(32).toString("base64url"),
-        createdAt: nowIso(this.clock),
-      })
-      .onConflictDoNothing();
-    const value = await this.get(CEREMONY_KEY);
-    return Buffer.from(value!, "base64url");
+    const value = await this.getOrCreate(CEREMONY_KEY, () => randomBytes(32).toString("base64url"));
+    return Buffer.from(value, "base64url");
+  }
+
+  /** The OAuth server's keys, created on first boot. */
+  async oauthKeys(): Promise<OAuthKeys> {
+    const jwk = await this.getOrCreate(OAUTH_SIGNING_KEY, () =>
+      JSON.stringify(
+        generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ format: "jwk" }),
+      ),
+    );
+    const cookieKey = await this.getOrCreate(OAUTH_COOKIE_KEY, () => randomBytes(32).toString("base64url"));
+    return { signingKey: JSON.parse(jwk) as JWK, cookieKey };
   }
 
   setupCodeHash(): Promise<string | null> {
@@ -51,6 +61,17 @@ export class ServerSecretsStore {
 
   async clearSetupCode(): Promise<void> {
     await this.db.delete(serverSecrets).where(eq(serverSecrets.name, SETUP_CODE_HASH));
+  }
+
+  /** Insert-if-absent then read, so instances booting together converge on one value. */
+  private async getOrCreate(name: string, make: () => string): Promise<string> {
+    const stored = await this.get(name);
+    if (stored !== null) return stored;
+    await this.db
+      .insert(serverSecrets)
+      .values({ name, value: make(), createdAt: nowIso(this.clock) })
+      .onConflictDoNothing();
+    return (await this.get(name))!;
   }
 
   private async get(name: string): Promise<string | null> {

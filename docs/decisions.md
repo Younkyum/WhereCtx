@@ -8,7 +8,7 @@ have one reference. It started by resolving the plan's "Open Questions"
 
 | # | Question | Decision |
 |---|----------|----------|
-| 1 | Node.js or Bun? | **Node.js** (>=20). Broadest self-hosting compatibility; libsql prebuilds avoid native compilation. |
+| 1 | Node.js or Bun? | **Node.js** (`^22.12 \|\| >=24`). Broadest self-hosting compatibility; libsql prebuilds avoid native compilation. |
 | 2 | MCP transport? | **Streamable HTTP** for v0.1 (the plan's config examples advertise a URL). stdio can be added later. |
 | 3 | Precise approval interactive vs static? | **Static policy only** in v0.1 (`ALLOW_PRECISE_TO_AGENT`, `PRECISE_REQUIRES_REASON`). Interactive approval is v0.2. |
 | 4 | Store raw history by default? | **No.** `STORE_RAW_HISTORY=false`. Presence-first philosophy. |
@@ -243,7 +243,8 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
   delivery stays at-least-once. Shutdown aborts in-flight requests, which
   leave their cursors in place, and waits for drains before closing the DB.
 - **MCP stays on bearer tokens.** Each token belongs to one person. OAuth 2.1
-  for MCP clients is a later step.
+  for MCP clients is a later step (done, see "OAuth 2.1 for MCP clients"
+  below).
 
 ## 2026-10-18: activity logs and the server log
 
@@ -301,3 +302,63 @@ avoided (different format → broken `updatedAgoSec` math and lexical sorting).
   read, so pausing, resuming or unsubscribing during a delivery cannot
   replay or over-deliver.
 
+## 2026-10-18: OAuth 2.1 for MCP clients
+
+- **The authorization server is embedded and runs on oidc-provider.** A remote
+  MCP client such as Claude should connect without a pasted token, and the MCP
+  spec (revision 2026-07-28) needs an OAuth 2.1 server for that. Writing the
+  protocol by hand was ruled out: PKCE, code replay, refresh rotation, and
+  RFC 9207 `iss` are easy to get subtly wrong. An external server (Keycloak,
+  Authentik) would add a second service and its own account database to a
+  household install. oidc-provider is certified, ships Client ID Metadata
+  Documents, and stores everything through one adapter over our database
+  (`oauth_store`).
+- **Clients register with Client ID Metadata Documents. Dynamic registration
+  is off.** The spec deprecates dynamic registration, and it lets anyone write
+  client rows. `OAUTH_DYNAMIC_REGISTRATION=true` turns it back on for older
+  clients.
+- **An OAuth token is a third kind of `Principal`.** `via: "oauth"` carries the
+  grant and the client next to the user. Tokens and sessions keep their
+  meaning, and the MCP tools still see only `ctx.forUser(userId)`, so an OAuth
+  token reaches its owner's presence and nothing of anyone else's.
+- **Access tokens are opaque and short.** They last 10 minutes and are looked
+  up in the database on each `/mcp` request. That costs a read per request,
+  but revoking an app takes effect at once, with no window where a signed JWT
+  still works. Each token's audience is `<BASE_URL>/mcp`. `/mcp` checks it,
+  and REST never accepts OAuth tokens.
+- **Consent is asked every time, and precise location is opt-in.** The scope
+  registry (`src/oauth/scopes.ts`) has two scopes: `presence:read` and
+  `location:precise`. The person can drop precise location on the consent
+  screen. The privacy settings still gate it after that. Asking every time
+  follows the spec's advice not to redirect to a client automatically. The
+  consent screen is part of the dashboard, so it uses the existing passkey
+  sign-in.
+- **Bearer tokens stay.** Agent and admin tokens keep working on `/mcp`, for
+  clients that cannot do OAuth. A secret is first looked up as a WhereCtx
+  token, then as an OAuth token.
+- **The runtime moves to Node 22.** oidc-provider 9 supports Node 22 LTS and
+  later. Node 24 is still avoided for the NAS reason in the `Dockerfile`.
+- **Endpoints follow `BASE_URL`, never the request.** Every request reaches
+  oidc-provider with `X-Forwarded-Proto` and `X-Forwarded-Host` overwritten
+  from `BASE_URL`, and the provider always trusts them. Discovery, redirects
+  back from consent, and the `Secure` flag on its cookies therefore match
+  `BASE_URL` whatever `Host` header or proxy setup a request comes through.
+  `TRUST_PROXY` still only decides which header carries the client IP.
+- **Consent needs a fresh passkey proof.** Allowing an app mints a 30-day
+  credential, the same as `POST /v1/tokens`, so a stolen session cookie alone
+  is not enough. A person holds at most one grant per client: consenting again
+  revokes the earlier grant and every token issued under it.
+- **Losing a device ends connected apps too.** Recovery, an operator access
+  code, deleting a passkey, replacing recovery codes, and signing out
+  everywhere else end every other session. They now also revoke every OAuth
+  grant of the person.
+- **An OAuth client's calls are access-logged like a token's.** The access
+  log answers "which agent read my location", and a connected app is an
+  agent. Its credential is the grant (kind `oauth`), named after the client
+  name it registered, else its `client_id` host. Every `tools/call` and the
+  `insufficient_scope` refusal write a row. The unauthenticated `/oauth/*`
+  and `/.well-known/*` endpoints carry no credential, so they are not; nor is
+  revoking a connected app, which only a session can do.
+- **The OAuth migration is `0009_oauth_store`.** The activity logs merged
+  first and took 0007 and 0008, so the OAuth table was regenerated after
+  them. Neither branch had reached production.

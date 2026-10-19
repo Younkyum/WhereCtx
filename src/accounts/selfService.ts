@@ -8,7 +8,8 @@
  * otherwise POST /v1/me/reauth). A stolen session cookie alone cannot take
  * over the account by planting a passkey or reading out fresh recovery codes.
  * Deleting a passkey or replacing recovery codes also ends every other
- * session, since both are what someone does after losing a device.
+ * session and OAuth grant, since both are what someone does after losing a
+ * device; so does signing out everywhere else.
  */
 
 import type {
@@ -37,7 +38,7 @@ import {
 } from "./types.js";
 import type { UsersStore } from "./usersStore.js";
 import type { WorkspacesStore } from "./workspacesStore.js";
-import { DEFAULT_PASSKEY_NAME, type CeremonyStart } from "./authService.js";
+import { DEFAULT_PASSKEY_NAME, endOtherAccess, type CeremonyStart, type OAuthGrants } from "./authService.js";
 
 export interface Profile {
   user: User;
@@ -52,6 +53,7 @@ export interface SelfServiceDeps {
   passkeys: PasskeysStore;
   sessions: SessionsStore;
   recovery: RecoveryStore;
+  oauthGrants: OAuthGrants;
   ceremonies: Ceremonies;
   webauthn: PasskeyCeremony;
   clock?: Clock;
@@ -172,7 +174,7 @@ export class SelfService {
     if (outcome === "last_passkey") {
       return fail("last_passkey", "cannot delete your only passkey; add another first");
     }
-    await this.deps.sessions.revokeOthers(actor.userId, actor.sessionId);
+    await endOtherAccess(this.deps, actor.userId, actor.sessionId);
     return ok(undefined);
   }
 
@@ -181,7 +183,7 @@ export class SelfService {
     const fresh = this.requireFreshAuth(actor);
     if (!fresh.ok) return fresh;
     const codes = await this.deps.recovery.regenerate(actor.userId);
-    await this.deps.sessions.revokeOthers(actor.userId, actor.sessionId);
+    await endOtherAccess(this.deps, actor.userId, actor.sessionId);
     return ok(codes);
   }
 
@@ -193,9 +195,9 @@ export class SelfService {
       : fail("not_found", "session not found");
   }
 
-  /** Sign out everywhere else; returns how many sessions ended. */
+  /** Sign out everywhere else, connected apps included; returns how many sessions ended. */
   revokeOtherSessions(actor: Actor): Promise<number> {
-    return this.deps.sessions.revokeOthers(actor.userId, actor.sessionId);
+    return endOtherAccess(this.deps, actor.userId, actor.sessionId);
   }
 
   private requireFreshAuth(actor: Actor): Result<void> {

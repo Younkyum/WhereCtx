@@ -449,6 +449,38 @@ export const usedNonces = sqliteTable(
   }),
 );
 
+/**
+ * Everything the OAuth authorization server (oidc-provider) persists: grants,
+ * codes, access and refresh tokens, interactions, its own sessions, and
+ * dynamically registered clients, one row per `model` + `id`. `payload` is the
+ * library's own JSON; the other columns copy the fields it looks rows up by.
+ * Times are epoch milliseconds, the library's own clock.
+ */
+export const oauthStore = sqliteTable(
+  "oauth_store",
+  {
+    model: text("model").notNull(),
+    id: text("id").notNull(),
+    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    grantId: text("grant_id"),
+    uid: text("uid"),
+    userCode: text("user_code"),
+    accountId: text("account_id"),
+    /** Grants only: the client's name at consent, so listing needs no metadata fetch. */
+    clientName: text("client_name"),
+    expiresAt: integer("expires_at"),
+    consumedAt: integer("consumed_at"),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.model, t.id] }),
+    grantIdx: index("oauth_store_grant_idx").on(t.grantId),
+    uidIdx: index("oauth_store_uid_idx").on(t.model, t.uid),
+    userCodeIdx: index("oauth_store_user_code_idx").on(t.model, t.userCode),
+    accountIdx: index("oauth_store_account_idx").on(t.model, t.accountId),
+    expiresIdx: index("oauth_store_expires_idx").on(t.expiresAt),
+  }),
+);
+
 export const schema = {
   tokens,
   places,
@@ -471,6 +503,7 @@ export const schema = {
   accessCodes,
   serverSecrets,
   usedNonces,
+  oauthStore,
 };
 
 // NOTE: all timestamp columns store app-generated ISO-8601 strings

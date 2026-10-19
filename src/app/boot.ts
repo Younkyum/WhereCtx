@@ -1,20 +1,19 @@
 /**
  * The server's startup sequence, from a loaded config to a listening
  * http.Server: build the context, print the boot banners, wire the webhook
- * dispatcher and the sweeps, and route /mcp to the MCP transport and
- * everything else to the Hono app. `close` undoes it in order.
+ * dispatcher and the sweeps, and serve the composed listener (app/listener.ts:
+ * /mcp, the OAuth protocol endpoints, and the Hono app). `close` undoes it in order.
  */
 
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { getRequestListener } from "@hono/node-server";
 import type { WhereCtxConfig } from "../config.js";
 import { RateLimiter } from "../api/rateLimit.js";
 import { passkeyBaseUrlProblem } from "../accounts/passkeys.js";
 import { createAppContext, closeAppContext, type AppContext, type AppContextOptions } from "./context.js";
-import { buildApp, type BuildAppOptions } from "./server.js";
+import type { BuildAppOptions } from "./server.js";
+import { createListener } from "./listener.js";
 import { pruneOnce } from "./prune.js";
-import { mcpNodeHandler } from "../mcp/http.js";
 import { WebhookDispatcher } from "../webhooks/dispatcher.js";
 import { log } from "../util/log.js";
 
@@ -113,27 +112,9 @@ ${RULE}
   pruneSweep.unref?.();
 
   // One shared limiter so REST and MCP auth failures count together.
-  const authLimiter = new RateLimiter();
-  const app = buildApp(ctx, { authLimiter, dashboardDir: options.dashboardDir });
-  const honoListener = getRequestListener(app.fetch);
-  const mcp = mcpNodeHandler(ctx, authLimiter);
-
-  const server = createServer((req, res) => {
-    // Match on the parsed pathname so query strings / encodings don't confuse
-    // the /mcp vs Hono split. The MCP handler authenticates independently, so a
-    // miss falling through to Hono is fail-safe (404, no auth bypass).
-    let pathname = req.url ?? "";
-    try {
-      pathname = new URL(req.url ?? "", "http://localhost").pathname;
-    } catch {
-      /* keep raw */
-    }
-    if (pathname === "/mcp") {
-      void mcp(req, res);
-      return;
-    }
-    honoListener(req, res);
-  });
+  const server = createServer(
+    createListener(ctx, { authLimiter: new RateLimiter(), dashboardDir: options.dashboardDir }),
+  );
 
   await new Promise<void>((resolve) => server.listen(config.port, config.host, resolve));
   const port = (server.address() as AddressInfo).port;

@@ -76,6 +76,26 @@ export interface ClientInfo {
   priorSession?: string;
 }
 
+/** Ends a person's OAuth grants (oauth/store.ts), for when their credentials may be lost. */
+export interface OAuthGrants {
+  revokeAllFor(userId: UserId): Promise<void>;
+}
+
+/**
+ * Whoever may hold this person's lost credentials loses every way in except
+ * the session `keep`: the other sessions and every connected MCP app. Returns
+ * how many sessions ended.
+ */
+export async function endOtherAccess(
+  deps: { sessions: SessionsStore; oauthGrants: OAuthGrants },
+  userId: UserId,
+  keep: SessionId,
+): Promise<number> {
+  const ended = await deps.sessions.revokeOthers(userId, keep);
+  await deps.oauthGrants.revokeAllFor(userId);
+  return ended;
+}
+
 export interface InvitePreview {
   workspaceName: string;
   role: WorkspaceRole;
@@ -91,6 +111,7 @@ export interface AuthDeps {
   accessCodes: AccessCodesStore;
   serverSecrets: ServerSecretsStore;
   settings: SettingsStore;
+  oauthGrants: OAuthGrants;
   ceremonies: Ceremonies;
   webauthn: PasskeyCeremony;
   /** Receives the setup passkey. */
@@ -254,14 +275,14 @@ export class PasskeyAuth {
 
   /**
    * Sign in with a recovery code. Whoever lost their passkeys may have lost
-   * them to someone else, so every other session of the account ends.
+   * them to someone else, so every other session and OAuth grant ends.
    */
   async recover(code: string, client: ClientInfo): Promise<Result<SignedIn>> {
     const parsed = parseRecoveryCode(code);
     const userId = parsed && (await this.deps.recovery.consume(parsed));
     if (!userId) return fail("unauthorized", "invalid recovery code");
     const signedIn = await this.signIn(userId, client);
-    await this.deps.sessions.revokeOthers(userId, signedIn.sessionId);
+    await endOtherAccess(this.deps, userId, signedIn.sessionId);
     return ok(signedIn);
   }
 
@@ -276,7 +297,8 @@ export class PasskeyAuth {
 
   /**
    * Register a passkey with an operator-issued access code. Like recovery, it
-   * ends the account's other sessions; it also replaces its recovery codes.
+   * ends the account's other sessions and OAuth grants; it also replaces its
+   * recovery codes.
    */
   async accessCodeVerify(
     code: string,
@@ -298,7 +320,7 @@ export class PasskeyAuth {
     });
     if (!redeemed) return fail("unauthorized", "invalid access code");
     const enrolled = await this.enroll(userId, client);
-    await this.deps.sessions.revokeOthers(userId, enrolled.sessionId);
+    await endOtherAccess(this.deps, userId, enrolled.sessionId);
     return ok(enrolled);
   }
 

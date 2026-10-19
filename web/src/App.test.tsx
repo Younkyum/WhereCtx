@@ -148,6 +148,126 @@ describe("dashboard app", () => {
     expect(host.textContent).toContain("Sign in to WhereCtx");
   });
 
+  const CONSENT_REQUEST = {
+    client: { id: "https://client.example/meta.json", name: "Test Agent", uri: "https://agent-site.example" },
+    redirectUri: "http://127.0.0.1:9876/cb",
+    redirectHost: "127.0.0.1:9876",
+    localhostOnly: true,
+    requestedScopes: ["presence:read", "location:precise"],
+    resource: "https://where.example.com/mcp",
+  };
+
+  it("shows a pending authorization's consent screen and confirms after a passkey step-up", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", Object.assign(new URL(location.href), { hash: "#authorize/u1", assign }));
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /oauth/interaction/u1/details", () => ({ status: 200, body: CONSENT_REQUEST }));
+    let reauthed = false;
+    route("POST /v1/me/reauth/options", () => ({ status: 200, body: { ceremony: "c1", options: { challenge: "AQID" } } }));
+    route("POST /v1/me/reauth/verify", () => {
+      reauthed = true;
+      return { status: 200, body: { ok: true } };
+    });
+    const confirmed: unknown[] = [];
+    route("POST /oauth/interaction/u1/confirm", (body) => {
+      confirmed.push(body);
+      return reauthed
+        ? { status: 200, body: { redirectTo: "https://where.example.com/oauth/authorize/u1" } }
+        : { status: 403, body: { error: "confirm with your passkey first", code: "reauth_required" } };
+    });
+
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.querySelector("h1")?.textContent).toBe("Connect Test Agent?");
+    expect(host.textContent).toContain("Verified app ID");
+    expect(host.textContent).toContain("client.example");
+    expect(host.textContent).toContain("Website (the app's claim)");
+    expect(host.textContent).toContain("agent-site.example");
+    expect(host.textContent).toContain("127.0.0.1:9876");
+    expect(host.textContent).toContain(ME.user.displayName);
+    expect(host.querySelector("img")).toBeNull();
+    expect(host.textContent).toContain("This app runs on a computer, not a website");
+    expect(host.textContent).toContain("Create location reminders, and new places other than home");
+    const checkbox = host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(checkbox.checked).toBe(false);
+    await act(async () => checkbox.click());
+
+    await act(async () => button("Allow").click());
+    await settle();
+    expect(calls).toContain("POST /v1/me/reauth/verify");
+    expect(confirmed).toEqual([{ precise: true }, { precise: true }]);
+    expect(assign).toHaveBeenCalledWith("https://where.example.com/oauth/authorize/u1");
+  });
+
+  it("lists only what the requested scopes allow", async () => {
+    vi.stubGlobal("location", Object.assign(new URL(location.href), { hash: "#authorize/u1", assign: vi.fn() }));
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /oauth/interaction/u1/details", () => ({
+      status: 200,
+      body: { ...CONSENT_REQUEST, requestedScopes: ["location:precise"] },
+    }));
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.textContent).not.toContain("See your presence");
+    expect(host.textContent).toContain("Also allow precise location");
+  });
+
+  it("shows an answered or expired authorization as expired and disables Allow", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", Object.assign(new URL(location.href), { hash: "#authorize/u1", assign }));
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /oauth/interaction/u1/details", () => ({ status: 200, body: CONSENT_REQUEST }));
+    route("POST /oauth/interaction/u1/confirm", () => ({
+      status: 404,
+      body: { error: "expired", code: "interaction_expired" },
+    }));
+    await act(async () => root.render(<App />));
+    await settle();
+    await act(async () => button("Allow").click());
+    await settle();
+    expect(host.textContent).toContain("This request expired or was started in another browser.");
+    expect(button("Allow").disabled).toBe(true);
+    expect(button("Deny").disabled).toBe(true);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("lists connected apps on the Agents screen and disconnects one after confirmation", async () => {
+    let grants = [
+      {
+        id: "g1",
+        clientId: "https://client.example/meta.json",
+        clientName: "Test Agent",
+        scopes: ["presence:read"],
+        createdAt: "2026-10-18T00:00:00.000Z",
+        expiresAt: "2026-11-17T00:00:00.000Z",
+      },
+    ];
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/tokens", () => ({ status: 200, body: { tokens: [] } }));
+    route("GET /v1/oauth/grants", () => ({ status: 200, body: { grants } }));
+    route("DELETE /v1/oauth/grants/g1", () => {
+      grants = [];
+      return { status: 200, body: { ok: true } };
+    });
+    location.hash = "#agents";
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.textContent).toContain("Connected apps");
+    expect(host.textContent).toContain("Test Agent");
+    expect(host.textContent).toContain("client.example");
+
+    await act(async () => button("Revoke").click());
+    await settle();
+    const dialog = document.querySelector('[role="alertdialog"]');
+    expect(dialog?.textContent).toContain('Disconnect "Test Agent"?');
+    const confirmButton = [...dialog!.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Revoke")!;
+    await act(async () => confirmButton.click());
+    await settle();
+    expect(calls).toContain("DELETE /v1/oauth/grants/g1");
+    expect(host.textContent).toContain("No connected apps yet.");
+    location.hash = "";
+  });
+
   it("on plain http, links the passkey warning to the README section that explains it", async () => {
     vi.stubGlobal("isSecureContext", false);
     route("GET /v1/me", () => ({ status: 401, body: { error: "unauthorized" } }));

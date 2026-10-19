@@ -147,7 +147,7 @@ gives a viewer no history.
 
 | Log | What a row holds | Kept | Who can read it |
 |-----|------------------|------|-----------------|
-| Access log (`access_log`) | Every token request to the person's `/v1` routes (all but ingest and sign-in: presence, places, events, privacy, webhooks, tokens, devices, and token attempts at account, activity and admin routes) and every MCP tool call, refused calls included. The token's id and name, REST or MCP, the action (never a raw path or tool name), whether it sought coordinates, the reason given for a precise request, the outcome (allowed, denied, hidden, error) and why it was denied. Identical requests within a minute share a row with a count. No coordinates. The reason and denial go through the same redaction as an ingest rejection. | `ACCESS_LOG_RETENTION_DAYS`, default 90 days | The person, signed in (Agent access view, `GET /v1/activity/access`). No token can read it. |
+| Access log (`access_log`) | Every token request to the person's `/v1` routes (all but ingest and sign-in: presence, places, events, privacy, webhooks, tokens, devices, and token attempts at account, activity and admin routes) and every MCP tool call, refused calls included, from a token or a connected OAuth app. The token's id and name (for an app, its grant id and client name), REST or MCP, the action (never a raw path or tool name), whether it sought coordinates, the reason given for a precise request, the outcome (allowed, denied, hidden, error) and why it was denied. Identical requests within a minute share a row with a count. No coordinates. The reason and denial go through the same redaction as an ingest rejection. | `ACCESS_LOG_RETENTION_DAYS`, default 90 days | The person, signed in (Agent access view, `GET /v1/activity/access`). No token can read it. |
 | Ingest log (`ingest_log`) | Every authenticated upload from a device: which token (none for the dashboard's "share now"), which route, accepted, rejected, ignored or a server error, and why. No coordinates: the table has no column for them, and a rejection message is redacted before it is stored. | `INGEST_LOG_RETENTION_DAYS`, default 7 days | The person, signed in (Devices view, `GET /v1/activity/ingest`, and the summary in `GET /v1/devices`). |
 | Share audit (`share_audit`) | Grants, changes, revokes, and who viewed the person's precise location. | `SHARE_AUDIT_RETENTION_DAYS`, default 365 days | The person (`GET /v1/shares/audit`). |
 | Server log | What the server reports: errors, webhook failures, boot notices. Written through one logger that redacts as it writes (see below). | stdout/stderr (for `docker logs`) as long as the host keeps them; the last 1000 entries in memory until restart | The operator (the `USER_ID` person) in the Server logs view, `GET /v1/admin/logs`. Nobody else, no token. |
@@ -202,9 +202,12 @@ secrets are encrypted at rest when `WEBHOOK_ENCRYPTION_KEY` is set.
 
 People sign in with passkeys that require user verification (biometric or
 PIN). The server stores only SHA-256 hashes of session cookies, recovery
-codes, setup codes, and access codes. Adding or deleting a passkey, replacing
-recovery codes, minting a token, and sharing more all need a passkey proof
-from the last 10 minutes. See [decisions.md](decisions.md#accounts-workspaces-passkeys).
+codes, setup codes, access codes, and OAuth authorization codes, access
+tokens, and refresh tokens. Adding or deleting a passkey, replacing recovery
+codes, minting a token, connecting an MCP app, and sharing more all need a
+passkey proof from the last 10 minutes. Signing in with a recovery code or an
+access code, deleting a passkey, replacing recovery codes, and signing out
+everywhere else also revoke every connected MCP app. See [decisions.md](decisions.md#accounts-workspaces-passkeys).
 
 ## Deployment posture
 

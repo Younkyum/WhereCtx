@@ -57,6 +57,18 @@ describe("dashboard helpers", () => {
     expect(lib.parseInviteHash("#invite=%E0%A4%A")).toBeNull();
   });
 
+  it("reads the host of a URL, and nothing from a non-URL", () => {
+    expect(lib.hostOf("https://client.example/about")).toBe("client.example");
+    expect(lib.hostOf("not a url")).toBeNull();
+  });
+
+  it("reads a pending authorization from the fragment only", () => {
+    expect(lib.parseAuthorizeHash("#authorize/abc_DEF-123")).toBe("abc_DEF-123");
+    expect(lib.parseAuthorizeHash("#authorize/")).toBeNull();
+    expect(lib.parseAuthorizeHash("#authorize/a/b")).toBeNull();
+    expect(lib.parseAuthorizeHash("#home")).toBeNull();
+  });
+
   it("maps ages, statuses and errors to i18n keys", () => {
     expect(lib.ageParts(0)).toEqual(["age.now", 0]);
     expect(lib.ageParts(59)).toEqual(["age.min", 59]);

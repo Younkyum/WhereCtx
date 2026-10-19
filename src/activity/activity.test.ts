@@ -130,9 +130,39 @@ describe("REST access log", () => {
       expect(unique, `${route} is no longer mounted`).toContain(route);
       expect(actions).toContain(action);
     }
-    const account = unique.filter((r) => /^\S+ \/v1\/(me|workspaces|shares|people)\b/.test(r));
+    const account = unique.filter((r) => /^\S+ \/v1\/(me|workspaces|shares|people|oauth)\b/.test(r));
     expect(actions.filter((a: string) => a === "account")).toHaveLength(account.length);
     expect(unique.filter((r) => !account.includes(r) && !(r in REST_ACTIONS))).toEqual([]);
+  });
+
+  it("records a token on the OAuth consent API as account, and nothing else outside /v1", async () => {
+    const consent = [
+      "GET /oauth/interaction/:uid/details",
+      "POST /oauth/interaction/:uid/confirm",
+      "POST /oauth/interaction/:uid/abort",
+    ];
+    const exempt: Record<string, string> = {
+      "GET /": "server name and version, no credential",
+      "GET /healthz": "liveness probe, no credential",
+      "GET /dashboard": "static dashboard files",
+      "GET /dashboard/*": "static dashboard files",
+      "GET /.well-known/oauth-protected-resource/mcp": "public RFC 9728 metadata",
+      "GET /.well-known/oauth-protected-resource": "public RFC 9728 metadata",
+      "GET /oauth/interaction/:uid": "a redirect to the consent screen, no credential",
+    };
+    const outside = [
+      ...new Set(app.routes.filter((r) => r.method !== "ALL" && !r.path.startsWith("/v1/")).map((r) => `${r.method} ${r.path}`)),
+    ];
+    expect(outside.sort()).toEqual([...consent, ...Object.keys(exempt)].sort());
+    const admin = (await mint(owner.browser, "admin", "admin")).secret;
+    for (const route of outside) {
+      const [method, pattern] = route.split(" ") as [string, string];
+      clock.advance(ACCESS_COALESCE_MS);
+      const res = await asToken(pattern.replace(/:[^/]+/g, "x").replace("*", "index.html"), admin, { method });
+      if (consent.includes(route)) expect(res.status, route).toBe(403);
+    }
+    const { entries } = await accessOf(owner.browser);
+    expect(entries.map((e: any) => [e.action, e.outcome])).toEqual(consent.map(() => ["account", "denied"]));
   });
 
   it("records privacy, webhook and token changes made with a token", async () => {

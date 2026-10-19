@@ -15,7 +15,7 @@ import type {
   RegistrationResponseJSON,
 } from "@simplewebauthn/server";
 import type { WhereCtxConfig } from "../config.js";
-import { createAppContext, type AppContext } from "../app/context.js";
+import { createAppContext, type AppContext, type AppContextOptions } from "../app/context.js";
 import { buildApp, type BuildAppOptions } from "../app/server.js";
 import type { PasskeyCeremony } from "../accounts/passkeys.js";
 import type { StoredPasskey } from "../accounts/passkeysStore.js";
@@ -50,6 +50,7 @@ export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxCon
     webhooks: { allowPrivateTargets: true },
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
+    oauth: { dynamicRegistration: false },
     activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
     ...overrides,
   };
@@ -276,10 +277,11 @@ export async function bootApp(
   clock: TestClock,
   overrides: Partial<WhereCtxConfig> = {},
   build: BuildAppOptions = {},
+  options: Pick<AppContextOptions, "oauthFetch"> = {},
 ): Promise<BootedApp> {
   const { ctx, bootstrap } = await createAppContext(
     testConfig({ bootstrapTokens: { admin: OWNER_ADMIN }, ...overrides }),
-    { clock: clock.fn, ceremony: new FakeCeremony() },
+    { clock: clock.fn, ceremony: new FakeCeremony(), ...options },
   );
   return { ctx, app: buildApp(ctx, build), setupCode: bootstrap.setupCode!.reveal() };
 }

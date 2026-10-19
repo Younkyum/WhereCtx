@@ -4,7 +4,7 @@
  * coordinates.
  */
 
-/** The credential behind an agent request. OAuth MCP clients slot in as another kind. */
+/** The credential behind an agent request: a WhereCtx token, or an OAuth grant an MCP client holds. */
 export const CREDENTIAL_KINDS = ["token", "oauth"] as const;
 export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
 

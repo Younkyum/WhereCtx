@@ -12,6 +12,7 @@
  * pre-bound to one signed-in session (its own account, workspace actions
  * checked against the actor's role, and location sharing with co-members),
  * and `auth` is the narrow handle for the unauthenticated sign-in ceremonies.
+ * `oauth` is the authorization server MCP clients get access tokens from.
  */
 
 import type { WhereCtxConfig } from "../config.js";
@@ -47,6 +48,8 @@ import { WorkspaceService } from "../accounts/workspaceService.js";
 import { WorkspacesStore } from "../accounts/workspacesStore.js";
 import { SharesStore } from "../sharing/sharesStore.js";
 import { SharingService } from "../sharing/sharingService.js";
+import { OAuthServer } from "../oauth/server.js";
+import { OAuthStore } from "../oauth/store.js";
 import { AccessLogStore } from "../activity/accessLogStore.js";
 import { IngestLogStore } from "../activity/ingestLogStore.js";
 import type { PresenceEvent, UserId } from "../types.js";
@@ -71,6 +74,7 @@ export interface SystemStores {
   serverSecrets: ServerSecretsStore;
   nonces: NoncesStore;
   shares: SharesStore;
+  oauth: OAuthStore;
   accessLog: AccessLogStore;
   ingestLog: IngestLogStore;
 }
@@ -123,9 +127,10 @@ interface AccountServices {
   self: SelfService;
   workspaces: WorkspaceService;
   sharing: SharingService;
+  oauth: OAuthServer;
 }
 
-function accountScopeFor({ self, workspaces, sharing }: AccountServices, actor: Actor) {
+function accountScopeFor({ self, workspaces, sharing, oauth }: AccountServices, actor: Actor) {
   return {
     sessionId: actor.sessionId,
     me: bindFirst(self, actor, [
@@ -153,6 +158,7 @@ function accountScopeFor({ self, workspaces, sharing }: AccountServices, actor: 
       "acceptInvite",
     ]),
     sharing: bindFirst(sharing, actor, ["list", "put", "revoke", "decline", "people", "person", "audit"]),
+    oauth: bindFirst(oauth, actor, ["connectedApps", "disconnect", "consent"]),
   };
 }
 
@@ -174,6 +180,7 @@ export interface AppContext {
   forSession(actor: Actor): AccountScope;
   /** Sign-in ceremonies for people without a session yet. */
   auth: PasskeyAuth;
+  oauth: OAuthServer;
   /**
    * Optional sink for freshly-emitted presence events. Wired by the webhook
    * dispatcher (Phase 4); ingest/privacy routes call it after producing events.
@@ -195,6 +202,8 @@ export interface AppContextOptions {
   clock?: Clock;
   /** Replaces the SimpleWebAuthn-backed ceremony (tests). */
   ceremony?: PasskeyCeremony;
+  /** Replaces the fetch that retrieves OAuth Client ID Metadata Documents (tests). */
+  oauthFetch?: typeof fetch;
 }
 
 /**
@@ -241,6 +250,7 @@ export async function createAppContext(
     serverSecrets: new ServerSecretsStore(db, clock),
     nonces: new NoncesStore(db, clock),
     shares: new SharesStore(db, clock),
+    oauth: new OAuthStore(db),
     accessLog: new AccessLogStore(db, clock),
     ingestLog: new IngestLogStore(db, clock),
   };
@@ -273,14 +283,24 @@ export async function createAppContext(
   const webauthn = options.ceremony ?? new SimpleWebAuthnCeremony(config);
   const self = new SelfService({
     ...pick(system, ["users", "workspaces", "passkeys", "sessions", "recovery"]),
+    oauthGrants: system.oauth,
     ceremonies,
     webauthn,
     clock,
+  });
+  const oauth = new OAuthServer({
+    config,
+    store: system.oauth,
+    users: system.users,
+    keys: await system.serverSecrets.oauthKeys(),
+    clock,
+    fetch: options.oauthFetch,
   });
   const services: AccountServices = {
     self,
     workspaces: new WorkspaceService(pick(system, ["workspaces", "invites"]), config),
     sharing: new SharingService(pick(system, ["shares", "settings"]), clock),
+    oauth,
   };
 
   const ctx: AppContext = {
@@ -301,10 +321,12 @@ export async function createAppContext(
         "serverSecrets",
         "settings",
       ]),
+      oauthGrants: system.oauth,
       ceremonies,
       webauthn,
       ownerId: owner,
     }),
+    oauth,
   };
 
   return { ctx, bootstrap: { seed, setupCode } };

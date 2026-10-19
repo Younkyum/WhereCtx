@@ -1,5 +1,5 @@
 import type { AccountScope, UserScope } from "../app/context.js";
-import type { Principal } from "../auth/principal.js";
+import type { Principal, RestPrincipal } from "../auth/principal.js";
 import type { IngestVerdict } from "../activity/types.js";
 import type { AccessNote } from "./accessAudit.js";
 
@@ -9,7 +9,7 @@ import type { AccessNote } from "./accessAudit.js";
  */
 export type AppEnv = {
   Variables: {
-    principal: Principal;
+    principal: RestPrincipal;
     scope: UserScope;
     /** The request's access decision so far (api/accessAudit.ts `decide`). */
     access?: AccessNote;

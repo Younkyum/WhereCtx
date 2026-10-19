@@ -12,7 +12,8 @@ import { Text } from "@astryxdesign/core/Text";
 import { useState } from "react";
 import { api } from "../api";
 import { useApp } from "../context";
-import { ACCESS_ACTIONS, oneOf, type AccessEntry, type AccessOutcome, type ApiToken } from "../model";
+import { hostOf } from "../lib";
+import { ACCESS_ACTIONS, oneOf, type AccessEntry, type AccessOutcome, type ApiToken, type ConnectedApp } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useFormat, useLoad, usePaged } from "../ui";
 
 export const OUTCOME_BADGE: Record<AccessOutcome, BadgeProps["variant"]> = {
@@ -28,11 +29,15 @@ export function ActivityView() {
   const { t } = useApp();
   const [credential, setCredential] = useState(ALL);
   const [tokens] = useLoad(() => api<{ tokens: ApiToken[] }>("/v1/tokens").then((r) => r.tokens ?? []), []);
+  const [apps] = useLoad(() => api<{ grants: ConnectedApp[] }>("/v1/oauth/grants").then((r) => r.grants ?? []), []);
   const query = credential === ALL ? "" : `&credential=${encodeURIComponent(credential)}`;
   const log = usePaged<AccessEntry>(`/v1/activity/access?limit=50${query}`);
   const options = [
     { value: ALL, label: t("activity.allCredentials") },
     ...(tokens.kind === "ready" ? tokens.data.map((k) => ({ value: k.id, label: k.name })) : []),
+    ...(apps.kind === "ready"
+      ? apps.data.map((a) => ({ value: a.id, label: a.clientName ?? hostOf(a.clientId) ?? a.clientId }))
+      : []),
   ];
   return (
     <Page title={t("activity.title")} description={t("activity.desc")}>

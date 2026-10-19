@@ -15,6 +15,8 @@ export function credentialOf(principal: Principal): Credential | null {
   switch (principal.via) {
     case "token":
       return { kind: "token", id: principal.tokenId, name: principal.tokenName };
+    case "oauth":
+      return { kind: "oauth", id: principal.grantId, name: principal.clientName };
     case "session":
       return null;
   }

@@ -5,11 +5,11 @@ Several people can use one install. Every location row belongs to one user,
 and every request acts for exactly one user.
 
 ```
-phone (OwnTracks, Shortcut, HTTP)    browser (passkey session)       agent (MCP, token)
+phone (OwnTracks, Shortcut, HTTP)    browser (passkey session)   agent (MCP, token or OAuth)
         │ POST /v1/ingest*                 │ /dashboard, /v1/*              │ POST /mcp
         ▼                                  ▼                                ▼
    ┌────────────────────────── resolve the Principal ───────────────────────────┐
-   │ token (device, agent, admin)  or  session (signed-in person)               │
+   │ token (device, agent, admin), session (signed-in person), or oauth (/mcp)  │
    └──────────────┬───────────────────────────────┬─────────────────────────────┘
                   │ ctx.forUser(userId)           │ ctx.forSession(actor)
                   ▼                               ▼
@@ -34,12 +34,16 @@ phone (OwnTracks, Shortcut, HTTP)    browser (passkey session)       agent (MCP,
 - `{ via: "session" }`: a person signed in with a passkey and holding the
   session cookie. They have every scope over their own data, and the session
   records when it last proved a passkey (`reauthAt`) for step-up checks.
+- `{ via: "oauth" }`: an MCP client presenting an OAuth access token a person
+  consented to. Its scopes come from the registry in `src/oauth/scopes.ts`.
+  Only `/mcp` resolves it; REST's environment type excludes it.
 
-`src/api/middleware.ts` has two mounts. `authenticate` accepts either kind
-and attaches a `UserScope`. `sessionAuth` accepts only a session and attaches
-an `AccountScope`. `/v1/me`, `/v1/workspaces`, `/v1/shares`, and
-`/v1/people` use `sessionAuth`, so no token reaches them. `/mcp` accepts
-tokens only.
+`src/api/middleware.ts` has two mounts. `authenticate` accepts a token or a
+session and attaches a `UserScope`. `sessionAuth` accepts only a session and
+attaches an `AccountScope`. `/v1/me`, `/v1/workspaces`, `/v1/shares`,
+`/v1/people`, `/v1/oauth`, and the consent API under `/oauth/interaction/`
+use `sessionAuth`, so no token reaches them. `/mcp` accepts a
+WhereCtx token or an OAuth access token.
 
 ## Scopes keep users apart
 
@@ -97,8 +101,9 @@ first. Neither holds coordinates.
 
 - `access_log` records every agent or token request. `accessRecorder(scope,
   principal, surface)` turns a principal into the credential to name
-  (`credentialOf`; a session maps to none, since the owner reading their own
-  data is not an agent read) and swallows write failures into the server log.
+  (`credentialOf`: a token by its id and name, an OAuth client by its grant
+  id and client name; a session maps to none, since the owner reading their
+  own data is not an agent read) and swallows write failures into the server log.
   The store folds an identical request within a minute into the previous row
   (`count`, `last_at`).
 - What a request came to is an `AccessDecision` (`outcome`, `denial`,
@@ -109,9 +114,11 @@ first. Neither holds coordinates.
   returns a `Reply` holding its decision next to its answer.
 - REST: `buildApp` mounts `auditAccess` (`src/api/accessAudit.ts`) ahead of
   the credential check on every `/v1` prefix but `/v1/ingest` and
-  `/v1/auth`. It names the action from the matched route pattern
-  (`REST_ACTIONS`; `account` for the session-only prefixes; `unknown` when
-  no route matched). A test sends a token request to every mounted route.
+  `/v1/auth`, and on the OAuth consent API. It names the action from the
+  matched route pattern (`REST_ACTIONS`; `account` for the session-only
+  routes; `unknown` when no route matched). A test sends a token request to
+  every mounted route, and holds the routes left out (health, the dashboard,
+  the public OAuth metadata) to a list with reasons.
 - MCP: `buildMcpServer` watches the transport its server connects to and
   writes one row per `tools/call` when the response goes out, so calls the
   SDK refuses before a tool runs are recorded too. `/mcp` records a token
@@ -209,6 +216,7 @@ adds at runtime. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-
 | `src/presence/` | `PresenceService` |
 | `src/api/` | Hono routers, auth middleware, rate limiting |
 | `src/mcp/` | MCP server (9 tools, each recorded in the access log) and the raw-Node `/mcp` handler |
+| `src/oauth/` | OAuth 2.1 authorization server for MCP clients (oidc-provider), its store, scopes, and consent API |
 | `src/activity/` | Access log and ingest log stores, the recording helper |
 | `src/webhooks/` | Dispatcher, delivery payload (shared with the dashboard's example), SSRF guard, secret encryption |
 | `src/dashboard/` | Serves `dist/web` |
@@ -219,15 +227,21 @@ adds at runtime. See [decisions.md](decisions.md#2026-10-18-multi-user-accounts-
 ## Composition
 
 `src/app/boot.ts` (`startServer`, called by `src/index.ts`) creates one Node
-`http.Server`. A request whose path is `/mcp` goes to the MCP handler, which
-writes to the Node response directly. Everything else goes to the Hono app
-through `getRequestListener`. Boot also prints the setup code while no
-passkey exists, starts the webhook dispatcher, the stale sweep every minute,
-and the prune sweep (`src/app/prune.ts`) every 6 hours. The prune sweep
-removes old events, dead letters, share audit rows, access and ingest log
-rows, each person's history past their retention (the server default for a
-person with no settings row, in batches), sessions, invites, nonces, and
-access codes.
+`http.Server` over the listener in `src/app/listener.ts`, which splits
+requests into three surfaces:
+
+- `/mcp` goes to the MCP handler, which writes to the Node response directly.
+- The OAuth protocol endpoints (`/oauth/*` except `/oauth/interaction/*`, and
+  the two authorization server metadata paths) go to oidc-provider.
+- Everything else, the consent API under `/oauth/interaction/*` included, goes
+  to the Hono app through `getRequestListener`.
+
+Boot also prints the setup code while no passkey exists, starts the webhook
+dispatcher, the stale sweep every minute, and the prune sweep
+(`src/app/prune.ts`) every 6 hours. The prune sweep removes old events, dead
+letters, share audit rows, access and ingest log rows, each person's history
+past their retention (the server default for a person with no settings row,
+in batches), sessions, invites, nonces, access codes, and expired OAuth rows.
 
 ## Storage
 

@@ -331,7 +331,8 @@ GET /v1/activity/ingest?limit=50&before=               # device uploads (max 200
     `webhooks.create`, `webhooks.update`, `webhooks.delete`,
     `webhooks.dead_letters`, `tokens.list`, `tokens.create`, `tokens.revoke`,
     `devices.list`, `devices.pair`, `activity.read`, `admin.logs`; `account`
-    for any `/v1/me`, `/v1/workspaces`, `/v1/shares` or `/v1/people` route
+    for any `/v1/me`, `/v1/workspaces`, `/v1/shares`, `/v1/people` or
+    `/v1/oauth` route, or the OAuth consent API under `/oauth/interaction/`
     (a token is always refused there); an MCP tool name; `mcp.request` for an
     MCP request refused before any tool (a token without `read_presence`, or
     a batch over the cap); or `unknown` for a path no route matched or a tool
@@ -350,8 +351,12 @@ GET /v1/activity/ingest?limit=50&before=               # device uploads (max 200
     within a minute of the previous one fold into one row: `count` of them,
     the first at `createdAt`, the latest at `lastAt`. The row keeps the first
     reason.
-  - `credential` filters by token id. The person's own dashboard reads are
-    not recorded.
+  - `credential.kind` is `token` for a WhereCtx token, or `oauth` for an MCP
+    client connected with OAuth. An OAuth row's `id` is the grant id (the `id`
+    in `GET /v1/oauth/grants`), and its `name` is the client's name, else its
+    `client_id` host.
+  - `credential` filters by token or grant id. The person's own dashboard
+    reads are not recorded, nor is listing or disconnecting connected apps.
 - Ingest: `{ id, token:{id,name}|null, source:"generic"|"shortcut"|"owntracks",
   outcome:"accepted"|"rejected"|"ignored"|"error", reason?, receivedAt }`.
   `token` is null for a reading posted from the dashboard. `ignored` is an
