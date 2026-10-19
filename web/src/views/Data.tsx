@@ -109,7 +109,15 @@ function AddByAddress({ onAdded }: { onAdded: () => Promise<void> }) {
       setFound((await api<{ candidates: GeoCandidate[] }>(`/v1/geo/search?q=${encodeURIComponent(query.trim())}`)).candidates);
     } catch (e) {
       setFound(null);
-      setProblem(e instanceof ApiError && e.status === 409 ? t("places.byAddressNoKey") : e instanceof Error ? e.message : String(e));
+      setProblem(
+        e instanceof ApiError && e.status === 409
+          ? t("places.byAddressNoKey")
+          : e instanceof ApiError && e.status === 403
+            ? t("places.byAddressMapsOff")
+            : e instanceof Error
+              ? e.message
+              : String(e),
+      );
     }
   });
   const [saving, save] = useAction(async () => {

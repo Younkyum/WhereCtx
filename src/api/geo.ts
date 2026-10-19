@@ -16,7 +16,8 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
 import { credentialOf } from "../activity/record.js";
-import type { GeoCaller, EtaOutcome } from "../geo/service.js";
+import type { GeoCaller } from "../geo/service.js";
+import { etaReply, searchReply, type GeoReply } from "../geo/replies.js";
 import { GEO_PROVIDERS, ROUTE_AVOID, type GeoProviderName } from "../geo/types.js";
 import { decide, refuse } from "./accessAudit.js";
 import { noStore, requireFreshSession, requireScope, requireSession } from "./middleware.js";
@@ -48,34 +49,13 @@ function callerOf(c: Context<AppEnv>): GeoCaller {
   const principal = c.get("principal");
   const credential = credentialOf(principal);
   if (!credential) return { kind: "owner" };
-  return { kind: "agent", credential, surface: "rest", seesPlaceCoordinates: principal.scopes.includes("manage_places") };
+  return { kind: "agent", credential, surface: "rest", scopes: principal.scopes };
 }
 
-/** One ETA outcome as an HTTP answer, with the access decision it means. */
-function etaResponse(c: Context<AppEnv>, outcome: EtaOutcome): Response {
-  switch (outcome.kind) {
-    case "ok":
-      return c.json({ eta: outcome.answer });
-    case "hidden":
-      decide(c, { outcome: "hidden" });
-      return c.json({ error: "presence is hidden from agents by policy", privacy: "hidden" }, 403);
-    case "denied":
-      return refuse(c, 403, "ETA denied", outcome.reason);
-    case "no_location":
-      return c.json({ error: "no location recorded yet" }, 404);
-    case "stale":
-      return c.json({ error: "location is stale", updatedAgoSec: outcome.updatedAgoSec }, 409);
-    case "not_found":
-      return c.json({ error: outcome.reason }, 404);
-    case "ambiguous":
-      return c.json({ error: "several places match; pass pick", candidates: outcome.candidates }, 409);
-    case "rate_limited":
-      return c.json({ error: "too many maps requests; try again in a minute" }, 429);
-    case "unconfigured":
-      return c.json({ error: "no maps key is set up (Maps & routes)" }, 409);
-    case "failed":
-      return c.json({ error: outcome.message, kind: outcome.error }, 502);
-  }
+/** A maps reply as an HTTP answer, with the access decision it means. */
+function respond(c: Context<AppEnv>, reply: GeoReply, ok?: (body: unknown) => unknown): Response {
+  decide(c, reply.decision);
+  return c.json(reply.status === 200 && ok ? ok(reply.body) : reply.body, reply.status);
 }
 
 export function geoRouter(ctx: RouteContext): Hono<AppEnv> {
@@ -116,16 +96,8 @@ export function geoRouter(ctx: RouteContext): Hono<AppEnv> {
     const q = (c.req.query("q") ?? "").trim();
     if (q.length === 0 || q.length > 200) return refuse(c, 400, "q must be 1 to 200 characters");
     const outcome = await c.get("scope").geo.search(q, callerOf(c));
-    switch (outcome.kind) {
-      case "ok":
-        return c.json({ provider: outcome.provider, candidates: outcome.candidates });
-      case "rate_limited":
-        return c.json({ error: "too many maps requests; try again in a minute" }, 429);
-      case "unconfigured":
-        return c.json({ error: "no maps key is set up (Maps & routes)" }, 409);
-      case "failed":
-        return c.json({ error: outcome.message, kind: outcome.error }, 502);
-    }
+    if (outcome.kind === "ok") return c.json({ provider: outcome.provider, candidates: outcome.candidates });
+    return respond(c, searchReply(outcome));
   });
 
   app.get("/eta", requireScope("read_presence"), noStore, async (c) => {
@@ -141,7 +113,7 @@ export function geoRouter(ctx: RouteContext): Hono<AppEnv> {
       { to, pick, departAt: departAt ? new Date(departAt) : undefined, avoid },
       callerOf(c),
     );
-    return etaResponse(c, outcome);
+    return respond(c, etaReply(outcome), (answer) => ({ eta: answer }));
   });
 
   return app;

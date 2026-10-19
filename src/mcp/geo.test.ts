@@ -90,7 +90,7 @@ describe("get_eta and get_directions", () => {
     const stale = await call(AGENT, "get_eta", { to: "office" });
     expect(stale.body.error).toMatch(/stale.*16 min ago/);
     await settings({ defaultAgentAccess: "hidden" });
-    expect((await call(AGENT, "get_eta", { to: "office" })).body).toEqual({ hidden: true });
+    expect((await call(AGENT, "get_eta", { to: "office" })).body).toMatchObject({ privacy: "hidden" });
   });
 
   it("are recorded per call with the provider call beside them, coordinates never", async () => {
@@ -106,22 +106,32 @@ describe("get_eta and get_directions", () => {
 });
 
 describe("create_place by address", () => {
+  beforeEach(() => settings({ geoEnabled: true }));
+
   it("geocodes an unambiguous address and never returns its coordinates", async () => {
-    const res = await call(AGENT, "create_place", { name: "gangnam", type: "custom", address: "강남역" });
+    const res = await call(OWNER_ADMIN, "create_place", { name: "gangnam", type: "custom", address: "강남역" });
     expect(res.body).toEqual({ name: "gangnam", type: "custom", radiusM: 150, address: "서울 강남구 강남대로 396" });
-    expect(res.text).not.toContain("37.4979");
     const place = (await owner.browser.json("/v1/places")).places.find((p: any) => p.name === "gangnam");
     expect(place).toMatchObject({ lat: 37.4979, lon: 127.0276 });
   });
 
-  it("returns numbered candidates without coordinates when several match, then takes a pick", async () => {
-    const first = await call(AGENT, "create_place", { name: "pangyo", type: "custom", address: "판교역" });
+  it("returns numbered candidates when several match, then takes a pick", async () => {
+    const first = await call(OWNER_ADMIN, "create_place", { name: "pangyo", type: "custom", address: "판교역" });
     expect(first.body.ambiguous).toBe(true);
     expect(first.body.candidates.map((c: any) => c.pick)).toEqual([1, 2]);
-    expect(first.text).not.toContain("37.39");
     expect((await owner.browser.json("/v1/places")).places.map((p: any) => p.name)).not.toContain("pangyo");
-    const second = await call(AGENT, "create_place", { name: "pangyo", type: "custom", address: "판교역", pick: 2 });
+    const second = await call(OWNER_ADMIN, "create_place", { name: "pangyo", type: "custom", address: "판교역", pick: 2 });
     expect(second.body.name).toBe("pangyo");
+  });
+
+  it("is refused, with nothing sent, without manage_places, in hidden mode, or with maps off", async () => {
+    const res = await call(AGENT, "create_place", { name: "gangnam", type: "custom", address: "강남역" });
+    expect(res.body.error).toMatch(/manage_places/);
+    await settings({ defaultAgentAccess: "hidden" });
+    expect((await call(OWNER_ADMIN, "create_place", { name: "gangnam", type: "custom", address: "강남역" })).body).toMatchObject({ privacy: "hidden" });
+    await settings({ defaultAgentAccess: "coarse", geoEnabled: false });
+    expect((await call(OWNER_ADMIN, "create_place", { name: "gangnam", type: "custom", address: "강남역" })).body.error).toMatch(/geoEnabled/);
+    expect(fake.calls.filter((c) => c.op === "geocode")).toEqual([]);
   });
 
   it("wants exactly one of a point or an address", async () => {
@@ -133,6 +143,6 @@ describe("create_place by address", () => {
   it("keeps home place protection", async () => {
     const res = await call(AGENT, "create_place", { name: "home", type: "home", address: "강남역" });
     expect(res.body.error).toMatch(/manage_places/);
-    expect(fake.calls).toEqual([]);
+    expect(fake.calls.filter((c) => c.op === "geocode")).toEqual([]);
   });
 });

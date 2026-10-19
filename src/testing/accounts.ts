@@ -52,7 +52,7 @@ export function testConfig(overrides: Partial<WhereCtxConfig> = {}): WhereCtxCon
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
     oauth: { dynamicRegistration: false },
-    geo: { operatorKeys: {}, operatorKeyForAll: false, fake: false },
+    geo: { operatorKeys: {}, operatorKeyForAll: false, operatorDailyCap: 200, fake: false },
     activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
     ...overrides,
   };

@@ -160,6 +160,8 @@ export interface Config {
     };
     /** Let every person fall back to the operator keys, not only USER_ID. */
     operatorKeyForAll: boolean;
+    /** Provider calls a day each person other than USER_ID may make on an operator key. */
+    operatorDailyCap: number;
     /** Answer every maps call from the fake provider (tests and the HTTP end-to-end run only). */
     fake: boolean;
   };
@@ -246,6 +248,7 @@ export function loadConfig(): Config {
     geo: {
       operatorKeys: operatorKeys(),
       operatorKeyForAll: envBool("GEO_OPERATOR_KEY_FOR_ALL", false),
+      operatorDailyCap: Math.max(0, envInt("GEO_OPERATOR_DAILY_CAP", 200)),
       fake: geoFake(),
     },
   });

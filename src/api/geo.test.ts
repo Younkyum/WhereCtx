@@ -3,9 +3,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 import type { AppContext } from "../app/context.js";
 import type { WhereCtxConfig } from "../config.js";
-import { OWNER_ADMIN, TestClock, bootApp, reauth, setupOwner, type Enrolled } from "../testing/accounts.js";
+import { OWNER_ADMIN, TestClock, bootApp, reauth, setupOwner, signUpByInvite, type Enrolled } from "../testing/accounts.js";
 import type { FakeGeoProvider } from "../geo/fake.js";
-import { GEO_CALLS_PER_MINUTE, KEY_TEST_POINT } from "../geo/service.js";
+import { GEO_USER_CALLS_PER_MINUTE, KEY_TEST_POINT } from "../geo/service.js";
 import { roundCoord } from "../geo/types.js";
 
 const AGENT = "agent-token-strong-0123456789abcdef-eta";
@@ -150,11 +150,23 @@ describe("testing a key", () => {
 describe("search", () => {
   beforeEach(() => boot());
 
-  it("needs manage_places; the owner and an admin token get coordinates", async () => {
+  it("needs maps on, for the owner and every token", async () => {
+    expect((await owner.browser.send("/v1/geo/search?q=강남역")).status).toBe(403);
+    expect((await as(OWNER_ADMIN, "/v1/geo/search?q=강남역")).status).toBe(403);
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("needs manage_places and a visible presence; the owner and an admin token get coordinates", async () => {
+    await settings({ geoEnabled: true });
     expect((await as(AGENT, "/v1/geo/search?q=강남역")).status).toBe(403);
     const mine = await owner.browser.json("/v1/geo/search?q=강남역");
     expect(mine.candidates[0]).toMatchObject({ label: "강남역 2호선", lat: 37.4979, lon: 127.0276 });
     expect((await as(OWNER_ADMIN, "/v1/geo/search?q=강남역")).status).toBe(200);
+    expect(fake.calls.filter((c) => c.op === "geocode")).toHaveLength(2);
+    await settings({ defaultAgentAccess: "hidden" });
+    const hidden = await as(OWNER_ADMIN, "/v1/geo/search?q=강남역");
+    expect(hidden.status).toBe(403);
+    expect(((await hidden.json()) as any).privacy).toBe("hidden");
     expect(fake.calls.filter((c) => c.op === "geocode")).toHaveLength(2);
   });
 });
@@ -178,7 +190,7 @@ describe("ETA", () => {
     await settings({ geoEnabled: true });
     let res = await eta(AGENT, "to=office");
     expect(res.status).toBe(403);
-    expect(((await res.json()) as any).detail).toMatch(/etaToAgents/);
+    expect(((await res.json()) as any).error).toMatch(/etaToAgents/);
     await settings({ etaToAgents: true, defaultAgentAccess: "hidden" });
     res = await eta(AGENT, "to=office");
     expect(res.status).toBe(403);
@@ -241,18 +253,51 @@ describe("ETA", () => {
     clock.advance(16 * 60_000);
     const res = await eta(AGENT, "to=office");
     expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: "location is stale", updatedAgoSec: 960 });
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/stale/), updatedAgoSec: 960 });
     expect(routeCalls()).toEqual([]);
   });
 
-  it("is limited per caller per minute", async () => {
+  it("counts every provider call against the person, the owner's own and a key test included", async () => {
+    await owner.browser.json("/v1/geo/credentials/kakao", { method: "PUT", body: { restKey: KAKAO_KEY } });
     await settings({ geoEnabled: true, etaToAgents: true });
-    for (let i = 0; i < GEO_CALLS_PER_MINUTE; i++) expect((await eta(AGENT, "to=office")).status).toBe(200);
+    await ctx.system.geo.settled();
+    const used = () => fake.calls.length;
+    expect(used()).toBe(1); // the background area lookup
+    for (let i = 0; i < 14; i++) expect((await eta(OWNER_ADMIN, "to=" + encodeURIComponent("강남역"))).status).toBe(200);
+    expect(used()).toBe(29);
+    expect((await eta(AGENT, "to=office")).status).toBe(200);
+    expect(used()).toBe(GEO_USER_CALLS_PER_MINUTE);
     expect((await eta(AGENT, "to=office")).status).toBe(429);
-    expect((await eta(null, "to=office")).status).toBe(200);
+    expect((await eta(null, "to=office")).status).toBe(429);
+    expect((await owner.browser.json("/v1/geo/credentials/kakao/test", { method: "POST" })).test).toMatchObject({ ok: false, error: "rate_limited" });
+    expect(used()).toBe(GEO_USER_CALLS_PER_MINUTE);
     clock.advance(61_000);
     await ingest(AWAY);
     expect((await eta(AGENT, "to=office")).status).toBe(200);
+  });
+
+  it("caps a day of operator-key calls for anyone but USER_ID", async () => {
+    await boot({ operatorKeyForAll: true, operatorDailyCap: 3 });
+    const { url } = await owner.browser.json(`/v1/workspaces/${(await owner.browser.json("/v1/workspaces")).workspaces[0].id}/invites`, {
+      body: { role: "member" },
+    });
+    const mina = await signUpByInvite(app, url, "Mina");
+    await mina.browser.json("/v1/places", { body: { name: "office", type: "work", lat: 37.4, lon: 127.1, radiusM: 150 } });
+    await mina.browser.json("/v1/ingest", { body: { source: "manual", ...AWAY } });
+    await mina.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
+    await ctx.system.geo.settled();
+    const minaEta = () => mina.browser.send("/v1/geo/eta?to=office");
+    expect((await minaEta()).status).toBe(200);
+    expect((await minaEta()).status).toBe(200);
+    expect((await minaEta()).status).toBe(429);
+    clock.advance(86_400_000);
+    await mina.browser.json("/v1/ingest", { body: { source: "manual", ...AWAY } });
+    await ctx.system.geo.settled();
+    expect((await minaEta()).status).toBe(200);
+
+    await ingest(AWAY);
+    await settings({ geoEnabled: true });
+    for (let i = 0; i < 5; i++) expect((await eta(null, "to=office")).status).toBe(200);
   });
 
   it("logs the route call under the agent, without coordinates", async () => {
@@ -276,6 +321,7 @@ describe("ETA", () => {
     expect(res.status).toBe(502);
     expect(((await res.json()) as any).kind).toBe("quota");
     const row = (await accessRows()).find((e) => e.action === "geo.route");
-    expect(row).toMatchObject({ outcome: "denied", denial: expect.stringContaining("quota") });
+    expect(row).toMatchObject({ outcome: "error", denial: expect.stringContaining("quota") });
+    expect((await accessRows()).find((e) => e.action === "geo.eta")).toMatchObject({ outcome: "error" });
   });
 });

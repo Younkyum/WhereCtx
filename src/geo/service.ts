@@ -1,15 +1,10 @@
 /**
  * Everything WhereCtx asks a maps provider, for one person at a time.
  *
- * - Which provider and key: the person's own key first (BYOK), then the
- *   operator's, which only USER_ID may use unless GEO_OPERATOR_KEY_FOR_ALL.
- * - What leaves the server: a point rounded to three decimals (about 100 m),
- *   never while maps are off, and never the live location at or near home
- *   while skipProviderNearHome is on.
- * - Who is told: each provider call made with the person's location or key
- *   lands in their access log as geo.reverse, geo.geocode or geo.route, under
- *   the agent that caused it or `system` for the background area lookup. No
- *   coordinates are logged.
+ * - Which key, the budgets and the record of each call: keys.ts.
+ * - What leaves the server: a point rounded to three decimals (about 100 m,
+ *   types.ts `roundingProvider`), never while maps are off, and never the
+ *   live location at or near home while skipProviderNearHome is on.
  *
  * The background area lookup runs after a reading is stored, outside the
  * ingest path, throttled per person, and from a per-person cache first.
@@ -17,34 +12,24 @@
 
 import type { WhereCtxConfig } from "../config.js";
 import type { AccessLogStore } from "../activity/accessLogStore.js";
-import type { AccessAction, AccessSurface, Credential } from "../activity/types.js";
 import { haversineMeters } from "../geofence/distance.js";
-import { isAtOrNearHome } from "../privacy/policy.js";
+import { isAtOrNearHome, type PresenceViews } from "../privacy/policy.js";
 import type { SettingsStore } from "../privacy/settingsStore.js";
-import type { PresenceViews } from "../privacy/policy.js";
 import type { PlacesStore } from "../store/placesStore.js";
 import type { PresenceStore } from "../store/presenceStore.js";
-import { RateLimiter } from "../api/rateLimit.js";
-import type { Place, PrivacySettings, UserId } from "../types.js";
+import type { Place, UserId } from "../types.js";
 import { log } from "../util/log.js";
 import { KeyedMutex } from "../util/mutex.js";
 import { systemClock, type Clock } from "../util/time.js";
 import type { GeoCacheStore } from "./cacheStore.js";
-import { UNUSABLE_KEY, type GeoCredentialsStore, type StoredGeoCredential } from "./credentialsStore.js";
+import type { GeoCredentialsStore, StoredGeoCredential } from "./credentialsStore.js";
 import { FakeGeoProvider } from "./fake.js";
-import { KakaoProvider } from "./kakao.js";
-import { NaverProvider } from "./naver.js";
+import { GeoKeys, type CallResult, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
 import { mainRoads } from "./roads.js";
 import {
-  GEO_PROVIDERS,
-  GeoError,
-  restCredentials,
-  roundingProvider,
   roundPoint,
   type GeocodeCandidate,
-  type GeoCredentials,
   type GeoErrorKind,
-  type GeoProvider,
   type GeoProviderName,
   type LatLon,
   type ReverseResult,
@@ -56,35 +41,7 @@ import {
 export const AREA_REFRESH_MIN_MS = 120_000;
 /** ...and only after moving this far from where it was last looked up. */
 export const AREA_REFRESH_MOVE_M = 200;
-/** Provider calls per caller (agent credential, or the owner) per minute. */
-export const GEO_CALLS_PER_MINUTE = 30;
-/** Seoul City Hall: the fixed public point a key test looks up. */
-export const KEY_TEST_POINT: LatLon = { lat: 37.5663, lon: 126.9779 };
-
-/** Whose request this is: an agent's credential, the owner in the dashboard, or the server itself. */
-export type GeoCaller =
-  | { kind: "agent"; credential: Credential; surface: Exclude<AccessSurface, "system">; seesPlaceCoordinates: boolean }
-  | { kind: "owner" }
-  | { kind: "system" };
-
-const SYSTEM_CREDENTIAL: Credential = { kind: "system", id: "system", name: "WhereCtx" };
-
-export type KeySource = "own" | "operator";
-
-interface Resolved {
-  provider: GeoProvider;
-  name: GeoProviderName;
-  source: KeySource;
-}
-
-export interface GeoStatus {
-  /** The provider calls would use now, and whose key; null when none is set up. */
-  active: { provider: GeoProviderName; source: KeySource } | null;
-  /** My own saved keys, never the key itself. */
-  credentials: StoredGeoCredential[];
-  /** Operator keys I may fall back to. */
-  operator: GeoProviderName[];
-}
+export { GEO_USER_CALLS_PER_MINUTE, KEY_TEST_POINT, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
 
 export interface EtaRequest {
   /** A registered place's name, else an address or a place to search for. */
@@ -132,11 +89,11 @@ export type EtaOutcome =
 
 export type SearchOutcome =
   | { kind: "ok"; candidates: GeocodeCandidate[]; provider: GeoProviderName }
+  | { kind: "hidden" }
+  | { kind: "denied"; reason: string }
   | { kind: "rate_limited" }
   | { kind: "unconfigured" }
   | { kind: "failed"; error: GeoErrorKind; message: string };
-
-export type KeyTestOutcome = { ok: true; label: string } | { ok: false; error: GeoErrorKind | "missing"; message: string };
 
 /** The area a reading resolved to, or null to clear it. `forPoint`: the reading it was looked up for. */
 export type AreaUpdate = { region: ReverseResult | null; forPoint?: LatLon };
@@ -171,7 +128,7 @@ export function deepLinks(label: string, point: LatLon): EtaAnswer["deepLinks"] 
 
 export class GeoService {
   private readonly clock: Clock;
-  private readonly limiter: RateLimiter;
+  private readonly keys: GeoKeys;
   private readonly areaMutex = new KeyedMutex();
   /** Where and when each person's area was last looked up at a provider. */
   private readonly lastLookup = new Map<UserId, { at: number; point: LatLon }>();
@@ -181,155 +138,56 @@ export class GeoService {
 
   constructor(private readonly deps: GeoServiceDeps) {
     this.clock = deps.clock ?? systemClock;
-    this.limiter = new RateLimiter({ max: GEO_CALLS_PER_MINUTE, clock: this.clock });
     if (deps.config.geo.fake) this.fake = new FakeGeoProvider(this.clock);
+    this.keys = new GeoKeys({
+      config: deps.config,
+      credentials: deps.credentials,
+      accessLog: deps.accessLog,
+      clock: this.clock,
+      fake: this.fake,
+      fetch: deps.fetch,
+    });
   }
 
   // ---- keys ----
 
-  private mayUseOperatorKeys(userId: UserId): boolean {
-    return this.deps.config.geo.operatorKeyForAll || userId === this.deps.config.defaultUserId;
-  }
-
-  private operatorProviders(userId: UserId): GeoProviderName[] {
-    if (!this.mayUseOperatorKeys(userId)) return [];
-    return GEO_PROVIDERS.filter((p) => this.deps.config.geo.operatorKeys[p] !== undefined);
-  }
-
-  /** Every provider is reached through `roundingProvider`, so no adapter is ever handed an unrounded point. */
-  private adapter(credentials: GeoCredentials): GeoProvider {
-    const common = { fetch: this.deps.fetch, now: this.clock };
-    return roundingProvider(
-      this.fake ??
-        (credentials.provider === "kakao"
-          ? new KakaoProvider({ restKey: credentials.restKey, ...common })
-          : new NaverProvider({ clientId: credentials.clientId, clientSecret: credentials.clientSecret, ...common })),
-    );
-  }
-
-  /** The provider to call for this person: their choice, else the first with a key; their own key before the operator's. */
-  private async resolve(userId: UserId, settings: PrivacySettings): Promise<Resolved | null> {
-    const own = new Set((await this.deps.credentials.list(userId)).map((c) => c.provider));
-    const operator = new Set(this.operatorProviders(userId));
-    const order = settings.geoProvider ? [settings.geoProvider] : GEO_PROVIDERS;
-    for (const name of order) {
-      if (own.has(name)) {
-        const keys = await this.deps.credentials.open(userId, name);
-        const credentials = keys && restCredentials(name, keys);
-        if (credentials) return { provider: this.adapter(credentials), name, source: "own" };
-      }
-      if (operator.has(name)) {
-        return { provider: this.adapter(this.deps.config.geo.operatorKeys[name]!), name, source: "operator" };
-      }
-    }
-    return null;
-  }
-
   async status(userId: UserId): Promise<GeoStatus> {
-    const settings = await this.deps.settings.getOrSeed(userId);
-    const resolved = await this.resolve(userId, settings);
-    return {
-      active: resolved && { provider: resolved.name, source: resolved.source },
-      credentials: await this.deps.credentials.list(userId),
-      operator: this.operatorProviders(userId),
-    };
+    return this.keys.status(userId, await this.deps.settings.getOrSeed(userId));
   }
 
   /** Save a provider's keys, replacing those saved for it before. */
   saveCredential(userId: UserId, provider: GeoProviderName, keys: Record<string, string>): Promise<StoredGeoCredential> {
-    return this.deps.credentials.put(userId, provider, keys);
+    return this.keys.save(userId, provider, keys);
   }
 
   deleteCredential(userId: UserId, provider: GeoProviderName): Promise<boolean> {
-    return this.deps.credentials.delete(userId, provider);
+    return this.keys.delete(userId, provider);
   }
 
   /** Look up a fixed public landmark with my saved key, never my location. */
-  async testCredential(userId: UserId, provider: GeoProviderName): Promise<KeyTestOutcome> {
-    const keys = await this.deps.credentials.open(userId, provider);
-    const credentials = keys && restCredentials(provider, keys);
-    if (!credentials) {
-      const saved = (await this.deps.credentials.list(userId)).find((c) => c.provider === provider);
-      return { ok: false, error: "missing", message: saved ? UNUSABLE_KEY : "no REST key saved for this provider" };
-    }
-    try {
-      const region = await this.adapter(credentials).reverse(KEY_TEST_POINT);
-      await this.deps.credentials.markUsed(userId, provider, null);
-      return { ok: true, label: region?.label ?? "" };
-    } catch (e) {
-      const error = asGeoError(e);
-      await this.deps.credentials.markUsed(userId, provider, error.message);
-      return { ok: false, error: error.kind, message: error.message };
-    }
+  testCredential(userId: UserId, provider: GeoProviderName): Promise<KeyTestOutcome> {
+    return this.keys.test(userId, provider);
   }
 
   // ---- calls ----
 
-  private callerKey(userId: UserId, caller: GeoCaller): string {
-    return caller.kind === "agent" ? `agent:${caller.credential.id}` : `${caller.kind}:${userId}`;
-  }
-
-  /** Count a call against the caller's minute, or say it is over. */
-  private overLimit(userId: UserId, caller: GeoCaller): boolean {
-    const key = this.callerKey(userId, caller);
-    if (this.limiter.isBlocked(key)) return true;
-    this.limiter.record(key);
-    return false;
-  }
-
   /**
-   * Make one provider call and note it: the key's last use or error, and an
-   * access log row under the agent or `system`. The owner's own calls are
-   * not access-logged, as their own reads are not.
+   * Search an address or a place by name. Sends only the text. Needs maps
+   * on; an agent also needs manage_places and a presence it may see.
    */
-  private async call<T>(
-    userId: UserId,
-    caller: GeoCaller,
-    resolved: Resolved,
-    action: Extract<AccessAction, "geo.reverse" | "geo.geocode" | "geo.route">,
-    run: (provider: GeoProvider) => Promise<T>,
-  ): Promise<T> {
-    let error: GeoError | null = null;
-    try {
-      return await run(resolved.provider);
-    } catch (e) {
-      error = asGeoError(e);
-      throw error;
-    } finally {
-      if (resolved.source === "own") {
-        await this.deps.credentials.markUsed(userId, resolved.name, error?.message ?? null).catch((e: unknown) => {
-          log.error("could not note a maps key's use", e);
-        });
-      }
-      const credential = caller.kind === "agent" ? caller.credential : caller.kind === "system" ? SYSTEM_CREDENTIAL : null;
-      if (credential) {
-        await this.deps.accessLog
-          .record(userId, {
-            credential,
-            surface: caller.kind === "agent" ? caller.surface : "system",
-            action,
-            precise: false,
-            outcome: error ? (error.kind === "timeout" || error.kind === "upstream" ? "error" : "denied") : "allowed",
-            ...(error ? { denial: `${resolved.name}: ${error.message}` } : {}),
-          })
-          .catch((e: unknown) => log.error("could not record a maps call", e, { action }));
-      }
-    }
-  }
-
-  /** Search an address or a place by name. Sends only the text. */
   async search(userId: UserId, query: string, caller: GeoCaller): Promise<SearchOutcome> {
     const settings = await this.deps.settings.getOrSeed(userId);
-    const resolved = await this.resolve(userId, settings);
-    if (!resolved) return { kind: "unconfigured" };
-    if (this.overLimit(userId, caller)) return { kind: "rate_limited" };
-    try {
-      const candidates = await this.call(userId, caller, resolved, "geo.geocode", (p) => p.geocode(query));
-      return { kind: "ok", candidates, provider: resolved.name };
-    } catch (e) {
-      const error = asGeoError(e);
-      return { kind: "failed", error: error.kind, message: error.message };
+    if (caller.kind === "agent") {
+      if (!caller.scopes.includes("manage_places")) return { kind: "denied", reason: "searching needs the manage_places scope" };
+      if (settings.defaultAgentAccess === "hidden") return { kind: "hidden" };
     }
+    if (!settings.geoEnabled) return { kind: "denied", reason: "maps are turned off (geoEnabled)" };
+    const resolved = await this.keys.resolve(userId, settings);
+    if (!resolved) return { kind: "unconfigured" };
+    const result = await this.keys.call(userId, caller, resolved, "geo.geocode", (p) => p.geocode(query));
+    if (result.kind === "ok") return { kind: "ok", candidates: result.value, provider: resolved.name };
+    if (result.kind === "rate_limited") return result;
+    return { kind: "failed", error: result.error.kind, message: result.error.message };
   }
 
   /**
@@ -356,23 +214,18 @@ export class GeoService {
     if (nearHome && !home) return { kind: "denied", reason: "at home with no home place to start from" };
     const origin: LatLon = nearHome ? home! : presence.precise;
 
-    const resolved = await this.resolve(userId, settings);
+    const resolved = await this.keys.resolve(userId, settings);
     if (!resolved) return { kind: "unconfigured" };
-    if (this.overLimit(userId, caller)) return { kind: "rate_limited" };
 
-    const seesCoordinates = caller.kind !== "agent" || caller.seesPlaceCoordinates;
+    const seesCoordinates = caller.kind !== "agent" || caller.scopes.includes("manage_places");
     let target: { label: string; kind: "place" | "address"; point: LatLon; showLinks: boolean };
     const place = places.find((p: Place) => p.name === request.to);
     if (place) {
       target = { label: place.name, kind: "place", point: place, showLinks: seesCoordinates };
     } else {
-      let candidates: GeocodeCandidate[];
-      try {
-        candidates = await this.call(userId, caller, resolved, "geo.geocode", (p) => p.geocode(request.to));
-      } catch (e) {
-        const error = asGeoError(e);
-        return { kind: "failed", error: error.kind, message: error.message };
-      }
+      const search = await this.keys.call(userId, caller, resolved, "geo.geocode", (p) => p.geocode(request.to));
+      if (search.kind !== "ok") return failure(search);
+      const candidates = search.value;
       const chosen = pickCandidate(candidates, request.pick);
       if (chosen.kind === "none") return { kind: "not_found", reason: `no place named, and nothing found for, "${request.to}"` };
       if (chosen.kind === "ambiguous") return { kind: "ambiguous", candidates: candidateViews(candidates, seesCoordinates) };
@@ -380,15 +233,11 @@ export class GeoService {
       target = { label: chosen.candidate.label, kind: "address", point: chosen.candidate, showLinks: true };
     }
 
-    let route: RouteResult;
-    try {
-      route = await this.call(userId, caller, resolved, "geo.route", (p) =>
-        p.route({ origin, destination: target.point, departAt: request.departAt, avoid: request.avoid }),
-      );
-    } catch (e) {
-      const error = asGeoError(e);
-      return { kind: "failed", error: error.kind, message: error.message };
-    }
+    const routed = await this.keys.call(userId, caller, resolved, "geo.route", (p) =>
+      p.route({ origin, destination: target.point, departAt: request.departAt, avoid: request.avoid }),
+    );
+    if (routed.kind !== "ok") return failure(routed);
+    const route = routed.value;
     const arrive = new Date(Date.parse(route.departAt) + route.durationSec * 1000);
     return {
       kind: "ok",
@@ -451,7 +300,7 @@ export class GeoService {
     if (hasArea && !moved) return;
 
     // From here on the area on record is for somewhere else: replace it or drop it.
-    const resolved = await this.resolve(userId, settings);
+    const resolved = await this.keys.resolve(userId, settings);
     if (!resolved) return clear();
     const cell = roundPoint(here);
     const cached = await this.deps.cache.get(userId, resolved.name, cell);
@@ -462,13 +311,12 @@ export class GeoService {
     const now = this.clock().getTime();
     if (last && now - last.at < AREA_REFRESH_MIN_MS) return;
     this.lastLookup.set(userId, { at: now, point: here });
-    let region: ReverseResult | null;
-    try {
-      region = await this.call(userId, { kind: "system" }, resolved, "geo.reverse", (p) => p.reverse(here));
-    } catch (e) {
-      log.warn("area lookup failed", { provider: resolved.name, kind: asGeoError(e).kind });
+    const looked = await this.keys.call(userId, { kind: "system" }, resolved, "geo.reverse", (p) => p.reverse(here));
+    if (looked.kind !== "ok") {
+      if (looked.kind === "failed") log.warn("area lookup failed", { provider: resolved.name, kind: looked.error.kind });
       return clear(false);
     }
+    const region = looked.value;
     await this.deps.cache.put(userId, resolved.name, cell, region);
     await this.deps.setArea(userId, { region, forPoint: here });
   }
@@ -478,10 +326,9 @@ export class GeoService {
   }
 }
 
-function asGeoError(e: unknown): GeoError {
-  if (e instanceof GeoError) return e;
-  log.error("maps call failed unexpectedly", e);
-  return new GeoError("upstream", "the maps call failed");
+/** A call that did not answer, as an outcome. */
+function failure(result: Exclude<CallResult<unknown>, { kind: "ok" }>): Extract<EtaOutcome, { kind: "rate_limited" | "failed" }> {
+  return result.kind === "rate_limited" ? result : { kind: "failed", error: result.error.kind, message: result.error.message };
 }
 
 type CandidateChoice =

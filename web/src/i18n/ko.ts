@@ -607,6 +607,7 @@ export const KO: Record<I18nKey, string> = {
   "places.byAddressQuery": "주소 또는 장소 이름",
   "places.byAddressSearch": "검색",
   "places.byAddressHint": "내 지도 서비스로 검색해요. 입력한 글자만 보내요.",
+  "places.byAddressMapsOff": "주소를 검색하려면 지도·경로에서 지도를 켜세요.",
   "places.byAddressNoKey": "주소를 검색하려면 지도·경로에서 지도 키를 설정하세요.",
   "places.byAddressNone": "찾은 곳이 없어요.",
   "places.viewOnMap": "지도에서 보기",

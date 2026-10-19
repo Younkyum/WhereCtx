@@ -605,6 +605,7 @@ export const EN = {
   "places.byAddressQuery": "Address or place name",
   "places.byAddressSearch": "Search",
   "places.byAddressHint": "Searched with your maps provider. Only the text you type is sent.",
+  "places.byAddressMapsOff": "Turn maps on under Maps & routes to search addresses.",
   "places.byAddressNoKey": "Set up a maps key under Maps & routes to search addresses.",
   "places.byAddressNone": "Nothing found.",
   "places.viewOnMap": "View on map",
