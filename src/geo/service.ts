@@ -35,8 +35,6 @@ import {
   type RouteResult,
 } from "./types.js";
 
-export { AREA_REFRESH_MIN_MS, AREA_REFRESH_MOVE_M, type AreaUpdate } from "./area.js";
-export { GEO_USER_CALLS_PER_MINUTE, KEY_TEST_POINT, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
 
 export interface EtaRequest {
   /** A registered place's name, else an address or a place to search for. */

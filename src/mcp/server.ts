@@ -37,7 +37,8 @@ import { accessRecorder, type AccessRecorder } from "../activity/record.js";
 import type { AccessAction, AccessDecision } from "../activity/types.js";
 import { DEFAULT_PLACE_RADIUS_M, sanitizePlace, type PlaceType } from "../types.js";
 import { credentialOf } from "../activity/record.js";
-import { candidateViews, pickCandidate, type GeoCaller } from "../geo/service.js";
+import type { GeoCaller } from "../geo/keys.js";
+import { candidateViews, pickCandidate } from "../geo/service.js";
 import { etaReply, numbered, searchReply } from "../geo/replies.js";
 import { ROUTE_AVOID } from "../geo/types.js";
 

@@ -17,7 +17,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { RouteContext } from "../app/context.js";
 import { credentialOf } from "../activity/record.js";
-import type { GeoCaller } from "../geo/service.js";
+import type { GeoCaller } from "../geo/keys.js";
 import { etaReply, searchReply, type GeoReply } from "../geo/replies.js";
 import { GEO_PROVIDERS, ROUTE_AVOID, type GeoProviderName } from "../geo/types.js";
 import { decide, refuse } from "./accessAudit.js";

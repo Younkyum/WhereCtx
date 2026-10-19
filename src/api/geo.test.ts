@@ -5,7 +5,7 @@ import type { AppContext } from "../app/context.js";
 import type { WhereCtxConfig } from "../config.js";
 import { OWNER_ADMIN, TestClock, bootApp, reauth, setupOwner, signUpByInvite, type Enrolled } from "../testing/accounts.js";
 import type { FakeGeoProvider } from "../geo/fake.js";
-import { GEO_USER_CALLS_PER_MINUTE, KEY_TEST_POINT } from "../geo/service.js";
+import { GEO_USER_CALLS_PER_MINUTE, KEY_TEST_POINT } from "../geo/keys.js";
 import { roundCoord } from "../geo/types.js";
 
 const AGENT = "agent-token-strong-0123456789abcdef-eta";
