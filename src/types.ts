@@ -103,13 +103,55 @@ export interface PresenceContext {
   movedAt?: string;
 }
 
-export interface Place {
+/** A closed polygon ring in GeoJSON [lon, lat] order: the first position repeats as the last. */
+export type Ring = ReadonlyArray<readonly [lon: number, lat: number]>;
+
+/** The events a place itself produces; each place chooses which of them are recorded (`emits`). */
+export const PLACE_EVENT_TYPES = [
+  "presence.entered_place",
+  "presence.left_place",
+  "presence.approaching_place",
+] as const;
+export type PlaceEventType = (typeof PLACE_EVENT_TYPES)[number];
+
+/** How a place turns readings into events. Every default reproduces a plain geofence. */
+export interface PlaceRules {
+  /** Seconds readings must stay inside before the enter is confirmed (0..86400). */
+  enterAfterSec: number;
+  /** Seconds readings must stay outside before the leave is confirmed (0..86400). */
+  exitAfterSec: number;
+  /** Width in meters of the approach ring outside the boundary (10..50000); null: off. */
+  approachM: number | null;
+  /** Which of the place's event types are recorded at all. */
+  emits: PlaceEventType[];
+  /** False: the place's events are recorded but never delivered to webhooks. */
+  notifyWebhooks: boolean;
+  /** False: entering the place never triggers reminders. */
+  notifyReminders: boolean;
+}
+
+export const DEFAULT_PLACE_RULES: Readonly<PlaceRules> = Object.freeze({
+  enterAfterSec: 0,
+  exitAfterSec: 0,
+  approachM: null,
+  emits: [...PLACE_EVENT_TYPES],
+  notifyWebhooks: true,
+  notifyReminders: true,
+});
+
+/**
+ * A registered place. `lat`, `lon` and `radiusM` are its anchor circle: the
+ * geofence itself for a circle, and the centroid and circumradius of
+ * `polygon` for a polygon place.
+ */
+export interface Place extends PlaceRules {
   id: string;
   name: string;
   label?: string;
   lat: number;
   lon: number;
   radiusM: number;
+  polygon?: Ring;
   type: PlaceType;
   createdAt: string;
   updatedAt: string;
@@ -132,6 +174,7 @@ export const PRESENCE_EVENT_TYPES = [
   "presence.updated",
   "presence.entered_place",
   "presence.left_place",
+  "presence.approaching_place",
   "presence.became_stale",
   "presence.privacy_changed",
 ] as const;
@@ -151,8 +194,9 @@ export const DEFAULT_PLACE_RADIUS_M = 150;
 
 /**
  * Agent-facing place view: name + type only. lat/lon (the home address),
- * radiusM (geofence size), and label (often the literal street address) are
- * deliberately omitted for non-admin callers (review P6). Shared by the REST
+ * radiusM (geofence size), polygon (its outline), label (often the literal
+ * street address) and the place's rules are deliberately omitted for
+ * non-admin callers (review P6). Shared by the REST
  * places API and the MCP `list_places` tool so the two surfaces cannot drift.
  */
 export function sanitizePlace(place: Place): { name: string; type: PlaceType } {

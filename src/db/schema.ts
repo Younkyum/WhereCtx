@@ -25,10 +25,12 @@ import type {
   CoarsePlaceType,
   IngestSource,
   Motion,
+  PlaceEventType,
   PlaceType,
   PresenceEventType,
   PresenceStatus,
   PrivacyMode,
+  Ring,
   ShareAuditAction,
   ShareAuditReason,
   ShareLevel,
@@ -76,6 +78,23 @@ export const places = sqliteTable(
     lon: real("lon").notNull(),
     radiusM: real("radius_m").notNull(),
     type: text("type").$type<PlaceType>().notNull(),
+    /**
+     * A polygon place's closed ring, GeoJSON [lon, lat] order. Null for a
+     * circle. A polygon's lat/lon/radius_m are its centroid and circumradius.
+     */
+    polygon: text("polygon", { mode: "json" }).$type<Ring>(),
+    /** Seconds a reading must stay inside before the enter is confirmed. 0 confirms at once. */
+    enterAfterSec: integer("enter_after_sec").notNull().default(0),
+    /** Seconds a reading must stay outside before the leave is confirmed. 0 confirms at once. */
+    exitAfterSec: integer("exit_after_sec").notNull().default(0),
+    /** Width in meters of the approach ring outside the boundary; null turns approach detection off. */
+    approachM: real("approach_m"),
+    /** The place event types recorded for this place; null records all of them. */
+    emits: text("emits", { mode: "json" }).$type<PlaceEventType[]>(),
+    /** False: this place's events are recorded but never delivered to webhooks. */
+    notifyWebhooks: integer("notify_webhooks", { mode: "boolean" }).notNull().default(true),
+    /** False: entering this place never triggers reminders. */
+    notifyReminders: integer("notify_reminders", { mode: "boolean" }).notNull().default(true),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -116,8 +135,15 @@ export const presence = sqliteTable("presence", {
     .notNull()
     .default(false),
 
-  /** Name of the place the user is currently inside, for enter/leave events. */
+  /** The confirmed place (dwell.ts `current`), for enter/leave events. */
   currentPlaceName: text("current_place_name"),
+  /** Since when readings have been outside the confirmed place, while its leave waits out exit_after_sec. */
+  pendingExitSince: text("pending_exit_since"),
+  /** The place readings are inside but whose enter waits out enter_after_sec, and since when. */
+  pendingPlaceName: text("pending_place_name"),
+  pendingPlaceSince: text("pending_place_since"),
+  /** Names of places presence.approaching_place fired for and has not re-armed yet (approach.ts). */
+  approachedPlaces: text("approached_places", { mode: "json" }).$type<string[]>(),
   /** Whether a `presence.became_stale` event has already fired for this reading. */
   staleEventFired: integer("stale_event_fired", { mode: "boolean" })
     .notNull()
@@ -152,6 +178,8 @@ export const presenceEvents = sqliteTable(
     placeName: text("place_name"),
     status: text("status"),
     source: text("source"),
+    /** False for an event of a place with notify_webhooks off: recorded, never delivered. */
+    webhook: integer("webhook", { mode: "boolean" }).notNull().default(true),
     createdAt: text("created_at").notNull(),
   },
   (t) => ({
@@ -235,6 +263,8 @@ export const webhooks = sqliteTable(
     url: text("url").notNull(),
     // JSON array of PresenceEventType, or ["*"] for all events.
     events: text("events", { mode: "json" }).$type<string[]>().notNull(),
+    /** JSON array of place names a place event must name to be delivered; null delivers every place. */
+    places: text("places", { mode: "json" }).$type<string[]>(),
     secret: text("secret"),
     active: integer("active", { mode: "boolean" }).notNull().default(true),
     /** Delivery cursor: ISO createdAt of the last event delivered to this hook. */
