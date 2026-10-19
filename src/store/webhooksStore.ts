@@ -26,6 +26,11 @@ export function formatCursor(createdAt: string, eventId: string): string {
   return `${createdAt}|${eventId}`;
 }
 
+/** A place filter: null for every place, otherwise each name once, in order. */
+export function normalizePlaces(places: readonly string[] | null | undefined): string[] | null {
+  return places && places.length > 0 ? [...new Set(places)] : null;
+}
+
 /** One spelling per selection: ["*"] when it includes "*" or is empty, otherwise each type once, in order. */
 export function normalizeEvents(events: readonly string[]): string[] {
   if (events.length === 0 || events.includes("*")) return ["*"];
@@ -46,6 +51,8 @@ export interface Webhook {
   userId: UserId;
   url: string;
   events: string[];
+  /** Place names a place event must name to be delivered; absent: every place. */
+  places?: string[];
   secret?: string;
   active: boolean;
   /** ISO createdAt of the last event delivered to this hook (delivery cursor). */
@@ -58,6 +65,7 @@ interface WebhookRow {
   userId: string;
   url: string;
   events: string[];
+  places: string[] | null;
   secret: string | null;
   active: boolean;
   cursor: string | null;
@@ -97,6 +105,7 @@ export class WebhooksStore {
       userId: asUserId(row.userId),
       url: row.url,
       events: row.events,
+      ...(row.places ? { places: row.places } : {}),
       secret,
       active: row.active,
       cursor: row.cursor ?? undefined,
@@ -109,6 +118,7 @@ export class WebhooksStore {
     input: {
       url: string;
       events: string[];
+      places?: string[] | null;
       secret?: string;
     },
   ): Promise<Webhook> {
@@ -120,6 +130,7 @@ export class WebhooksStore {
       userId,
       url: input.url,
       events: normalizeEvents(input.events),
+      places: normalizePlaces(input.places),
       secret:
         input.secret === undefined
           ? null
@@ -139,6 +150,7 @@ export class WebhooksStore {
       userId,
       url: record.url,
       events: record.events,
+      ...(record.places ? { places: record.places } : {}),
       secret: input.secret,
       active: record.active,
       cursor: record.cursor ?? undefined,
@@ -179,12 +191,12 @@ export class WebhooksStore {
 
   /**
    * Advance a drain's hook to the composite cursor (createdAt, eventId), only
-   * forward, only while the hook is active, and only while its event
-   * selection is the one the drain read. False means the hook was paused,
-   * resumed (which moves the cursor to then), re-subscribed or rewound since,
-   * and the drain must stop: its copy of the hook is stale.
+   * forward, only while the hook is active, and only while its event and
+   * place selections are the ones the drain read. False means the hook was
+   * paused, resumed (which moves the cursor to then), re-subscribed or
+   * rewound since, and the drain must stop: its copy of the hook is stale.
    */
-  async setCursor(hook: Pick<Webhook, "id" | "events">, createdAt: string, eventId: string): Promise<boolean> {
+  async setCursor(hook: Pick<Webhook, "id" | "events" | "places">, createdAt: string, eventId: string): Promise<boolean> {
     const cursor = formatCursor(createdAt, eventId);
     const result = await this.db
       .update(webhooks)
@@ -194,6 +206,7 @@ export class WebhooksStore {
           eq(webhooks.id, hook.id),
           eq(webhooks.active, true),
           eq(webhooks.events, hook.events),
+          hook.places ? eq(webhooks.places, hook.places) : isNull(webhooks.places),
           or(isNull(webhooks.cursor), lt(webhooks.cursor, cursor)),
         ),
       );
@@ -295,14 +308,14 @@ export class WebhooksStore {
   }
 
   /**
-   * Change an owned hook's event selection or pause it. Turning a paused hook
+   * Change an owned hook's event or place selection (null: every place), or pause it. Turning a paused hook
    * back on moves its cursor to now, so it does not replay what happened while
    * it was off. Returns the hook, or null when the user has no such hook.
    */
   async update(
     userId: UserId,
     id: string,
-    patch: { events?: string[]; active?: boolean },
+    patch: { events?: string[]; places?: string[] | null; active?: boolean },
   ): Promise<Webhook | null> {
     const owned = and(eq(webhooks.userId, userId), eq(webhooks.id, id));
     const fresh = formatCursor(nowIso(this.clock), MAX_ID);
@@ -310,6 +323,7 @@ export class WebhooksStore {
       .update(webhooks)
       .set({
         ...(patch.events ? { events: normalizeEvents(patch.events) } : {}),
+        ...(patch.places === undefined ? {} : { places: normalizePlaces(patch.places) }),
         ...(patch.active === undefined ? {} : { active: patch.active }),
         // SET reads the row as it was, so this sees whether the hook was off.
         ...(patch.active

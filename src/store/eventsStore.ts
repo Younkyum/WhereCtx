@@ -101,8 +101,10 @@ export class EventsStore {
   }
 
   /**
-   * Events after the composite cursor `"<createdAt>|<id>"`, oldest-first, for
-   * webhook delivery. Uses a keyset predicate so events sharing a millisecond
+   * Deliverable events after the composite cursor `"<createdAt>|<id>"`,
+   * oldest-first, for webhook delivery. An event recorded with webhook off
+   * (a place with notifyWebhooks off) is left out here, in SQL, so no
+   * delivery path ever sees it. Uses a keyset predicate so events sharing a millisecond
    * createdAt are NOT skipped when the cursor lands mid-cluster (review H2):
    *   createdAt > ts  OR  (createdAt = ts AND id > id)
    * A null cursor returns the oldest events. A legacy cursor without an id part
@@ -115,7 +117,7 @@ export class EventsStore {
     limit = 100,
   ): Promise<PresenceEvent[]> {
     const capped = Math.max(1, Math.min(limit, 500));
-    const owner = eq(presenceEvents.userId, userId);
+    const owner = and(eq(presenceEvents.userId, userId), eq(presenceEvents.webhook, true))!;
     let where = owner;
     if (cursor) {
       const sep = cursor.indexOf("|");

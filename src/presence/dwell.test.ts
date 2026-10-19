@@ -175,6 +175,18 @@ describe("place rules", () => {
     expect(placeEvents(left.events)).toEqual(["left_place gym"]);
   });
 
+  it("keeps every event naming a place with notifyWebhooks off away from delivery, and still records it", async () => {
+    await gym({ notifyWebhooks: false });
+    await service.processReading(USER, reading(north(0)));
+    await service.processReading(USER, reading(north(2000)));
+    const recorded = (await events.listRecent(USER)).map((e) => `${e.type} ${e.placeName ?? "-"}`);
+    expect(recorded).toEqual(
+      expect.arrayContaining(["presence.entered_place gym", "presence.left_place gym", "presence.updated gym"]),
+    );
+    const deliverable = (await events.listSince(USER, null)).map((e) => `${e.type} ${e.placeName ?? "-"}`);
+    expect(deliverable).toEqual(["presence.updated -"]);
+  });
+
   it("never triggers reminders for a place with notifyReminders off", async () => {
     await gym({ notifyReminders: false });
     await reminders.create(USER, "gym", "stretch");

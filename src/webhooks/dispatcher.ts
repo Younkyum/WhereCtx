@@ -22,7 +22,7 @@
 import { createHmac } from "node:crypto";
 import type { EventsStore } from "../store/eventsStore.js";
 import type { Webhook, WebhooksStore } from "../store/webhooksStore.js";
-import type { PresenceEvent } from "../types.js";
+import { PLACE_EVENT_TYPES, type PresenceEvent } from "../types.js";
 import type { Clock } from "../util/time.js";
 import { WEBHOOK_HEADERS, WEBHOOK_USER_AGENT, eventPayload } from "./payload.js";
 import { assertSafeWebhookUrl } from "./ssrf.js";
@@ -50,8 +50,17 @@ export interface DispatcherOptions {
   drainBudgetMs?: number;
 }
 
-function subscribed(hook: Webhook, type: string): boolean {
-  return hook.events.includes("*") || hook.events.includes(type);
+const PLACE_EVENTS: ReadonlySet<string> = new Set(PLACE_EVENT_TYPES);
+
+/**
+ * Whether a hook wants an event: the event type is selected, and a place
+ * event names one of the hook's places when it has a place filter. Other
+ * event types ignore the place filter.
+ */
+export function wants(hook: Pick<Webhook, "events" | "places">, ev: Pick<PresenceEvent, "type" | "placeName">): boolean {
+  if (!hook.events.includes("*") && !hook.events.includes(ev.type)) return false;
+  if (!hook.places || !PLACE_EVENTS.has(ev.type)) return true;
+  return ev.placeName !== undefined && hook.places.includes(ev.placeName);
 }
 
 export class WebhookDispatcher {
@@ -196,7 +205,7 @@ export class WebhookDispatcher {
       // it is not (paused, resumed, re-subscribed), stop and let the next tick
       // start from the stored hook.
       const advance = () => this.opts.webhooksStore.setCursor(hook, ev.createdAt, ev.id);
-      if (!subscribed(hook, ev.type)) {
+      if (!wants(hook, ev)) {
         if (!(await advance())) return;
         continue;
       }
