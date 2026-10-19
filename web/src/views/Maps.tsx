@@ -18,7 +18,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../context";
-import type { I18nKey } from "../i18n";
+import type { I18nKey, Translate } from "../i18n";
 import {
   GEO_FLAGS,
   GEO_PROVIDERS,
@@ -334,7 +334,7 @@ function TryRoute() {
               <Text type="supporting">
                 {[
                   eta.traffic ? t(eta.traffic === "live" ? "maps.live" : "maps.predicted") : t(`maps.mode.${eta.mode}`),
-                  eta.transfers !== undefined ? t("maps.transfers", { n: eta.transfers }) : "",
+                  eta.transfers !== undefined ? transfersText(t, eta.transfers) : "",
                   eta.walkMin !== undefined ? t("maps.walkMin", { min: eta.walkMin }) : "",
                   eta.fare !== undefined ? t("maps.fare", { won: eta.fare.toLocaleString() }) : "",
                   t("maps.arrive", { when: fmt.time(eta.arriveAt) }),
@@ -360,6 +360,18 @@ function TryRoute() {
   );
 }
 
+function transfersText(t: Translate, n: number): string {
+  return n === 0 ? t("maps.transfers.none") : n === 1 ? t("maps.transfers.one") : t("maps.transfers", { n });
+}
+
+/** Where a ride boards and alights, and how many stops it rides: the stops after the one it boards at. */
+function stopsText(t: Translate, stops: readonly string[]): string | undefined {
+  if (stops.length < 2) return undefined;
+  const ends = { from: stops[0]!, to: stops.at(-1)! };
+  const n = stops.length - 1;
+  return n === 1 ? t("maps.leg.stops.one", ends) : t("maps.leg.stops", { ...ends, n });
+}
+
 /** A transit route leg by leg: each walk, and each ride with its lines and stops. */
 function Legs({ legs }: { legs: NonNullable<Eta["legs"]> }) {
   const { t } = useApp();
@@ -371,8 +383,12 @@ function Legs({ legs }: { legs: NonNullable<Eta["legs"]> }) {
         ) : (
           <ListItem
             key={i}
-            label={t("maps.leg.ride", { lines: leg.lines.join(" / "), min: leg.durationMin })}
-            description={t("maps.leg.stops", { from: leg.stops[0] ?? "", to: leg.stops.at(-1) ?? "", n: leg.stops.length })}
+            label={
+              leg.lines.length > 0
+                ? t("maps.leg.ride", { lines: leg.lines.join(" / "), min: leg.durationMin })
+                : t("maps.leg.other", { min: leg.durationMin })
+            }
+            description={stopsText(t, leg.stops)}
           />
         ),
       )}

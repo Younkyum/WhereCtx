@@ -352,6 +352,7 @@ describe("maps in the dashboard", () => {
     const legs = [
       { kind: "walk", durationMin: 4, distanceM: 300, lines: [], stops: [], path: [a, b] },
       { kind: "subway", durationMin: 20, distanceM: 11000, lines: ["2호선"], stops: ["판교", "양재", "강남"], path: [b, c] },
+      { kind: "subway", durationMin: 3, distanceM: 2000, lines: ["신분당선"], stops: ["판교", "양재"], path: [c, c] },
       { kind: "walk", durationMin: 3, distanceM: 200, lines: [], stops: [], path: [c, d] },
     ];
     routes.set("GET /v1/geo/eta", () => ({
@@ -377,11 +378,13 @@ describe("maps in the dashboard", () => {
     expect(lastScene().lines.map((l) => [l.points, Boolean(l.dashed)])).toEqual([
       [[a, b], true],
       [[b, c], false],
+      [[c, c], false],
       [[c, d], true],
     ]);
     expect(host.textContent).toContain("2호선, 20 min");
-    expect(host.textContent).toContain("판교 → 강남, 3 stops");
-    expect(host.textContent).toContain("0 transfers");
+    expect(host.textContent).toContain("판교 → 강남, 2 stops");
+    expect(host.textContent).toContain("판교 → 양재, 1 stop");
+    expect(host.textContent).toContain("No transfers");
     expect(host.textContent).toContain("₩1,550");
   });
 });
