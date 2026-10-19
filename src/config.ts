@@ -9,7 +9,8 @@
 
 import { asUserId, type PrivacyMode, type UserId } from "./types.js";
 import { normalizeDatabaseUrl } from "./db/url.js";
-import type { GeoCredentials } from "./geo/types.js";
+import { MAP_KEY_PATTERN } from "./geo/mapSdk.js";
+import type { GeoCredentials, GeoProviderName } from "./geo/types.js";
 
 export { normalizeDatabaseUrl };
 
@@ -158,8 +159,16 @@ export interface Config {
       kakao?: Extract<GeoCredentials, { provider: "kakao" }>;
       naver?: Extract<GeoCredentials, { provider: "naver" }>;
     };
+    /** Operator map keys (a Kakao JavaScript key, a Naver Maps key id), under the same fallback rule. */
+    operatorMapKeys: Partial<Record<GeoProviderName, string>>;
     /** Let every person fall back to the operator keys, not only USER_ID. */
     operatorKeyForAll: boolean;
+    /**
+     * Let every person fall back to the operator map keys, not only USER_ID.
+     * Apart from operatorKeyForAll because map loads happen in browsers and
+     * cannot be counted against GEO_OPERATOR_DAILY_CAP.
+     */
+    operatorMapKeyForAll: boolean;
     /** Provider calls a day each person other than USER_ID may make on an operator key. */
     operatorDailyCap: number;
     /** Answer every maps call from the fake provider (tests and the HTTP end-to-end run only). */
@@ -178,6 +187,18 @@ function operatorKeys(): Config["geo"]["operatorKeys"] {
     ...(restKey ? { kakao: { provider: "kakao" as const, restKey } } : {}),
     ...(clientId && clientSecret ? { naver: { provider: "naver" as const, clientId, clientSecret } } : {}),
   };
+}
+
+function operatorMapKeys(): Config["geo"]["operatorMapKeys"] {
+  const keys = { kakao: ["KAKAO_JS_KEY", envOptional("KAKAO_JS_KEY")], naver: ["NAVER_MAPS_KEY_ID", envOptional("NAVER_MAPS_KEY_ID")] } as const;
+  const found: Config["geo"]["operatorMapKeys"] = {};
+  for (const provider of ["kakao", "naver"] as const) {
+    const [name, key] = keys[provider];
+    if (key === undefined) continue;
+    if (!MAP_KEY_PATTERN.test(key)) throw new Error(`${name} must be 8 to 128 letters, digits, - or _`);
+    found[provider] = key;
+  }
+  return found;
 }
 
 /** The fake maps provider never answers in production: only under NODE_ENV test or development. */
@@ -247,7 +268,9 @@ export function loadConfig(): Config {
     },
     geo: {
       operatorKeys: operatorKeys(),
+      operatorMapKeys: operatorMapKeys(),
       operatorKeyForAll: envBool("GEO_OPERATOR_KEY_FOR_ALL", false),
+      operatorMapKeyForAll: envBool("GEO_OPERATOR_MAP_KEY_FOR_ALL", false),
       operatorDailyCap: Math.max(0, envInt("GEO_OPERATOR_DAILY_CAP", 200)),
       fake: geoFake(),
     },

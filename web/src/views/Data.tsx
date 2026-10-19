@@ -13,7 +13,7 @@ import { Table } from "@astryxdesign/core/Table";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Timestamp } from "@astryxdesign/core/Timestamp";
-import { useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "@astryxdesign/core/Link";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
@@ -29,6 +29,8 @@ import {
   type PresenceEvent,
   type PrivacySettings,
 } from "../model";
+import { placesScene, type LatLon } from "../mapScene";
+import { MapView, useMapConfig } from "../MapView";
 import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
 import { PlaceRules } from "./PlaceRules";
 
@@ -42,6 +44,10 @@ export function PlacesView() {
   const notify = useNotify();
   const confirm = useConfirm();
   const [places, reload] = useLoad(() => api<{ places: Place[] }>("/v1/places").then((r) => r.places ?? []), []);
+  const mapConfig = useMapConfig();
+  const [picked, setPicked] = useState<LatLon | null>(null);
+  const list = places.kind === "ready" ? places.data : null;
+  const scene = useMemo(() => placesScene(list ?? [], picked, t("map.picked")), [list, picked, t]);
   const remove = async (p: Place) => {
     if (!(await confirm({ title: t("places.deleteConfirm", { name: p.name }), action: t("common.delete") }))) return;
     try {
@@ -83,10 +89,17 @@ export function PlacesView() {
           }
         </Loaded>
       </Panel>
+      <MapView config={mapConfig} scene={scene} title={t("places.map")} hint={t("places.mapHint")} onPick={setPicked} />
       <PlaceRules state={places} onSaved={reload} />
       <AddByAddress onAdded={reload} />
       <AddHere onAdded={reload} />
-      <AddByCoordinates onAdded={reload} />
+      <AddByCoordinates
+        picked={picked}
+        onAdded={async () => {
+          setPicked(null);
+          await reload();
+        }}
+      />
     </Page>
   );
 }
@@ -223,7 +236,8 @@ function AddHere({ onAdded }: { onAdded: () => Promise<void> }) {
   );
 }
 
-function AddByCoordinates({ onAdded }: { onAdded: () => Promise<void> }) {
+/** `picked`: a point clicked on the map, which fills in the coordinates. */
+function AddByCoordinates({ picked, onAdded }: { picked: LatLon | null; onAdded: () => Promise<void> }) {
   const { t } = useApp();
   const notify = useNotify();
   const types = usePlaceTypes();
@@ -232,6 +246,11 @@ function AddByCoordinates({ onAdded }: { onAdded: () => Promise<void> }) {
   const [lat, setLat] = useState<number | null>(null);
   const [lon, setLon] = useState<number | null>(null);
   const [radius, setRadius] = useState<number | null>(150);
+  useEffect(() => {
+    if (!picked) return;
+    setLat(Number(picked.lat.toFixed(6)));
+    setLon(Number(picked.lon.toFixed(6)));
+  }, [picked]);
   const valid =
     name.trim() !== "" &&
     lat != null && lat >= -90 && lat <= 90 &&

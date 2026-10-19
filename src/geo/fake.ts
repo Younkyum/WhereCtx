@@ -89,6 +89,7 @@ export class FakeGeoProvider implements GeoProvider {
         { name: "테스트대로", distanceM: Math.round(distanceM * 0.6), path: [along(origin, destination, 0.5)] },
         { name: "테스트도착로", distanceM: Math.round(distanceM * 0.3), path: [along(origin, destination, 0.99)] },
       ],
+      path: [origin, along(origin, destination, 0.5), destination],
       steps: ["테스트출발로12번길에서 테스트대로 방면으로 우회전", "테스트도착로 진입"],
       departAt: (future ? request.departAt! : this.now()).toISOString(),
     };

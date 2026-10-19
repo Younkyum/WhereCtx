@@ -44,7 +44,7 @@ function config(defaultUserId: string): WhereCtxConfig {
     events: { retentionHours: 720 },
     sharing: { auditRetentionDays: 365 },
     oauth: { dynamicRegistration: false },
-    geo: { operatorKeys: {}, operatorKeyForAll: false, fake: false },
+    geo: { operatorMapKeys: {}, operatorKeys: {}, operatorKeyForAll: false, fake: false },
     activity: { accessLogRetentionDays: 90, ingestLogRetentionDays: 7 },
   };
 }

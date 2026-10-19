@@ -71,6 +71,7 @@ export const ACCESS_ACTIONS = [
   "activity.read",
   "admin.logs",
   "geo.settings",
+  "geo.map_config",
   "geo.credentials.write",
   "geo.credentials.delete",
   "geo.credentials.test",

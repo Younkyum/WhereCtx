@@ -187,6 +187,7 @@ export class NaverProvider implements GeoProvider {
           path: (route.path ?? []).slice(s.pointIndex, s.pointIndex + s.pointCount).map(([lon, lat]) => ({ lat, lon })),
         }),
       ),
+      path: (route.path ?? []).map(([lon, lat]) => ({ lat, lon })),
       // 87 and 88 mark a waypoint and the destination, not a turn.
       steps: (route.guide ?? []).filter((g) => g.type !== 87 && g.type !== 88).map((g) => g.instructions).slice(0, 30),
       departAt: this.now().toISOString(),

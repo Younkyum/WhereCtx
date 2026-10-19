@@ -21,6 +21,7 @@
 import { labelForStatus } from "../geofence/engine.js";
 import type {
   CoarsePresenceView,
+  Place,
   Freshness,
   Motion,
   PrecisePresenceView,
@@ -186,8 +187,19 @@ export interface PresenceViews {
    * policy mode, not the per-reading snapshot (F8). No raw GPS, no geohash.
    */
   agentCoarse(presence: PresenceContext, settings: PrivacySettings): CoarsePresenceView | null;
-  /** What the owner sees of themself: the area while maps and areaOnHome are on. */
+  /**
+   * What the owner sees of themself, whatever the agent policy (hidden mode,
+   * allowPreciseLocation, a reason, home protection are about agents): the
+   * area while maps and areaOnHome are on.
+   */
   ownerCoarse(presence: PresenceContext, settings: PrivacySettings): CoarsePresenceView;
+  /**
+   * The owner's own point, whatever the agent policy; null before any
+   * reading. `nearHome`: the home place they are near while
+   * skipProviderNearHome keeps the map provider away from there, so a map
+   * shows that place instead of the point.
+   */
+  ownerPrecise(presence: PresenceContext, nearHome: HomePlace | null): OwnerPreciseView | null;
   /**
    * What a viewer sees of one person who shares with them. Human sharing does
    * not consult the owner's agent policy (`defaultAgentAccess` and the precise
@@ -218,6 +230,10 @@ export function presenceViews(config: FreshnessConfig, clock: Clock): PresenceVi
         : null,
     ownerCoarse: (presence, settings) =>
       coarse(presence, settings.defaultAgentAccess, settings.geoEnabled && settings.areaOnHome ? presence.coarse?.area : undefined),
+    ownerPrecise: (presence, nearHome) => {
+      const view = buildPreciseView(presence, clock);
+      return view && (nearHome ? { ...view, nearHome: { name: nearHome.name, lat: nearHome.lat, lon: nearHome.lon, radiusM: nearHome.radiusM } } : view);
+    },
     person: (presence, share, owner) => {
       if (owner.sharingPaused) return { paused: true, presence: null, precise: null };
       const area = share.showArea && owner.geoEnabled ? presence?.coarse?.area : undefined;
@@ -247,6 +263,13 @@ export function presenceViews(config: FreshnessConfig, clock: Clock): PresenceVi
       return { paused: false, presence: summary, precise };
     },
   };
+}
+
+/** A home place, as the owner's map draws it. */
+export type HomePlace = Pick<Place, "name" | "lat" | "lon" | "radiusM">;
+
+export interface OwnerPreciseView extends PrecisePresenceView {
+  nearHome?: HomePlace;
 }
 
 export interface PreciseAuthInput {

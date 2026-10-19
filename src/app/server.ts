@@ -9,7 +9,7 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
-import { SECURE_HEADERS_OPTIONS } from "./securityHeaders.js";
+import { SECURE_HEADERS_OPTIONS, pageSecurity } from "./securityHeaders.js";
 import { RateLimiter, authFailureGuard } from "../api/rateLimit.js";
 import { authenticate, sessionAuth } from "../api/middleware.js";
 import { auditAccess, restActionOf } from "../api/accessAudit.js";
@@ -48,7 +48,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
 
   // Security headers (defense-in-depth on the admin dashboard especially): CSP,
   // nosniff, frame-deny, no referrer leakage (review finding D3).
-  app.use("*", secureHeaders(SECURE_HEADERS_OPTIONS));
+  app.use("*", secureHeaders(SECURE_HEADERS_OPTIONS), pageSecurity);
 
   // Cap request bodies well above any legitimate payload (ingest/admin bodies
   // are tiny) to close the OOM/DoS vector on an internet-exposed bind (P8).

@@ -4,6 +4,7 @@ import { KakaoProvider, kakaoDepartureTime } from "./kakao.js";
 import { NaverProvider } from "./naver.js";
 import { GEO_MAX_BODY_BYTES, PROVIDER_TEXT_MAX } from "./http.js";
 import { GeoError, roundingProvider } from "./types.js";
+import { haversineMeters } from "../geofence/distance.js";
 
 const fixture = (name: string): unknown =>
   JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
@@ -100,10 +101,15 @@ describe("Kakao adapter, against the documented samples", () => {
         expect.objectContaining({ name: "문형산안길1번길", distanceM: 85 }),
         expect.objectContaining({ name: "", distanceM: 14 }),
       ],
+      path: expect.any(Array),
       steps: ["우회전"],
       departAt: NOW.toISOString(),
     });
     expect(out.roads[2]!.path).toHaveLength(5);
+    // Every road's vertexes in order, the unnamed one too; where two roads meet, the shared point once.
+    const all = out.roads.flatMap((r) => r.path);
+    expect(out.path).toEqual(all.filter((p, i) => i === 0 || p.lat !== all[i - 1]!.lat || p.lon !== all[i - 1]!.lon));
+    expect(out.path).toHaveLength(all.length - 1);
     const url = stub.sent[0]!.url;
     expect(`${url.origin}${url.pathname}`).toBe("https://apis-navi.kakaomobility.com/v1/directions");
     expect(url.searchParams.get("origin")).toBe("127.108,37.402");
@@ -196,6 +202,10 @@ describe("Naver adapter, against the documented samples", () => {
         { name: "상주영천고속도로", distanceM: 92508, path: [] },
         { name: "경부고속도로", distanceM: 89391, path: [] },
       ],
+      path: [
+        { lat: 37.3597094, lon: 127.1059979 },
+        { lat: 35.179319, lon: 129.0762855 },
+      ],
       steps: ["머내공원사거리에서 '서분당(고기)IC' 방면으로 우회전"],
       departAt: NOW.toISOString(),
     });
@@ -204,6 +214,20 @@ describe("Naver adapter, against the documented samples", () => {
     expect(url.searchParams.get("start")).toBe("127.108,37.402");
     expect(url.searchParams.get("goal")).toBe("127.11,37.394");
     expect(url.searchParams.get("option")).toBe("traoptimal");
+  });
+
+  it("gives the whole route as drawn, start to goal with no gap, not only its named sections", async () => {
+    // Built for this test (naver-directions5-path.json): the documented sample's path holds only its two ends.
+    const body = fixture("naver-directions5-path.json") as { route: { traoptimal: [{ path: [number, number][]; summary: { start: { location: [number, number] }; goal: { location: [number, number] } } }] } };
+    const sample = body.route.traoptimal[0];
+    const out = await naver(stubFetch({ body })).route({ origin: A, destination: B });
+    expect(out.path).toEqual(sample.path.map(([lon, lat]) => ({ lat, lon })));
+    const [start, goal] = [sample.summary.start.location, sample.summary.goal.location];
+    expect(out.path[0]).toEqual({ lat: start[1], lon: start[0] });
+    expect(out.path.at(-1)).toEqual({ lat: goal[1], lon: goal[0] });
+    const gaps = out.path.slice(1).map((p, i) => haversineMeters(out.path[i]!.lat, out.path[i]!.lon, p.lat, p.lon));
+    expect(Math.max(...gaps)).toBeLessThan(150);
+    expect(out.roads.flatMap((r) => r.path).length).toBeLessThan(out.path.length);
   });
 
   it("maps avoid to the matching option, and refuses what Directions 5 cannot do", async () => {

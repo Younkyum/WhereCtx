@@ -16,6 +16,8 @@ export default defineConfig({
     emptyOutDir: true,
     assetsInlineLimit: 0,
     modulePreload: { polyfill: false },
+    // The dashboard, and the frame its maps are drawn in (the only page that loads a provider's script).
+    rollupOptions: { input: { index: fileURLToPath(new URL("index.html", import.meta.url)), map: fileURLToPath(new URL("map.html", import.meta.url)) } },
     // React and the design system are most of the main chunk; this is one page, so splitting buys nothing.
     chunkSizeWarningLimit: 1000,
   },
