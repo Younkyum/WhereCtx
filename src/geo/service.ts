@@ -159,8 +159,8 @@ function drivingOnlyOption(request: EtaRequest, now: Date): Extract<EtaOutcome, 
   return null;
 }
 
-/** One credential's identical request: the same answer within AGENT_ANSWER_TTL_MS. */
-function answerKey(userId: UserId, caller: AgentCaller, request: EtaRequest, precise: boolean): string {
+/** One credential's identical request, under the same chosen provider: the same answer within AGENT_ANSWER_TTL_MS. */
+function answerKey(userId: UserId, caller: AgentCaller, request: EtaRequest, { precise, settings }: Gated): string {
   const stepMs = AGENT_TIME_STEP_MIN * 60_000;
   return JSON.stringify([
     userId,
@@ -173,6 +173,7 @@ function answerKey(userId: UserId, caller: AgentCaller, request: EtaRequest, pre
     request.departAt ? Math.floor(request.departAt.getTime() / stepMs) : null,
     [...(request.avoid ?? [])].sort(),
     precise,
+    settings.geoProvider,
   ]);
 }
 
@@ -318,7 +319,7 @@ export class GeoService {
   async eta(userId: UserId, request: EtaRequest, caller: AgentCaller): Promise<EtaOutcome<AgentEtaAnswer>> {
     const gated = await this.gate(userId, request, caller);
     if ("kind" in gated) return gated;
-    const key = answerKey(userId, caller, request, gated.precise);
+    const key = answerKey(userId, caller, request, gated);
     const now = this.clock().getTime();
     const kept = this.agentAnswers.get(key, now);
     if (kept) return kept;

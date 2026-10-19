@@ -349,6 +349,9 @@ describe("polling an agent's ETA with a moving clock and a moving phone", () => 
       [{ to: "office", mode: "walk" as const }, agent()],
     ] as const) await eta(request, caller);
     expect(routeCalls()).toBe(4);
+    await set({ geoProvider: "naver" });
+    await eta({ to: "office" });
+    expect(routeCalls(), "a different chosen provider is a different question").toBe(5);
   });
 
   it("a road that runs beside any registered place, not only the ends, is not named", async () => {
