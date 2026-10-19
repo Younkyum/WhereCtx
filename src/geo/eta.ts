@@ -21,9 +21,9 @@
  *   precise location (and asked for the steps).
  */
 
-import { haversineMeters } from "../geofence/distance.js";
 import type { PresenceStatus } from "../types.js";
 import type { FreshnessView } from "../presence/freshness.js";
+import { clearOf, type Keepout } from "./clearance.js";
 import { mainRoads } from "./roads.js";
 import type { LatLon, RouteResult, TransitLeg } from "./types.js";
 
@@ -47,17 +47,11 @@ export function freshEnoughToRoute(fresh: FreshnessView, status: PresenceStatus)
   return fresh.freshness === "live" || (fresh.freshness === "stationary" && INSIDE_PLACE.has(status));
 }
 
-/** Whether a stretch has geometry and every point of it is farther than AGENT_ROAD_CLEARANCE_M from every point in `avoid`. */
-function clearOf(stretch: { path: readonly LatLon[] }, avoid: readonly LatLon[]): boolean {
-  return (
-    stretch.path.length > 0 &&
-    stretch.path.every((p) => avoid.every((a) => haversineMeters(p.lat, p.lon, a.lat, a.lon) > AGENT_ROAD_CLEARANCE_M))
-  );
-}
+const clear = (stretch: { path: readonly LatLon[] }, avoid: readonly Keepout[]): boolean => clearOf(stretch.path, avoid, AGENT_ROAD_CLEARANCE_M);
 
 /** The main roads an agent may be told: none near `avoid`, no side streets, none of unknown whereabouts. */
-export function agentRoads(roads: Extract<RouteResult, { mode: "car" }>["roads"], avoid: readonly LatLon[]): string[] {
-  return mainRoads(roads.filter((r) => !SIDE_STREET.test(r.name.trim()) && clearOf(r, avoid)));
+export function agentRoads(roads: Extract<RouteResult, { mode: "car" }>["roads"], avoid: readonly Keepout[]): string[] {
+  return mainRoads(roads.filter((r) => !SIDE_STREET.test(r.name.trim()) && clear(r, avoid)));
 }
 
 /**
@@ -66,8 +60,8 @@ export function agentRoads(roads: Extract<RouteResult, { mode: "car" }>["roads"]
  * alight and run farther than AGENT_ROAD_CLEARANCE_M from every point in
  * `avoid`, and never a ride of unknown whereabouts.
  */
-export function agentLines(legs: readonly TransitLeg[], avoid: readonly LatLon[], precise: boolean): string[] {
-  const rides = legs.filter((l) => l.kind !== "walk" && (precise || clearOf(l, avoid)));
+export function agentLines(legs: readonly TransitLeg[], avoid: readonly Keepout[], precise: boolean): string[] {
+  const rides = legs.filter((l) => l.kind !== "walk" && (precise || clear(l, avoid)));
   return [...new Set(rides.flatMap((l) => l.lines))];
 }
 
@@ -92,7 +86,7 @@ export const TRANSIT_STEPS_WITHHELD = "transit steps name the stops around the p
  */
 export function agentDetail(
   route: RouteResult,
-  avoid: readonly LatLon[],
+  avoid: readonly Keepout[],
   access: { precise: boolean; directions: boolean },
 ): {
   detail: { summary: string[]; steps?: string[]; stepsWithheld?: string; transfers?: number; walkMin?: number };

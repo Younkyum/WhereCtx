@@ -26,6 +26,7 @@ import { FakeGeoProvider } from "./fake.js";
 import { GeoKeys, type CallResult, type GeoCallAction, type GeoCaller, type GeoStatus, type KeyTestOutcome } from "./keys.js";
 import { agentDetail, agentNumbers, freshEnoughToRoute, ownerDetail, ownerNumbers, type OwnerLeg } from "./eta.js";
 import { nearHomePlace } from "../geofence/shape.js";
+import { keepouts, type Keepout } from "./clearance.js";
 import {
   PROVIDER_ROUTE_MODES,
   type GeocodeCandidate,
@@ -138,8 +139,8 @@ interface TimedRoute {
   common: Omit<EtaCommon, "durationMin" | "distanceKm" | "arriveAt" | "summary">;
   /** Whether an agent's request may read the precise location (always false for the owner). */
   precise: boolean;
-  /** Points whose roads an agent is not told about: the start, and a registered destination. */
-  avoid: LatLon[];
+  /** What an agent's roads and lines keep clear of: the start, the destination, and every registered place as drawn. */
+  avoid: Keepout[];
 }
 
 export type AgentCaller = Extract<GeoCaller, { kind: "agent" }>;
@@ -353,7 +354,7 @@ export class GeoService {
     return {
       route,
       precise,
-      avoid: target.kind === "place" ? [presence.precise, target.point] : [presence.precise],
+      avoid: keepouts([presence.precise, target.point], places),
       common: {
         mode: route.mode,
         destination: { label: target.label, kind: target.kind },

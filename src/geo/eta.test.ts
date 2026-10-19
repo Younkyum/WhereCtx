@@ -5,6 +5,7 @@ import type { WhereCtxConfig } from "../config.js";
 import type { NormalizedReading } from "../normalizer/types.js";
 import { asUserId, type PrivacySettings, type TokenScope } from "../types.js";
 import { TestClock, bootApp } from "../testing/accounts.js";
+import { keepouts } from "./clearance.js";
 import { agentRoads } from "./eta.js";
 import type { AgentCaller, EtaOutcome, EtaRequest } from "./service.js";
 
@@ -114,8 +115,8 @@ describe("the roads an agent is told", () => {
       road("서울외곽순환고속도로", 8, 2000),
       road("목적지앞로", 9.8, 6000),
     ];
-    expect(agentRoads(roads, [ORIGIN, at(10)])).toEqual(["경부고속도로", "서울외곽순환고속도로"]);
-    expect(agentRoads(roads, [ORIGIN])).toEqual(["목적지앞로", "경부고속도로", "서울외곽순환고속도로"]);
+    expect(agentRoads(roads, keepouts([ORIGIN, at(10)], []))).toEqual(["경부고속도로", "서울외곽순환고속도로"]);
+    expect(agentRoads(roads, keepouts([ORIGIN], []))).toEqual(["목적지앞로", "경부고속도로", "서울외곽순환고속도로"]);
   });
 });
 
