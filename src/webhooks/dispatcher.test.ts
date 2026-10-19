@@ -457,4 +457,19 @@ describe("quiet places and place filters", () => {
       { event: "presence.became_stale" },
     ]);
   });
+
+  it("filters every event that names a place, presence.updated included, and passes those that name none", async () => {
+    await webhooks.create(USER, { url: "https://example.test/hook", events: ["*"], places: ["gym"] });
+    nowMs += 1000;
+    await events.append(USER, { type: "presence.updated", status: "home", placeName: "home" });
+    nowMs += 1;
+    await events.append(USER, { type: "presence.updated", status: "custom", placeName: "gym" });
+    nowMs += 1;
+    await events.append(USER, { type: "presence.updated", status: "away" });
+
+    expect(await delivered()).toEqual([
+      { event: "presence.updated", place: "gym" },
+      { event: "presence.updated" },
+    ]);
+  });
 });

@@ -637,8 +637,9 @@ The owner asked to see things on a map. Agents still get none.
   `left_place` is stored with `webhook = 0` whatever it used to emit, since
   the rules that said otherwise are gone.
 - **Webhook place filter is one pure match.** `wants(hook, event)`: the
-  event type filter as before, and for place events the place must be in
-  `places` when set. Changing the place filter stops an in-flight drain, as
+  event type filter as before, and an event that carries a place name must
+  name one in `places` when set; `presence.updated` inside a place counts,
+  since it names the place too. An event with no place name passes. Changing the place filter stops an in-flight drain, as
   changing the events does.
 - **Home protection is measured, not read off the status.** With dwell
   times the status follows the confirmed place, which can still say "café"

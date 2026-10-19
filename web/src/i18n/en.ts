@@ -557,7 +557,7 @@ export const EN = {
   "placeRules.hint": "Waiting times are checked about once a minute, so an arrival or departure can count up to a minute late. Agents only see that a change is under way, never these settings.",
   "webhooks.places": "Places",
   "webhooks.allPlaces": "All places",
-  "webhooks.allPlacesDesc": "Arrivals, departures and approaches at any place. Other events are sent either way.",
+  "webhooks.allPlacesDesc": "Events at any place: arrivals, departures, approaches, and updates while you are at one. Events that name no place are sent either way.",
 
   "header.name": "Header name",
   "header.value": "Header value",

@@ -524,10 +524,12 @@ a delivery was in flight across the pause. A delivery in flight when the
 selection changes is the last one sent under the old selection.
 The dashboard creates hooks for `presence.entered_place` and
 `presence.left_place` unless the person picks otherwise.
-`places` (1 to 50 names) limits the place events (`entered_place`,
-`left_place`, `approaching_place`) to those places; every other event type
-is delivered as before. Leaving it out, or `PATCH` with `null`, delivers
-every place. Events of a place with `notifyWebhooks` off are never
+`places` (1 to 50 names) limits every event that names a place to those
+places: `entered_place`, `left_place`, `approaching_place`, and
+`presence.updated` while inside a place. An event that names no place
+(`presence.updated` outside every place, `became_stale`,
+`privacy_changed`) is delivered as before. Leaving it out, or `PATCH` with
+`null`, delivers every place. Events of a place with `notifyWebhooks` off are never
 delivered, whatever the hook selects.
 `POST` answers `400` when the URL's host does not resolve, or resolves to a
 private or reserved IP (SSRF guard) unless `WEBHOOK_ALLOW_PRIVATE_TARGETS=true`.

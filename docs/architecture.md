@@ -143,7 +143,8 @@ The fired names are kept in `approached_places`.
 Events of a place with `notifyWebhooks` off are stored with `webhook = 0`,
 and so is `presence.updated` while inside it; the dispatcher's event read
 filters `webhook = 1` in SQL. A hook with a place filter
-(`webhooks.places`) gets place events only for those places;
+(`webhooks.places`) gets an event that names a place only for those places,
+`presence.updated` included, and every event that names none;
 `wants()` in the dispatcher is the one match.
 
 ## Read flow
