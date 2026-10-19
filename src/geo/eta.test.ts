@@ -351,6 +351,22 @@ describe("polling an agent's ETA with a moving clock and a moving phone", () => 
     expect(routeCalls()).toBe(4);
   });
 
+  it("a road that runs beside any registered place, not only the ends, is not named", async () => {
+    await boot({ fake: true });
+    await place("office", "work", office);
+    await set({ geoEnabled: true, etaToAgents: true });
+    await read({ lat: 37.4, lon: 127.0 });
+    const summary = async (to: string) => {
+      const outcome = await eta({ to });
+      if (outcome.kind !== "ok") throw new Error(`expected an answer, got ${outcome.kind}`);
+      return outcome.answer.summary;
+    };
+    expect(await summary("office")).toContain("테스트대로");
+    await place("gym", "custom", { lat: (37.4 + office.lat) / 2, lon: (127.0 + office.lon) / 2 });
+    await place("office 2", "work", office);
+    expect(await summary("office 2")).not.toContain("테스트대로");
+  });
+
   it("the owner is never served a kept answer", async () => {
     await boot({ fake: true });
     await place("office", "work", office);
