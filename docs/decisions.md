@@ -610,10 +610,13 @@ The owner asked to see things on a map. Agents still get none.
   A sweep or a place change has no new reading, so it measures the stored
   point; nothing replays an earlier verdict, so a moved or deleted
   candidate simply stops being one.
-- **Approach fires once per approach.** Inside the ring, at least 25 m (or
-  the fix's accuracy) closer than the last reading, not inside, not the
-  confirmed or pending place. It re-arms past 1.1 x the ring. Readings
-  only; never a sweep or a place change.
+- **Approach fires once per approach.** Inside the ring, closer than the
+  last reading by at least 25 m or either fix's accuracy, that last reading
+  received within 10 minutes, the new one not `stationary`, not inside, not
+  the confirmed or pending place. GPS jitter at rest and a jump from a
+  reading hours old are not heading in. It re-arms past the ring plus 10%
+  of it, and at least 50 m, so a narrow ring does not re-fire on jitter at
+  its edge. Readings only; never a sweep or a place change.
 - **A rule left out of POST /v1/places keeps its value.** The shape and
   label are replaced as before; `enterAfterSec`, `exitAfterSec`,
   `approachM`, `emits`, `notifyWebhooks` and `notifyReminders` merge. An

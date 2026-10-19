@@ -169,8 +169,9 @@ export class PresenceService {
     const approached = approach({
       places,
       approached: prev?.approachedPlaces ?? [],
-      prev: prev?.precise,
-      now: reading.precise,
+      prev: prev?.precise && { ...prev.precise, receivedAt: prev.receivedAt },
+      now: { ...reading.precise, motion: reading.motion },
+      at: now,
       confirmed: verdict.dwell.current,
       candidate: verdict.dwell.candidate?.name ?? null,
     });

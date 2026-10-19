@@ -133,10 +133,12 @@ driving past such a place does not count; a leave may be confirmed either
 way. A deleted confirmed place leaves at once.
 
 Approach detection (`src/geofence/approach.ts`) runs on readings only. It
-fires `presence.approaching_place` once when a reading moves at least
-25 m (or its accuracy) toward a place with `approachM` set, inside that
-ring, and not into the confirmed or pending place; it re-arms once readings
-are past 1.1 x the ring. The fired names are kept in `approached_places`.
+fires `presence.approaching_place` once when a reading moves toward a
+place with `approachM` set, inside that ring, and not into the confirmed or
+pending place: at least 25 m (or either fix's accuracy) closer than a
+previous reading received within 10 minutes, and not marked `stationary`.
+It re-arms once readings are past the ring by 10% of it, at least 50 m.
+The fired names are kept in `approached_places`.
 
 Events of a place with `notifyWebhooks` off are stored with `webhook = 0`,
 and so is `presence.updated` while inside it; the dispatcher's event read
