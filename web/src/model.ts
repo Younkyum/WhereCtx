@@ -6,6 +6,7 @@
 
 import type { WorkspaceRole } from "../../src/accounts/types";
 import type { AccessEntry as ServerAccessEntry } from "../../src/activity/types";
+import type { GeoProviderName } from "../../src/geo/types";
 
 export type { WorkspaceRole };
 export {
@@ -73,13 +74,60 @@ export interface Presence {
   stale: boolean;
   motion?: string | null;
   updatedAgoSec: number;
+  /** The neighbourhood, while maps are on. */
+  area?: string;
 }
 
-export type PrivacySettings = Record<PrivacyFlag, boolean> & {
-  defaultAgentAccess: AgentAccess;
-  retentionHours: number;
-  sharingPaused: boolean;
-};
+export { GEO_PROVIDERS, type GeoProviderName } from "../../src/geo/types";
+
+/** The maps switches, each a privacy setting (PUT /v1/privacy). */
+export const GEO_FLAGS = ["geoEnabled", "skipProviderNearHome", "areaToAgents", "etaToAgents", "areaToPeople"] as const;
+export type GeoFlag = (typeof GEO_FLAGS)[number];
+
+export type PrivacySettings = Record<PrivacyFlag, boolean> &
+  Record<GeoFlag, boolean> & {
+    defaultAgentAccess: AgentAccess;
+    retentionHours: number;
+    sharingPaused: boolean;
+    geoProvider: GeoProviderName | null;
+  };
+
+export interface GeoCredential {
+  provider: GeoProviderName;
+  /** Each key kind held, with its last four characters ("" for a secret). */
+  kinds: Record<string, string>;
+  updatedAt: string;
+  lastUsedAt: string | null;
+  lastError: string | null;
+}
+
+export interface GeoStatus {
+  active: { provider: GeoProviderName; source: "own" | "operator" } | null;
+  credentials: GeoCredential[];
+  operator: GeoProviderName[];
+}
+
+export interface GeoCandidate {
+  label: string;
+  address: string;
+  roadAddress?: string;
+  lat: number;
+  lon: number;
+  kind: "address" | "place";
+}
+
+export interface Eta {
+  destination: { label: string; kind: "place" | "address" };
+  origin: "current_location" | "home";
+  durationMin: number;
+  distanceKm: number;
+  trafficAware: boolean;
+  traffic: "live" | "predicted";
+  arriveAt: string;
+  summary: string[];
+  provider: GeoProviderName;
+  deepLinks?: { kakaoMap: string; naverMap: string };
+}
 
 export interface PreciseLocation {
   lat: number;
@@ -93,7 +141,7 @@ export interface Person {
   user: UserRef;
   level: GrantedLevel;
   paused: boolean;
-  presence: { status: string; stale: boolean; motion?: string | null; updatedAgoMin: number } | null;
+  presence: { status: string; stale: boolean; motion?: string | null; updatedAgoMin: number; area?: string } | null;
   precise?: "available" | PreciseLocation | null;
   preciseWithheld?: Withheld | null;
 }
@@ -101,6 +149,7 @@ export interface Person {
 export interface ShareTerms {
   level: GrantedLevel;
   hideHomeExact?: boolean;
+  showArea?: boolean;
 }
 
 export interface Shares {

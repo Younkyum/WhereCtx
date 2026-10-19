@@ -18,19 +18,36 @@ import { useEffect, useState } from "react";
 import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import { geoErrorKey, motionOf, safeHttpUrl, statusOf } from "../lib";
-import type { Person, PreciseLocation, Presence, PrivacySettings } from "../model";
+import type { Eta, Person, Place, PreciseLocation, Presence, PrivacySettings } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, useAction, useFormat, useLoad, useNotify } from "../ui";
 
-type Mine = { presence: Presence | null; problem: "none" | "hidden" | null; paused: boolean };
+type Mine = { presence: Presence | null; problem: "none" | "hidden" | null; paused: boolean; toHome: Eta | null };
+
+/**
+ * Drive time to my home place, while maps are on and I am away from it.
+ * One provider call per Home load; any refusal (no key, stale, no home place)
+ * just leaves the line out.
+ */
+async function loadToHome(settings: PrivacySettings | undefined, presence: Presence | null): Promise<Eta | null> {
+  if (!settings?.geoEnabled || !presence || presence.status === "home" || presence.status === "near_home") return null;
+  const home = (await api<{ places: Place[] }>("/v1/places")).places?.find((p) => p.type === "home");
+  if (!home) return null;
+  try {
+    return (await api<{ eta: Eta }>(`/v1/geo/eta?to=${encodeURIComponent(home.name)}`)).eta;
+  } catch {
+    return null;
+  }
+}
 
 async function loadMine(): Promise<Mine> {
   const privacy = await api<{ settings: PrivacySettings }>("/v1/privacy");
   const paused = Boolean(privacy.settings?.sharingPaused);
   try {
-    return { presence: await api<Presence>("/v1/presence"), problem: null, paused };
+    const presence = await api<Presence>("/v1/presence");
+    return { presence, problem: null, paused, toHome: await loadToHome(privacy.settings, presence) };
   } catch (e) {
-    if (e instanceof ApiError && e.status === 404) return { presence: null, problem: "none", paused };
-    if (e instanceof ApiError && e.status === 403) return { presence: null, problem: "hidden", paused };
+    if (e instanceof ApiError && e.status === 404) return { presence: null, problem: "none", paused, toHome: null };
+    if (e instanceof ApiError && e.status === 403) return { presence: null, problem: "hidden", paused, toHome: null };
     throw e;
   }
 }
@@ -113,6 +130,12 @@ function MyStatus({ mine, sharing, onShare }: { mine: Mine; sharing: boolean; on
         <VStack gap={1}>
           <Text type="supporting">{t("home.mine")}</Text>
           <Heading level={2}>{p ? t(`st.${statusOf(p.status)}`) : "—"}</Heading>
+          {p?.area ? <Text>{p.area}</Text> : null}
+          {mine.toHome ? (
+            <Text weight="medium">
+              {t(mine.toHome.trafficAware ? "home.toHomeLive" : "home.toHome", { min: mine.toHome.durationMin })}
+            </Text>
+          ) : null}
           <HStack gap={2} vAlign="center" wrap="wrap">
             <Text type="supporting">{meta}</Text>
             {motion ? <Badge label={t(`motion.${motion}`)} /> : null}
@@ -157,6 +180,7 @@ function PersonCard({ person: p }: { person: Person }) {
         ) : (
           <VStack gap={1}>
             <Text weight="medium">{t(`st.${statusOf(pr.status)}`)}</Text>
+            {pr.area ? <Text>{pr.area}</Text> : null}
             <Text type="supporting">{fmt.ago(pr.updatedAgoMin)}</Text>
             <HStack gap={1} wrap="wrap">
               {motion ? <Badge label={t(`motion.${motion}`)} /> : null}

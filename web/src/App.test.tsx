@@ -349,7 +349,8 @@ describe("log views", () => {
     expect(path?.getAttribute("d")).toMatch(/^M[\d.]+ [\d.]+ L[\d.]+ [\d.]+$/);
     expect(host.textContent).toContain("At home");
     expect(host.textContent).toContain("37.52000, 127.03000");
-    const links = [...host.querySelectorAll("a")].filter((a) => a.textContent?.includes("Map"));
+    // The point links, not the nav's "Maps & routes".
+    const links = [...host.querySelectorAll("a")].filter((a) => a.textContent?.includes("Map") && a.getAttribute("href")?.startsWith("https:"));
     expect(links.map((a) => a.getAttribute("href"))).toEqual([
       "https://maps.google.com/?q=37.52,127.03",
       "https://maps.google.com/?q=37.5,127",
@@ -568,5 +569,90 @@ describe("log views", () => {
     expect(block.textContent).toContain("Header name");
     expect(block.textContent).toContain("Header value");
     expect(block.textContent).toContain("Get Contents of URL");
+  });
+});
+
+describe("maps", () => {
+  async function fill(input: HTMLInputElement, value: string) {
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+  const inputLabelled = (label: string) => {
+    const l = [...host.querySelectorAll("label")].find((x) => x.textContent?.trim() === label);
+    const input = (l?.htmlFor && document.getElementById(l.htmlFor)) || l?.parentElement?.querySelector("input");
+    if (!input) throw new Error(`no input "${label}"`);
+    return input as HTMLInputElement;
+  };
+
+  afterEach(() => {
+    location.hash = "";
+  });
+
+  it("shows a saved key only by its hint, saves a new one write-only, and turns maps on", async () => {
+    const bodies: unknown[] = [];
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/geo", () => ({
+      status: 200,
+      body: {
+        active: { provider: "kakao", source: "own" },
+        credentials: [{ provider: "kakao", kinds: { restKey: "cdef" }, updatedAt: "2026-10-19T00:00:00Z", lastUsedAt: null, lastError: null }],
+        operator: [],
+      },
+    }));
+    route("GET /v1/privacy", () => ({ status: 200, body: { settings: { geoEnabled: false, skipProviderNearHome: true, geoProvider: null } } }));
+    route("PUT /v1/privacy", (b) => (bodies.push(b), { status: 200, body: { settings: {} } }));
+    route("PUT /v1/geo/credentials/naver", (b) => (bodies.push(b), { status: 200, body: { credential: {} } }));
+    location.hash = "#maps";
+    await act(async () => root.render(<App />));
+    await settle();
+    expect(host.textContent).toContain("Saved key ••••cdef");
+    expect(host.textContent).toContain("Routes and addresses go to Kakao with your key.");
+
+    await fill(inputLabelled("Client ID"), "naver-client-id-1234");
+    await fill(inputLabelled("Client Secret"), "naver-client-secret-5678");
+    await act(async () => button("Save key").click());
+    await settle();
+    expect(bodies).toContainEqual({ clientId: "naver-client-id-1234", clientSecret: "naver-client-secret-5678" });
+    expect(host.textContent).not.toContain("naver-client-secret-5678");
+
+    const toggle = inputLabelled("Use maps with my location");
+    await act(async () => toggle.click());
+    await settle();
+    expect(bodies).toContainEqual({ geoEnabled: true });
+  });
+
+  it("adds a place by address: search, pick, save with the picked point", async () => {
+    let posted: any;
+    route("GET /v1/me", () => ({ status: 200, body: ME }));
+    route("GET /v1/places", () => ({ status: 200, body: { places: [] } }));
+    route("GET /v1/geo/search", () => ({
+      status: 200,
+      body: {
+        provider: "kakao",
+        candidates: [
+          { label: "판교역 신분당선", address: "경기 성남시 분당구 백현동 534", lat: 37.3948, lon: 127.1112, kind: "place" },
+          { label: "판교역 경강선", address: "경기 성남시 분당구 백현동 535", lat: 37.3951, lon: 127.1109, kind: "place" },
+        ],
+      },
+    }));
+    route("POST /v1/places", (b) => ((posted = b), { status: 201, body: { place: b } }));
+    location.hash = "#places";
+    await act(async () => root.render(<App />));
+    await settle();
+    await fill(inputLabelled("Address or place name"), "판교역");
+    await act(async () => button("Search").click());
+    await settle();
+    expect(calls).toContain(`GET /v1/geo/search?q=${encodeURIComponent("판교역")}`);
+    const map = [...host.querySelectorAll("a")].find((a) => a.textContent?.includes("View on map"))!;
+    expect(map.getAttribute("href")).toBe(`https://map.kakao.com/link/map/${encodeURIComponent("판교역 신분당선")},37.3948,127.1112`);
+    const use = [...host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === "Use this");
+    await act(async () => use[1]!.click());
+    await settle();
+    await act(async () => button("Save place").click());
+    await settle();
+    expect(posted).toMatchObject({ name: "판교역 경강선", type: "custom", lat: 37.3951, lon: 127.1109 });
   });
 });

@@ -116,6 +116,14 @@ export function SharingView() {
                               );
                             }}
                           />
+                          {current ? (
+                            <Switch
+                              size="sm"
+                              label={t("sharing.showArea")}
+                              value={Boolean(current.showArea)}
+                              changeAction={(on) => change(() => api(share(p.id), { method: "PUT", body: { level: current.level, showArea: on } }))}
+                            />
+                          ) : null}
                           {current?.level === "precise" ? (
                             <Switch
                               size="sm"

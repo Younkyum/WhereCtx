@@ -26,6 +26,7 @@ import {
   House,
   Languages,
   MapPin,
+  Route,
   ScrollText,
   Share2,
   ShieldCheck,
@@ -52,6 +53,7 @@ import { WebhooksView } from "./views/Webhooks";
 import { Gate, InviteAccept } from "./views/Gate";
 import { HistoryView } from "./views/History";
 import { HomeView } from "./views/Home";
+import { MapsView } from "./views/Maps";
 import { ServerLogsView } from "./views/ServerLogs";
 import { SharingView } from "./views/Sharing";
 import { WorkspaceView, selectWorkspace } from "./views/Workspace";
@@ -74,6 +76,7 @@ const VIEWS = [
   { id: "devices", icon: Smartphone, label: "nav.devices", main: true, Component: DevicesView },
   { id: "agents", icon: Bot, label: "nav.agents", main: false, Component: AgentsView },
   { id: "privacy", icon: ShieldCheck, label: "nav.privacy", main: false, Component: PrivacyView },
+  { id: "maps", icon: Route, label: "nav.maps", main: false, Component: MapsView },
   { id: "workspace", icon: Users, label: "nav.workspace", main: false, Component: WorkspaceView },
   { id: "account", icon: UserRound, label: "nav.account", main: false, Component: AccountView },
   { id: "history", icon: HistoryIcon, label: "nav.history", main: false, Component: HistoryView },
