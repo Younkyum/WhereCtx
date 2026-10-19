@@ -423,7 +423,6 @@ describe("the map key and map-config", () => {
     expect(await mapConfig()).toEqual({
       provider: "kakao",
       sdkUrl: `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${JS_KEY}&autoload=false`,
-      key: JS_KEY,
     });
     const res = await owner.browser.send("/v1/geo/map-config");
     expect(res.headers.get("cache-control")).toBe("no-store");
@@ -494,18 +493,18 @@ describe("the map key and map-config", () => {
   it("falls back to the operator's map key for USER_ID only, unless every person may use operator keys", async () => {
     await boot({ operatorMapKeys: { kakao: OPERATOR_JS } });
     await settings({ geoEnabled: true });
-    expect(await mapConfig()).toMatchObject({ provider: "kakao", key: OPERATOR_JS });
+    expect(await mapConfig()).toMatchObject({ provider: "kakao", sdkUrl: expect.stringContaining(`appkey=${OPERATOR_JS}&`) });
     expect((await owner.browser.json("/v1/geo")).map).toEqual({ provider: "kakao", source: "operator" });
     const mina = await invite("Mina");
     await mina.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
     expect(await mapConfig(mina)).toEqual({ provider: null });
     await owner.browser.json("/v1/geo/credentials/kakao/map", { method: "PUT", body: { key: JS_KEY } });
-    expect(await mapConfig()).toMatchObject({ key: JS_KEY });
+    expect(await mapConfig()).toMatchObject({ sdkUrl: expect.stringContaining(`appkey=${JS_KEY}&`) });
 
     await boot({ operatorMapKeys: { kakao: OPERATOR_JS }, operatorKeyForAll: true });
     const ana = await invite("Ana");
     await ana.browser.json("/v1/privacy", { method: "PUT", body: { geoEnabled: true } });
-    expect(await mapConfig(ana)).toMatchObject({ provider: "kakao", key: OPERATOR_JS });
+    expect(await mapConfig(ana)).toMatchObject({ provider: "kakao", sdkUrl: expect.stringContaining(`appkey=${OPERATOR_JS}&`) });
   });
 });
 

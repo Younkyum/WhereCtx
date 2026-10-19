@@ -1,19 +1,20 @@
 // @vitest-environment happy-dom
-// @vitest-environment-options {"settings":{"disableJavaScriptFileLoading":true,"handleDisabledFileLoadingAsSuccess":false}}
+// @vitest-environment-options {"settings":{"disableJavaScriptFileLoading":true,"disableIframePageLoading":true}}
 //
-// The provider SDKs are never fetched here: happy-dom does not load script
-// files, and answers each one with a load or an error event as a test sets.
-// A stand-in `kakao.maps` / `naver.maps` records what a page draws, which is
-// what the provider would be sent.
+// The dashboard side of a map: what it asks the server, which frame it makes,
+// and what it tells that frame. The frame itself (map.html) is a stand-in
+// here: each <iframe>'s window records what the dashboard posts to it, and a
+// test answers as the frame would (mapFrame.test.ts holds the real frame to
+// the same messages).
 import type { Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { FromFrame, MapScene, ToFrame } from "./mapScene";
 
 type Reply = { status: number; body?: unknown };
-type Overlay = { kind: "marker" | "circle" | "line"; opts: any; live: boolean };
 
 const ME = { user: { id: "u1", displayName: "Me" }, workspaces: [{ id: "w1", name: "Home", role: "owner" }], passkeys: [], sessions: [] };
-const KAKAO = { provider: "kakao", sdkUrl: "https://dapi.kakao.com/v2/maps/sdk.js?appkey=testkey12345&autoload=false", key: "testkey12345" };
-const NAVER = { provider: "naver", sdkUrl: "https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=naverkey123", key: "naverkey123" };
+const KAKAO = { provider: "kakao", sdkUrl: "https://dapi.kakao.com/v2/maps/sdk.js?appkey=testkey12345&autoload=false" };
+const NAVER = { provider: "naver", sdkUrl: "https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=naverkey123" };
 const PLACES = [{ name: "home", type: "home", lat: 37.5, lon: 127, radiusM: 100 }];
 const POINTS = [
   { id: "p1", recordedAt: "2026-10-18T01:00:00.000Z", lat: 37.5, lon: 127 },
@@ -22,60 +23,34 @@ const POINTS = [
 
 let routes: Map<string, () => Reply>;
 let calls: string[];
-let overlays: Overlay[];
-let clicks: ((e: unknown) => void)[];
 let host: HTMLElement;
 let root: Root;
 let act: typeof import("react").act;
 
-const happyDOM = () => (window as unknown as { happyDOM: { settings: { handleDisabledFileLoadingAsSuccess: boolean } } }).happyDOM;
+/** What the dashboard posted to each frame window, by frame. */
+const frameWindows = new WeakMap<HTMLIFrameElement, { posted: ToFrame[] }>();
+const frames = () => [...host.querySelectorAll("iframe")];
+const posted = (frame = frames()[0]!) => (frame.contentWindow as unknown as { posted: ToFrame[] }).posted;
+const scenes = (frame?: HTMLIFrameElement) => posted(frame).flatMap((m) => (m.type === "draw" ? [m.scene] : []));
+const lastScene = (frame?: HTMLIFrameElement): MapScene => scenes(frame).at(-1)!;
+const scripts = () => [...document.querySelectorAll("script[src]")] as HTMLScriptElement[];
 
-function fakeMaps() {
-  class LatLng {
-    constructor(
-      readonly lat: number,
-      readonly lng: number,
-    ) {}
-  }
-  const overlay = (kind: Overlay["kind"]) =>
-    class {
-      private readonly record: Overlay;
-      constructor(opts: any) {
-        this.record = { kind, opts, live: true };
-        overlays.push(this.record);
-      }
-      setMap(map: unknown) {
-        if (map === null) this.record.live = false;
-      }
-    };
-  const map = class {
-    setCenter() {}
-    setLevel() {}
-    setZoom() {}
-    setBounds() {}
-    fitBounds() {}
-    destroy() {}
-  };
-  const listen = (_map: unknown, _event: string, fn: (e: unknown) => void) => clicks.push(fn);
-  return {
-    load: (ready: () => void) => ready(),
-    LatLng,
-    LatLngBounds: class {},
-    Map: map,
-    Marker: overlay("marker"),
-    Circle: overlay("circle"),
-    Polyline: overlay("line"),
-    event: { addListener: listen },
-    Event: { addListener: listen },
-  };
+/** The frame says something to the dashboard; by default as itself, from this origin. */
+async function frameSays(message: FromFrame | unknown, opts: { frame?: HTMLIFrameElement; source?: unknown; origin?: string } = {}) {
+  const frame = opts.frame ?? frames()[0]!;
+  await act(async () => {
+    window.dispatchEvent(
+      new MessageEvent("message", { data: message, source: (opts.source ?? frame.contentWindow) as Window, origin: opts.origin ?? location.origin }),
+    );
+  });
+  await settle();
 }
 
-const live = (kind: Overlay["kind"]) => overlays.filter((o) => o.kind === kind && o.live);
-const at = (o: Overlay) => {
-  const p = o.opts.position ?? o.opts.center;
-  return [p.lat, p.lng];
-};
-const scripts = () => [...document.querySelectorAll("script[src]")] as HTMLScriptElement[];
+/** The frame comes up, loads the map it is told to, and is ready to draw. */
+async function frameReady(frame?: HTMLIFrameElement) {
+  await frameSays({ type: "hello" }, { frame });
+  await frameSays({ type: "ready" }, { frame });
+}
 
 async function settle() {
   for (let i = 0; i < 6; i++) {
@@ -85,7 +60,7 @@ async function settle() {
   }
 }
 
-/** A fresh page: the app and its one-script-per-page map loader start over. */
+/** A fresh page: the app and the map's page-wide memory start over. */
 async function open(hash: string) {
   vi.resetModules();
   const [{ App }, { createRoot }, react] = await Promise.all([import("./App"), import("react-dom/client"), import("react")]);
@@ -93,6 +68,14 @@ async function open(hash: string) {
   location.hash = hash;
   root = createRoot(host);
   await act(async () => root.render(react.createElement(App)));
+  await settle();
+}
+
+async function go(hash: string) {
+  await act(async () => {
+    location.hash = hash;
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  });
   await settle();
 }
 
@@ -110,18 +93,22 @@ beforeEach(() => {
     ["GET /v1/presence/history", () => ({ status: 200, body: { enabled: true, retentionHours: 24, from: "", to: "", truncated: false, points: POINTS } })],
   ]);
   calls = [];
-  overlays = [];
-  clicks = [];
   vi.stubGlobal("fetch", async (path: string, init: RequestInit) => {
     const key = `${init.method ?? "GET"} ${path}`;
     calls.push(key);
     const out = (routes.get(key) ?? routes.get(key.split("?")[0]!))?.() ?? { status: 404, body: { error: "not found" } };
     return new Response(out.body === undefined ? "" : JSON.stringify(out.body), { status: out.status });
   });
-  const w = window as unknown as Record<string, unknown>;
-  w.kakao = { maps: fakeMaps() };
-  w.naver = { maps: fakeMaps() };
-  happyDOM().settings.handleDisabledFileLoadingAsSuccess = true;
+  Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
+    configurable: true,
+    get(this: HTMLIFrameElement) {
+      if (!frameWindows.has(this)) {
+        const record = { posted: [] as ToFrame[], postMessage: (m: ToFrame) => record.posted.push(m) };
+        frameWindows.set(this, record);
+      }
+      return frameWindows.get(this);
+    },
+  });
   host = document.createElement("div");
   document.body.appendChild(host);
 });
@@ -129,60 +116,96 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
-  for (const s of scripts()) s.remove();
   location.hash = "";
   vi.unstubAllGlobals();
 });
 
 describe("maps in the dashboard", () => {
-  it("without a map key, draws History from the points alone and never adds a provider script", async () => {
+  it("without a map key, draws History from the points alone and makes no frame", async () => {
     routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { provider: null } }));
     await open("#history");
     expect(calls).toContain("GET /v1/geo/map-config");
     expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
-    expect(scripts()).toEqual([]);
-    expect(overlays).toEqual([]);
+    expect(frames()).toEqual([]);
     expect(host.textContent).not.toContain("The map could not load");
   });
 
-  it("when the map config cannot be read, also falls back with no provider script", async () => {
+  it("when the map config cannot be read, also falls back with no frame", async () => {
     await open("#history");
     expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
-    expect(scripts()).toEqual([]);
+    expect(frames()).toEqual([]);
   });
 
-  it("with a map key, loads the provider's script once, sending only the origin, and draws History on it", async () => {
+  it("with a map key, frames the map page, tells it which script to load, and draws History in it; the dashboard itself loads no script", async () => {
     routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
     await open("#history");
-    expect(scripts().map((s) => [s.src, s.referrerPolicy])).toEqual([[KAKAO.sdkUrl, "strict-origin"]]);
+    expect(frames().map((f) => f.getAttribute("src"))).toEqual(["/map.html"]);
+    expect(posted()).toEqual([]);
+    await frameReady();
+    expect(posted()[0]).toEqual({ type: "load", map: KAKAO });
+    expect(lastScene()).toEqual({
+      markers: [{ id: "latest", at: { lat: 37.52, lon: 127.03 }, title: "Latest point" }],
+      circles: [{ id: "place:home", at: { lat: 37.5, lon: 127 }, radiusM: 100, title: "home" }],
+      lines: [{ id: "track", points: [{ lat: 37.5, lon: 127 }, { lat: 37.52, lon: 127.03 }] }],
+    });
+    expect(posted().filter((m) => m.type === "draw").every((m) => m.type === "draw" && !m.pickable)).toBe(true);
     expect(host.querySelector('svg[role="img"]')).toBeNull();
-    expect(live("line").map((l) => l.opts.path.map((p: any) => [p.lat, p.lng]))).toEqual([
-      [
-        [37.5, 127],
-        [37.52, 127.03],
-      ],
-    ]);
-    expect(live("marker").map(at)).toEqual([[37.52, 127.03]]);
-    expect(live("circle").map((c) => [...at(c), c.opts.radius])).toEqual([[37.5, 127, 100]]);
+    expect(scripts()).toEqual([]);
     expect(host.textContent).toContain("2026");
   });
 
-  it("falls back to the drawn track, and says why, when the script does not load", async () => {
-    happyDOM().settings.handleDisabledFileLoadingAsSuccess = false;
+  it("listens only to its own frame at this origin, and only to well-formed messages", async () => {
     routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
     await open("#history");
-    expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
-    expect(host.textContent).toContain("The map could not load");
-    expect(overlays).toEqual([]);
+    await frameSays({ type: "hello" }, { source: window });
+    await frameSays({ type: "hello" }, { origin: "https://evil.example" });
+    await frameSays({ type: "failed", why: "because" });
+    await frameSays({ type: "pick", at: { lat: 100, lon: 0 } });
+    expect(posted()).toEqual([]);
+    await frameSays({ type: "ready" }, { origin: "https://evil.example" });
+    expect(frames()[0]!.getAttribute("aria-busy")).toBe("true");
+    expect(host.textContent).not.toContain("The map could not load");
   });
 
-  it("falls back when Naver refuses the key after its script loaded", async () => {
+  it("names no frame for a script outside the provider's origin, and says why", async () => {
+    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: { provider: "kakao", sdkUrl: "https://evil.example/sdk.js" } }));
+    await open("#history");
+    expect(frames()).toEqual([]);
+    expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
+    expect(host.textContent).toContain("security policy blocked");
+  });
+
+  it("falls back to the drawn track and says the script failed when the frame could not load it", async () => {
+    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+    await open("#history");
+    await frameSays({ type: "hello" });
+    await frameSays({ type: "failed", why: "load" });
+    expect(frames()).toEqual([]);
+    expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
+    expect(host.textContent).toContain("Kakao's map script failed or did not answer");
+  });
+
+  it("tells a blocked map apart from a key problem", async () => {
+    routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
+    await open("#history");
+    await frameReady();
+    await frameSays({ type: "failed", why: "blocked" });
+    expect(host.textContent).toContain("That is a problem with this server, not with your map key.");
+    expect(host.textContent).not.toContain("refused the map key");
+  });
+
+  it("remembers that Naver refused the key, so the next map on the page falls back without a frame", async () => {
     routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: NAVER }));
     await open("#history");
-    expect(live("line")).toHaveLength(1);
-    await act(async () => (window as unknown as { navermap_authFailure: () => void }).navermap_authFailure());
+    await frameReady();
+    await frameSays({ type: "failed", why: "refused" });
     expect(host.querySelector('svg[role="img"] path')).not.toBeNull();
-    expect(host.textContent).toContain("The map could not load");
+    expect(host.textContent).toContain("Naver refused the map key");
+
+    await go("#places");
+    expect(calls.filter((c) => c === "GET /v1/geo/map-config")).toHaveLength(2);
+    expect(frames()).toEqual([]);
+    expect(host.textContent).toContain("Naver refused the map key");
   });
 
   it("Home places me, and a person only after their exact location is opened (the audited read)", async () => {
@@ -197,28 +220,30 @@ describe("maps in the dashboard", () => {
       body: { person: { ...mina, precise: { lat: 37.55, lon: 126.95, updatedAgoMin: 1 } } },
     }));
     await open("#home");
-    expect(live("marker").map((m) => [m.opts.title, ...at(m)])).toEqual([["You", 37.4, 127.1]]);
+    await frameReady();
+    expect(lastScene().markers.map((m) => [m.title, m.at.lat, m.at.lon])).toEqual([["You", 37.4, 127.1]]);
     expect(calls).not.toContain("GET /v1/people/u2");
 
     await act(async () => button("Show exact location").click());
     await settle();
     expect(calls).toContain("GET /v1/people/u2");
-    expect(live("marker").map((m) => [m.opts.title, ...at(m)])).toEqual([
+    expect(lastScene().markers.map((m) => [m.title, m.at.lat, m.at.lon])).toEqual([
       ["You", 37.4, 127.1],
       ["Mina", 37.55, 126.95],
     ]);
   });
 
-  it("Places draws each place's circle, and a click on the map fills in the new place's coordinates", async () => {
+  it("Places draws each place's circle, and a click in the frame fills in the new place's coordinates", async () => {
     routes.set("GET /v1/geo/map-config", () => ({ status: 200, body: KAKAO }));
     await open("#places");
-    expect(live("circle").map((c) => [...at(c), c.opts.radius])).toEqual([[37.5, 127, 100]]);
-    await act(async () => clicks[0]!({ latLng: { getLat: () => 37.1234567, getLng: () => 127.7654321 } }));
-    await settle();
+    await frameReady();
+    expect(lastScene().circles.map((c) => [c.at.lat, c.at.lon, c.radiusM])).toEqual([[37.5, 127, 100]]);
+    expect(posted().at(-1)).toMatchObject({ type: "draw", pickable: true });
+    await frameSays({ type: "pick", at: { lat: 37.1234567, lon: 127.7654321 } });
     const values = [...host.querySelectorAll("input")].map((i) => i.value);
     expect(values).toContain("37.123457");
     expect(values).toContain("127.765432");
-    expect(live("marker").map(at)).toEqual([[37.1234567, 127.7654321]]);
+    expect(lastScene().markers.map((m) => [m.at.lat, m.at.lon])).toEqual([[37.1234567, 127.7654321]]);
   });
 
   it("the route tester draws the owner's route", async () => {
@@ -244,7 +269,8 @@ describe("maps in the dashboard", () => {
     });
     await act(async () => button("Get ETA").click());
     await settle();
-    expect(live("line").map((l) => l.opts.path.map((p: any) => [p.lat, p.lng]))).toEqual([path.map((p) => [p.lat, p.lon])]);
-    expect(live("marker").map((m) => m.opts.title)).toEqual(["Start", "home"]);
+    await frameReady();
+    expect(lastScene().lines.map((l) => l.points)).toEqual([path]);
+    expect(lastScene().markers.map((m) => m.title)).toEqual(["Start", "home"]);
   });
 });

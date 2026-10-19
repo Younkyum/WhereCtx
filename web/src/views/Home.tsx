@@ -22,8 +22,8 @@ import { ApiError, api } from "../api";
 import { useApp } from "../context";
 import { geoErrorKey, motionOf, safeHttpUrl, statusOf } from "../lib";
 import type { Eta, Person, Place, PreciseLocation, Presence, PrivacySettings } from "../model";
-import { homeScene } from "../mapSdk";
-import { MapView } from "../MapView";
+import { homeScene } from "../mapScene";
+import { MapView, useMapConfig } from "../MapView";
 import { Empty, Hint, Loaded, Page, Panel, useAction, useFormat, useLoad, useNotify } from "../ui";
 
 type Mine = { presence: Presence | null; problem: "none" | "hidden" | null; paused: boolean; geoEnabled: boolean };
@@ -69,6 +69,7 @@ export function HomeView() {
   const { t } = useApp();
   const notify = useNotify();
   const [mine, reloadMine] = useLoad(loadMine, []);
+  const mapConfig = useMapConfig();
   const [myPoint, reloadMyPoint] = useLoad(loadMyPoint, []);
   const [opened, setOpened] = useState<Record<string, Person>>({});
   const [people, reloadPeople] = useLoad(() => api<{ people: Person[] }>("/v1/people").then((r) => r.people ?? []), []);
@@ -109,7 +110,7 @@ export function HomeView() {
           {(m) => <MyStatus mine={m} sharing={sharing} onShare={() => void shareNow()} />}
         </Loaded>
       </Card>
-      <MapView scene={scene} />
+      <MapView config={mapConfig} scene={scene} />
       <Panel title={t("people.title")}>
         <Loaded state={people}>
           {(list) =>

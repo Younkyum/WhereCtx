@@ -10,8 +10,6 @@ import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import type { AppContext } from "./context.js";
 import { SECURE_HEADERS_OPTIONS, pageSecurity } from "./securityHeaders.js";
-import { resolveSessionPrincipal } from "../auth/principal.js";
-import { readSessionCookie, setSessionCookie } from "../api/session.js";
 import { RateLimiter, authFailureGuard } from "../api/rateLimit.js";
 import { authenticate, sessionAuth } from "../api/middleware.js";
 import { auditAccess, restActionOf } from "../api/accessAudit.js";
@@ -82,17 +80,7 @@ export function buildApp(ctx: AppContext, options: BuildAppOptions = {}): Hono {
   );
   app.get("/healthz", (c) => c.json({ status: "ok" }));
 
-  // The dashboard page allows a map provider's hosts only for a signed-in
-  // person whose map is set up; it reads the session cookie a navigation sends.
-  app.route(
-    "/",
-    dashboardRouter(options.dashboardDir, async (c) => {
-      const session = await resolveSessionPrincipal(ctx, readSessionCookie(c, ctx.config.baseUrl));
-      if (!session) return null;
-      if (session.renewed) setSessionCookie(c, readSessionCookie(c, ctx.config.baseUrl)!, ctx.config.baseUrl);
-      return (await ctx.forUser(session.principal.userId).geo.mapConfig()).provider;
-    }),
-  );
+  app.route("/", dashboardRouter(options.dashboardDir));
   app.route("/", oauthRouter(ctx));
 
   // Auth is mounted here, the one REST place holding the full context; routers

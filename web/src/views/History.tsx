@@ -19,8 +19,8 @@ import { useMemo, useState } from "react";
 import { api } from "../api";
 import { useApp } from "../context";
 import { drawTrack, groupByDay, historyQuery, localDay, mapLink, shiftDay, type HistoryRange } from "../lib";
-import { historyScene } from "../mapSdk";
-import { MapView } from "../MapView";
+import { historyScene } from "../mapScene";
+import { MapView, useMapConfig } from "../MapView";
 import { HISTORY_MAX_POINTS, type History, type HistoryPoint, type Place } from "../model";
 import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useFormat, useLoad } from "../ui";
 
@@ -123,13 +123,14 @@ function HistoryOff({ stillHasPoints = false }: { stillHasPoints?: boolean }) {
 
 function TrackMap({ points, places }: { points: HistoryPoint[]; places: Place[] }) {
   const { t } = useApp();
+  const mapConfig = useMapConfig();
   const scene = useMemo(() => historyScene(points, places, t("map.latest")), [points, places, t]);
   const drawn = (
     <Panel title={t("history.map")}>
       <Track points={points} places={places} />
     </Panel>
   );
-  return points.length ? <MapView scene={scene} title={t("history.map")} fallback={drawn} height={400} /> : drawn;
+  return points.length ? <MapView config={mapConfig} scene={scene} title={t("history.map")} fallback={drawn} height={400} /> : drawn;
 }
 
 function Track({ points, places }: { points: HistoryPoint[]; places: Place[] }) {

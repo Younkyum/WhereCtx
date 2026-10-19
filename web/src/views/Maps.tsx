@@ -28,8 +28,8 @@ import {
   type GeoStatus,
   type PrivacySettings,
 } from "../model";
-import { routeScene } from "../mapSdk";
-import { MapView } from "../MapView";
+import { routeScene } from "../mapScene";
+import { MapView, useMapConfig } from "../MapView";
 import { Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useFormat, useLoad, useNotify } from "../ui";
 
 /** Where each provider documents getting a key (checked 2026-10-19). */
@@ -416,6 +416,7 @@ function TryRoute() {
 
 function RouteMap({ eta }: { eta: Eta }) {
   const { t } = useApp();
+  const mapConfig = useMapConfig();
   const scene = useMemo(() => routeScene(eta.path ?? [], eta.destination.label, t("map.start")), [eta, t]);
-  return <MapView scene={scene} />;
+  return <MapView config={mapConfig} scene={scene} />;
 }

@@ -197,7 +197,7 @@ export class GeoService {
   async mapConfig(userId: UserId): Promise<MapConfig> {
     const settings = await this.deps.settings.getOrSeed(userId);
     const map = settings.geoEnabled ? await this.keys.resolveMap(userId, settings) : null;
-    return map ? { provider: map.provider, sdkUrl: MAP_SDKS[map.provider].sdkUrl(map.key), key: map.key } : { provider: null };
+    return map ? { provider: map.provider, sdkUrl: MAP_SDKS[map.provider].sdkUrl(map.key) } : { provider: null };
   }
 
   /** Forget a provider's keys, and every area answer kept for me. */

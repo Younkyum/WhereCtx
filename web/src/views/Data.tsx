@@ -29,8 +29,8 @@ import {
   type PresenceEvent,
   type PrivacySettings,
 } from "../model";
-import { placesScene, type LatLon } from "../mapSdk";
-import { MapView } from "../MapView";
+import { placesScene, type LatLon } from "../mapScene";
+import { MapView, useMapConfig } from "../MapView";
 import { Empty, Hint, Loaded, Page, Panel, Row, Rows, useAction, useConfirm, useLoad, useNotify } from "../ui";
 
 function usePlaceTypes() {
@@ -43,6 +43,7 @@ export function PlacesView() {
   const notify = useNotify();
   const confirm = useConfirm();
   const [places, reload] = useLoad(() => api<{ places: Place[] }>("/v1/places").then((r) => r.places ?? []), []);
+  const mapConfig = useMapConfig();
   const [picked, setPicked] = useState<LatLon | null>(null);
   const list = places.kind === "ready" ? places.data : null;
   const scene = useMemo(() => placesScene(list ?? [], picked, t("map.picked")), [list, picked, t]);
@@ -87,7 +88,7 @@ export function PlacesView() {
           }
         </Loaded>
       </Panel>
-      <MapView scene={scene} title={t("places.map")} hint={t("places.mapHint")} onPick={setPicked} />
+      <MapView config={mapConfig} scene={scene} title={t("places.map")} hint={t("places.mapHint")} onPick={setPicked} />
       <AddByAddress onAdded={reload} />
       <AddHere onAdded={reload} />
       <AddByCoordinates
