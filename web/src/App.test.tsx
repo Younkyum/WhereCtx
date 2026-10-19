@@ -40,6 +40,26 @@ function button(name: string): HTMLButtonElement {
   return found;
 }
 
+function buttonIn(scope: ParentNode, name: string): HTMLButtonElement {
+  const found = [...scope.querySelectorAll("button")].find((b) => b.textContent?.trim() === name);
+  if (!found) throw new Error(`no button "${name}"`);
+  return found;
+}
+
+function inputLabelled(scope: ParentNode, label: string): HTMLInputElement {
+  const target = [...scope.querySelectorAll("label")].find((l) => l.textContent?.trim().startsWith(label));
+  const input = target?.htmlFor ? (scope.querySelector(`#${CSS.escape(target.htmlFor)}`) as HTMLInputElement | null) : null;
+  if (!input) throw new Error(`no input labelled "${label}"`);
+  return input;
+}
+
+async function fill(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   routes = new Map();
@@ -497,51 +517,92 @@ describe("log views", () => {
     expect(host.textContent).toContain("error=bad");
   });
 
-  it("Webhooks starts with arrivals and departures, explains each event, and edits a hook's events", async () => {
-    const hooks = [{ id: "h1", url: "https://ha.example/hook", events: ["*"], active: true }];
+  it("Webhooks adds a hook in a dialog, starting with arrivals and departures and an optional auth header", async () => {
     let created: any;
-    let patched: any;
-    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: hooks } }));
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: [] } }));
     route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
     route("POST /v1/webhooks", (body) => {
       created = body;
       return { status: 201, body: { webhook: { id: "h2" } } };
     });
+    await open("#webhooks");
+    expect(host.textContent).toContain("Home Assistant");
+    expect(host.querySelector('input[placeholder="https://…"]')).toBeNull();
+
+    await act(async () => button("Add webhook").click());
+    await settle();
+    const dialog = () => document.querySelector("dialog")!;
+    expect(dialog().textContent).toContain("Arrived at a place");
+    expect(dialog().textContent).toContain("When you leave one of your places");
+    expect(dialog().textContent).toContain("signing secret");
+    const checked = [...dialog().querySelectorAll<HTMLInputElement>('li input[type="checkbox"]')]
+      .filter((c) => c.checked)
+      .map((c) => c.closest("li")?.textContent ?? "");
+    expect(checked).toHaveLength(2);
+    expect(checked[0]).toContain("presence.entered_place");
+    expect(checked[1]).toContain("presence.left_place");
+    const example = () => [...dialog().querySelectorAll("pre, code")].map((n) => n.textContent).join("\n");
+    expect(example()).toContain('"event": "presence.entered_place"');
+    expect(example()).not.toMatch(/"lat"|"lon"|Authorization/);
+
+    await fill(dialog().querySelector<HTMLInputElement>('input[placeholder="https://…"]')!, "https://n8n.example/hook");
+    const nameInput = inputLabelled(dialog(), "Header name");
+    expect(nameInput.value).toBe("Authorization");
+    await fill(inputLabelled(dialog(), "Header value"), "Bearer n8n-header-credential-9f3k");
+    expect(inputLabelled(dialog(), "Header value").type).toBe("password");
+    expect(example()).toContain("Authorization: ••••••••9f3k");
+    expect(example()).not.toContain("credential");
+
+    await fill(nameInput, "X-WhereCtx-Signature");
+    expect(dialog().textContent).toContain("set by the server");
+    expect(buttonIn(dialog(), "Add").disabled).toBe(true);
+    await fill(nameInput, "Authorization");
+
+    await act(async () => buttonIn(dialog(), "Add").click());
+    await settle();
+    expect(created).toEqual({
+      url: "https://n8n.example/hook",
+      events: ["presence.entered_place", "presence.left_place"],
+      authHeader: { name: "Authorization", value: "Bearer n8n-header-credential-9f3k" },
+    });
+    expect(document.querySelector("dialog[open]")).toBeNull();
+  });
+
+  it("Webhooks edits a hook in a dialog: events, pausing, and replacing or removing its auth header", async () => {
+    const hooks = [{ id: "h1", url: "https://ha.example/hook", events: ["*"], active: true, authHeader: { name: "Authorization", hint: "…9f3k" } }];
+    const patched: any[] = [];
+    route("GET /v1/webhooks", () => ({ status: 200, body: { webhooks: hooks } }));
+    route("GET /v1/webhooks/dead-letters?limit=20", () => ({ status: 200, body: { deadLetters: [] } }));
     route("PATCH /v1/webhooks/h1", (body) => {
-      patched = body;
+      patched.push(body);
       return { status: 200, body: { webhook: hooks[0] } };
     });
     await open("#webhooks");
-    expect(host.textContent).toContain("Home Assistant");
-    expect(host.textContent).toContain("Arrived at a place");
-    expect(host.textContent).toContain("When you leave one of your places");
-    const checked = () =>
-      [...host.querySelectorAll<HTMLInputElement>('li input[type="checkbox"]')].filter((c) => c.checked).map((c) => c.closest("li")?.textContent ?? "");
-    const on = checked();
-    expect(on).toHaveLength(2);
-    expect(on[0]).toContain("presence.entered_place");
-    expect(on[1]).toContain("presence.left_place");
-    const example = [...host.querySelectorAll("pre, code")].map((n) => n.textContent).join("\n");
-    expect(example).toContain('"event": "presence.entered_place"');
-    expect(example).not.toMatch(/"lat"|"lon"/);
+    expect(host.textContent).toContain("Authorization …9f3k");
+    expect(host.querySelector('input[type="checkbox"]')).toBeNull();
 
-    const input = host.querySelector<HTMLInputElement>('input[placeholder="https://…"]')!;
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-      setter.call(input, "https://n8n.example/hook");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () => button("Add").click());
+    await act(async () => button("Edit").click());
     await settle();
-    expect(created).toEqual({ url: "https://n8n.example/hook", events: ["presence.entered_place", "presence.left_place"] });
-
-    await act(async () => button("Change events").click());
-    await settle();
-    const updated = [...host.querySelectorAll("li")].find((li) => li.textContent?.startsWith("Every location update"))!;
+    const dialog = () => document.querySelector("dialog")!;
+    expect(dialog().textContent).toContain("Sends Authorization with a value ending …9f3k.");
+    const updated = [...dialog().querySelectorAll("li")].find((li) => li.textContent?.startsWith("Every location update"))!;
     await act(async () => updated.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
-    await act(async () => button("Save").click());
+    await act(async () => buttonIn(dialog(), "Remove").click());
+    expect(dialog().textContent).toContain("removed when you save");
+    await act(async () => buttonIn(dialog(), "Save").click());
     await settle();
-    expect(patched).toEqual({ events: ["presence.updated"] });
+    expect(patched.at(-1)).toEqual({ events: ["presence.updated"], authHeader: null });
+
+    await act(async () => button("Edit").click());
+    await settle();
+    await act(async () => buttonIn(dialog(), "Replace").click());
+    expect(buttonIn(dialog(), "Save").disabled).toBe(true);
+    await fill(inputLabelled(dialog(), "Header name"), "X-Api-Key");
+    await fill(inputLabelled(dialog(), "Header value"), "replacement-key-0042");
+    await act(async () => dialog().querySelector<HTMLInputElement>('input[role="switch"], input[type="checkbox"][role="switch"]')?.click());
+    await act(async () => buttonIn(dialog(), "Save").click());
+    await settle();
+    expect(patched.at(-1)).toEqual({ active: false, authHeader: { name: "X-Api-Key", value: "replacement-key-0042" } });
   });
 
   it("Devices shows the Shortcut's Authorization header as a name and a Bearer value", async () => {

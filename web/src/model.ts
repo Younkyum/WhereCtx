@@ -232,6 +232,8 @@ export interface Webhook {
   url: string;
   events: string[];
   active: boolean;
+  /** Never the value: its name and last characters only. */
+  authHeader?: { name: string; hint: string };
 }
 
 export interface DeadLetter {
