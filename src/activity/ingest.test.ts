@@ -71,7 +71,8 @@ describe("ingest log", () => {
 
   it("never stores coordinates, not even inside a rejection message", async () => {
     await post("/v1/ingest", JSON.stringify({ lat: +LAT, lon: +LON }), bearer(phone.secret));
-    await post("/v1/ingest", JSON.stringify({ lat: +LAT, lon: 500 }), bearer(phone.secret));
+    // Every probe has a decimal point: a hex id or an ISO timestamp can hold "500" by chance, never "500.25".
+    await post("/v1/ingest", JSON.stringify({ lat: +LAT, lon: 500.25 }), bearer(phone.secret));
     const columns = await ctx.handle.client.execute("SELECT name FROM pragma_table_info('ingest_log')");
     const names = columns.rows.map((r) => String(r.name));
     expect(names.filter((n) => /lat|lon|coord|precise/i.test(n))).toEqual([]);
@@ -80,7 +81,7 @@ describe("ingest log", () => {
     const dump = JSON.stringify(rows.rows);
     expect(dump).not.toContain(LAT);
     expect(dump).not.toContain(LON);
-    expect(dump).not.toContain("500");
+    expect(dump).not.toContain("500.25");
   });
 
   it("records a credential that may not write as rejected, and an unknown one not at all", async () => {
